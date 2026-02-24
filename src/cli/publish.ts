@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { withDb } from "../db/index.js";
-import { getRawDir } from "../config/index.js";
+import { getRawDir, getDefaultSourcePaths } from "../config/index.js";
 import { loadConfig } from "../config/schema.js";
 import type { ConversationMeta } from "../models/conversation.js";
 
@@ -14,6 +14,9 @@ export async function publishCommand(
   const author = config.author || "";
   const now = new Date().toISOString();
   const rawDir = getRawDir();
+
+  // Collect published conversation IDs so we can auto-index after releasing the lock
+  const publishedIds: string[] = [];
 
   await withDb(async (ctx) => {
     let conversations: ConversationMeta[];
@@ -75,6 +78,56 @@ export async function publishCommand(
         chalk.green("Published") +
           ` ${chalk.cyan(conv.id.slice(0, 12))} v${newVersion} ${chalk.dim(title)}`
       );
+
+      publishedIds.push(conv.id);
     }
   });
+
+  // Auto-index published conversations if search is configured
+  if (publishedIds.length === 0) return;
+
+  try {
+    const { searchAvailable, getSearchProviders } = await import(
+      "../search/deps.js"
+    );
+    if (!(await searchAvailable())) return;
+
+    const { embedding, vectorStore } = await getSearchProviders();
+    const { indexConversation } = await import("../search/indexer.js");
+    const { ClaudeCodeAdapter } = await import("../adapters/claude-code.js");
+
+    const sourcePaths =
+      config.sources["claude-code"].paths.length > 0
+        ? config.sources["claude-code"].paths
+        : getDefaultSourcePaths();
+    const adapter = new ClaudeCodeAdapter(sourcePaths);
+
+    const label = publishedIds.length === 1 ? "conversation" : "conversations";
+    process.stdout.write(
+      chalk.dim(`Indexing ${publishedIds.length} ${label} for search...`),
+    );
+
+    let indexed = 0;
+    for (const id of publishedIds) {
+      try {
+        const conv = await withDb((ctx) => ctx.getConversation(id));
+        if (!conv) continue;
+
+        const filePath = conv.filePath || conv.sourcePath;
+        const messages = await adapter.parseMessages(filePath);
+        await indexConversation(conv, messages, embedding, vectorStore);
+
+        await withDb((ctx) => {
+          ctx.setIndexedAt(id, new Date().toISOString());
+        });
+        indexed++;
+      } catch {
+        // Silent failure — indexing is best-effort during publish
+      }
+    }
+
+    console.log(chalk.dim(` done (${indexed} indexed)`));
+  } catch {
+    // Search deps not available or not configured — skip silently
+  }
 }

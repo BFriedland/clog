@@ -239,6 +239,15 @@ server.tool(
 
         ctx.updateConversation(fullId, updates);
 
+        // Mark for re-indexing if title/summary changed on a published conversation
+        if (
+          (title !== undefined || summary !== undefined) &&
+          conv.state === "published" &&
+          conv.indexedAt
+        ) {
+          ctx.setIndexedAt(fullId, null);
+        }
+
         // Return updated conversation
         const result = ctx.getConversation(fullId)!;
         return {
@@ -265,6 +274,105 @@ server.tool(
     } catch (err) {
       return {
         content: [{ type: "text" as const, text: (err as Error).message }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Tool: clog_search — semantic search across published conversations
+// ---------------------------------------------------------------------------
+server.tool(
+  "clog_search",
+  "Semantic search across published AI coding conversations using natural language. Returns ranked results by relevance. Requires search to be configured via 'clog search --init'.",
+  {
+    query: z.string().describe("Natural language search query"),
+    tags: z.array(z.string()).optional().describe("Filter by tags (conversations must have at least one of these tags)"),
+    project: z.string().optional().describe("Filter by project path"),
+    author: z.string().optional().describe("Filter by author name"),
+    limit: z.number().min(1).max(50).default(10).describe("Max results (1-50, default 10)"),
+  },
+  async ({ query, tags, project, author, limit }) => {
+    try {
+      const { getSearchProviders } = await import("../search/deps.js");
+      const { embedding, vectorStore } = await getSearchProviders();
+      const { searchConversations } = await import("../search/indexer.js");
+
+      // Pre-filter via SQLite if metadata filters provided
+      let conversationIdFilter: Set<string> | undefined;
+      if (project || author || (tags && tags.length > 0)) {
+        const convs = await withDb((ctx) =>
+          ctx.listConversations({
+            state: "published",
+            project: project ?? undefined,
+            author: author ?? undefined,
+            tag: tags?.[0] ?? undefined,
+          }),
+        );
+        // Multi-tag filter: keep conversations with at least one matching tag
+        let filtered = convs;
+        if (tags && tags.length > 1) {
+          const tagSet = new Set(tags);
+          filtered = convs.filter((c) => c.tags.some((t) => tagSet.has(t)));
+        }
+        conversationIdFilter = new Set(filtered.map((c) => c.id));
+        if (conversationIdFilter.size === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ results: [], totalCount: 0 }, null, 2),
+            }],
+          };
+        }
+      }
+
+      const searchResults = await searchConversations(
+        query,
+        limit,
+        embedding,
+        vectorStore,
+        conversationIdFilter,
+      );
+
+      // Enrich with full metadata from DB and get index coverage
+      const { convMap, indexCoverage } = await withDb((ctx) => {
+        const map = new Map<string, ReturnType<typeof ctx.getConversation>>();
+        for (const r of searchResults) {
+          const conv = ctx.getConversation(r.conversationId);
+          if (conv) map.set(r.conversationId, conv);
+        }
+        return { convMap: map, indexCoverage: ctx.getIndexCoverage() };
+      });
+
+      const results = searchResults.map((r) => {
+        const conv = convMap.get(r.conversationId);
+        return {
+          id: r.conversationId,
+          title: conv?.title ?? "",
+          summary: conv?.summary ?? "",
+          tags: conv?.tags ?? [],
+          author: conv?.author ?? "",
+          project: conv?.project ?? null,
+          createdAt: conv?.createdAt ?? "",
+          relevanceScore: r.score,
+          snippet: r.text.slice(0, 300),
+        };
+      });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ results, totalCount: results.length, indexCoverage }, null, 2),
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Search error: ${message}`,
+        }],
         isError: true,
       };
     }

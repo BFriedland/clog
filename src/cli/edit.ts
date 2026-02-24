@@ -31,6 +31,11 @@ export async function editCommand(
 
     ctx.updateConversation(fullId, updates);
 
+    // Mark for re-indexing if published and previously indexed
+    if (conv.state === "published" && conv.indexedAt) {
+      ctx.setIndexedAt(fullId, null);
+    }
+
     const fields: string[] = [];
     if (opts.title !== undefined) fields.push("title");
     if (opts.summary !== undefined) fields.push("summary");

@@ -217,4 +217,36 @@ program
     await configCommand(action, key, value);
   }));
 
+program
+  .command("index")
+  .description("Index published conversations for semantic search")
+  .option("--rebuild", "Re-index all published conversations from scratch")
+  .action(wrapAction(async (opts) => {
+    const { indexCommand } = await import("./cli/index-cmd.js");
+    await indexCommand(opts);
+  }));
+
+program
+  .command("search [query]")
+  .description("Semantic search across published conversations")
+  .option("--init", "Set up search (choose embedding provider and vector store)")
+  .option("-p, --project <project>", "Filter by project")
+  .option("-a, --author <author>", "Filter by author")
+  .option("-t, --tag <tag>", "Filter by tag")
+  .option("-l, --limit <n>", "Max results", parseInt)
+  .action(wrapAction(async (query: string | undefined, opts) => {
+    if (opts.init) {
+      const { searchInitCommand } = await import("./cli/search-init.js");
+      await searchInitCommand();
+      return;
+    }
+    if (!query) {
+      console.error('Usage: clog search <query>\n\nRun "clog search --init" to set up search.');
+      process.exitCode = 1;
+      return;
+    }
+    const { searchCommand } = await import("./cli/search.js");
+    await searchCommand(query, opts);
+  }));
+
 program.parse();

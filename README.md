@@ -62,6 +62,9 @@ clog log
 | `clog exclude <id...>` | Permanently hide from discovery |
 | `clog unexclude <id...>` | Reverse an exclusion |
 | `clog config [get\|set]` | View or edit configuration |
+| `clog search --init` | Set up semantic search (choose embedding provider and vector store) |
+| `clog search <query>` | Semantic search across published conversations (`--project`, `--author`, `--tag`, `--limit`) |
+| `clog index` | Index published conversations for search (`--rebuild` to re-index all) |
 
 All IDs accept short prefixes (minimum 4 characters), like git.
 
@@ -80,8 +83,30 @@ The MCP server provides these tools:
 - **`clog_get`** — Read a conversation's messages
 - **`clog_update`** — Edit title, summary, or tags
 - **`clog_browse`** — List available tags, projects, and authors
+- **`clog_search`** — Semantic search across published conversations (requires `clog search --init`)
 
-Only published conversations are visible via `clog_list_published` and `clog_browse`. Staged conversations are accessible via `clog_list_staged`, `clog_get`, and `clog_update` to support agent-assisted curation.
+Only published conversations are visible via `clog_list_published`, `clog_browse`, and `clog_search`. Staged conversations are accessible via `clog_list_staged`, `clog_get`, and `clog_update` to support agent-assisted curation.
+
+## Search
+
+clog supports semantic search across published conversations using local embeddings and a vector store. Semantic search is optional — it requires a one-time setup and two extra packages.
+
+```bash
+# Install search dependencies
+npm install vectra @huggingface/transformers
+
+# Interactive setup — choose embedding provider and vector store
+clog search --init
+
+# Index published conversations
+clog index
+
+# Search
+clog search "JWT refresh token race condition"
+clog search "database migration" --project myapp --limit 5
+```
+
+Published conversations are automatically indexed during `clog publish`. Editing a conversation's title or summary marks it for re-indexing on the next `clog index` run. Use `clog index --rebuild` to re-index everything from scratch.
 
 ## Configuration
 

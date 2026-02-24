@@ -125,6 +125,7 @@ export class DbContext {
         | "modifiedAt"
         | "slug"
         | "author"
+        | "indexedAt"
       >
     >
   ): void {
@@ -174,6 +175,10 @@ export class DbContext {
     if (updates.author !== undefined) {
       sets.push("author = ?");
       values.push(updates.author);
+    }
+    if (updates.indexedAt !== undefined) {
+      sets.push("indexed_at = ?");
+      values.push(updates.indexedAt);
     }
 
     if (sets.length === 0) return;
@@ -378,6 +383,51 @@ export class DbContext {
         message: (row.message as string) || "",
         title: (row.title as string) || "",
       });
+    }
+    stmt.free();
+    return results;
+  }
+
+  getIndexCoverage(): { indexed: number; published: number } {
+    const stmt = this.db.prepare(
+      `SELECT
+         COUNT(*) as published,
+         COUNT(indexed_at) as indexed
+       FROM conversations WHERE state = 'published'`,
+    );
+    stmt.step();
+    const row = stmt.getAsObject();
+    stmt.free();
+    return {
+      indexed: (row.indexed as number) || 0,
+      published: (row.published as number) || 0,
+    };
+  }
+
+  clearAllIndexedAt(): void {
+    this.db.run(
+      "UPDATE conversations SET indexed_at = NULL WHERE state = 'published' AND indexed_at IS NOT NULL",
+    );
+  }
+
+  setIndexedAt(id: string, timestamp: string | null): void {
+    this.db.run("UPDATE conversations SET indexed_at = ? WHERE id = ?", [
+      timestamp,
+      id,
+    ]);
+  }
+
+  listConversationsNeedingIndex(): ConversationMeta[] {
+    const sql = `
+      SELECT * FROM conversations
+      WHERE state = 'published'
+        AND (indexed_at IS NULL OR modified_at > indexed_at)
+      ORDER BY created_at DESC
+    `;
+    const results: ConversationMeta[] = [];
+    const stmt = this.db.prepare(sql);
+    while (stmt.step()) {
+      results.push(this.rowToConversation(stmt.getAsObject()));
     }
     stmt.free();
     return results;

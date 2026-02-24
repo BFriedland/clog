@@ -2,6 +2,7 @@ import { z } from "zod";
 import { readFile, writeFile } from "node:fs/promises";
 import { getClogHome } from "./index.js";
 import path from "node:path";
+import { SearchConfigSchema } from "../search/providers.js";
 
 export const SourceConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -23,6 +24,7 @@ export const ConfigSchema = z.object({
   defaultTags: z.array(z.string()).default([]),
   autoScan: z.boolean().default(false),
   remote: z.unknown().nullable().default(null),
+  search: SearchConfigSchema,
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

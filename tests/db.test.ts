@@ -354,3 +354,117 @@ describe("Publish log", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Indexing support
+// ---------------------------------------------------------------------------
+
+describe("setIndexedAt", () => {
+  it("sets indexed_at timestamp", async () => {
+    const conv = makeConversation({ state: "published" });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.setIndexedAt(conv.id, "2026-02-20T12:00:00.000Z");
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+
+  it("clears indexed_at when set to null", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.setIndexedAt(conv.id, null);
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+});
+
+describe("listConversationsNeedingIndex", () => {
+  it("returns published conversations with null indexed_at", async () => {
+    const conv = makeConversation({ state: "published", indexedAt: null });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+
+      const needing = ctx.listConversationsNeedingIndex();
+      expect(needing).toHaveLength(1);
+      expect(needing[0].id).toBe(conv.id);
+    });
+  });
+
+  it("returns published conversations with stale indexed_at", async () => {
+    const conv = makeConversation({
+      state: "published",
+      modifiedAt: "2026-02-20T14:00:00.000Z",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+
+      const needing = ctx.listConversationsNeedingIndex();
+      expect(needing).toHaveLength(1);
+    });
+  });
+
+  it("excludes non-published conversations", async () => {
+    const discovered = makeConversation({
+      id: "aaaa0001-0000-0000-0000-000000000000",
+      state: "discovered",
+      indexedAt: null,
+    });
+    const staged = makeConversation({
+      id: "aaaa0002-0000-0000-0000-000000000000",
+      state: "staged",
+      indexedAt: null,
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(discovered);
+      ctx.insertConversation(staged);
+
+      const needing = ctx.listConversationsNeedingIndex();
+      expect(needing).toHaveLength(0);
+    });
+  });
+
+  it("excludes up-to-date indexed conversations", async () => {
+    const conv = makeConversation({
+      state: "published",
+      modifiedAt: "2026-02-20T12:00:00.000Z",
+      indexedAt: "2026-02-20T14:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+
+      const needing = ctx.listConversationsNeedingIndex();
+      expect(needing).toHaveLength(0);
+    });
+  });
+});
+
+describe("updateConversation with indexedAt", () => {
+  it("updates indexedAt via updateConversation", async () => {
+    const conv = makeConversation({ state: "published" });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        indexedAt: "2026-02-20T12:00:00.000Z",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+});
