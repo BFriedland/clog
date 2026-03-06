@@ -39,6 +39,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
+    origin: null,
     ...overrides,
   };
 }

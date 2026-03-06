@@ -112,6 +112,7 @@ export async function scanSources(): Promise<ScanCounts> {
           filePath: null,
           sourceMtime: mtime,
           indexedAt: null,
+          origin: null,
         });
         counts.discovered++;
       } else if (existing.sourceMtime === mtime) {

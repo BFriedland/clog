@@ -34,6 +34,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
+    origin: null,
     ...overrides,
   };
 }
@@ -465,6 +466,149 @@ describe("updateConversation with indexedAt", () => {
 
       const fetched = ctx.getConversation(conv.id)!;
       expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+});
+
+describe("origin field", () => {
+  it("defaults to null for new conversations", async () => {
+    const conv = makeConversation();
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.origin).toBeNull();
+    });
+  });
+
+  it("stores and retrieves origin", async () => {
+    const conv = makeConversation({
+      origin: "git@github.com:org/repo.git",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.origin).toBe("git@github.com:org/repo.git");
+    });
+  });
+
+  it("filters by origin=local (NULL)", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          origin: null,
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          state: "published",
+          origin: "git@github.com:org/repo.git",
+        })
+      );
+
+      const local = ctx.listConversations({ origin: "local" });
+      expect(local).toHaveLength(1);
+      expect(local[0].id).toBe("aaaa0001-0000-0000-0000-000000000000");
+    });
+  });
+
+  it("filters by origin=remote (NOT NULL)", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          origin: null,
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          state: "published",
+          origin: "git@github.com:org/repo.git",
+        })
+      );
+
+      const remote = ctx.listConversations({ origin: "remote" });
+      expect(remote).toHaveLength(1);
+      expect(remote[0].id).toBe("bbbb0001-0000-0000-0000-000000000000");
+    });
+  });
+});
+
+describe("deleteByOrigin", () => {
+  it("deletes conversations with matching origin", async () => {
+    const origin = "git@github.com:org/repo.git";
+
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          origin,
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          origin,
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "cccc0001-0000-0000-0000-000000000000",
+          sourceId: "s3",
+          origin: null,
+        })
+      );
+
+      const deleted = ctx.deleteByOrigin(origin);
+      expect(deleted).toBe(2);
+
+      const remaining = ctx.listConversations();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].id).toBe("cccc0001-0000-0000-0000-000000000000");
+    });
+  });
+});
+
+describe("renameAuthor", () => {
+  it("renames only local conversations", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          author: "old-name",
+          origin: null,
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          author: "old-name",
+          origin: "git@github.com:org/repo.git",
+        })
+      );
+
+      const renamed = ctx.renameAuthor("old-name", "new-name");
+      expect(renamed).toBe(1);
+
+      const local = ctx.getConversation("aaaa0001-0000-0000-0000-000000000000")!;
+      expect(local.author).toBe("new-name");
+
+      const remote = ctx.getConversation("bbbb0001-0000-0000-0000-000000000000")!;
+      expect(remote.author).toBe("old-name");
     });
   });
 });

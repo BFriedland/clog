@@ -43,7 +43,12 @@ describe("Default config", () => {
     expect(cfg.author).toBe("");
     expect(cfg.autoScan).toBe(false);
     expect(cfg.defaultTags).toEqual([]);
-    expect(cfg.remote).toBeNull();
+    expect(cfg.remote).toEqual({
+      url: null,
+      allowPublicRemote: false,
+      visibilityConfirmed: false,
+      lastSyncHead: null,
+    });
     expect(cfg.sources["claude-code"].enabled).toBe(true);
     expect(cfg.sources["claude-code"].paths).toEqual([]);
     expect(cfg.sources["claude-code"].includePaths).toEqual([]);

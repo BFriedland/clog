@@ -1,7 +1,10 @@
 import path from "node:path";
+import chalk from "chalk";
 import { scanSources } from "./scan.js";
 import { withDb } from "../db/index.js";
+import { loadConfig } from "../config/schema.js";
 import { stateColors } from "./colors.js";
+import { checkStaleness } from "../sync/staleness.js";
 import type { ConversationMeta } from "../models/conversation.js";
 
 export async function statusCommand(): Promise<void> {
@@ -56,6 +59,27 @@ export async function statusCommand(): Promise<void> {
   if (scanCounts.ignored > 0) parts.push(`${scanCounts.ignored} ignored by clogignore`);
   if (parts.length > 0) {
     console.log(`(${parts.join(", ")})`);
+  }
+
+  // Remote info + staleness
+  const config = await loadConfig();
+  if (config.remote.url) {
+    const staleness = await checkStaleness(config);
+    if (staleness.isStale) {
+      console.log("");
+      console.log(
+        chalk.yellow("Warning: remote checkout has changed outside of clog.")
+      );
+      console.log('Run `clog refresh` to reconcile.');
+    }
+
+    // Report unindexed count
+    const { indexed, published } = await withDb((ctx) => ctx.getIndexCoverage());
+    const unindexed = published - indexed;
+    if (unindexed > 0) {
+      console.log("");
+      console.log(chalk.dim(`${unindexed} conversations not yet indexed.`));
+    }
   }
 }
 

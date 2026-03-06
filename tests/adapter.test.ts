@@ -165,11 +165,14 @@ describe("parseMessages", () => {
 
     const adapter = new ClaudeCodeAdapter([path.join(env.clogHome, "sources")]);
     const messages = await adapter.parseMessages(filePath);
-    // user + one merged assistant (two text blocks from same message.id)
     const assistantMessages = messages.filter((m) => m.role === "assistant");
-    // Even with duplicateAssistantId, they get merged into content blocks
-    // and emitted as separate text messages from the same deduped entry
-    expect(assistantMessages.length).toBeGreaterThanOrEqual(1);
+    // Two JSONL entries share the same message.id with one text block each.
+    // Dedup merges them into a single entry with 2 content blocks → 2 Messages.
+    // Verify both blocks' content is present (proves merge happened).
+    expect(assistantMessages).toHaveLength(2);
+    const texts = assistantMessages.map((m) => m.content);
+    expect(texts).toContain("I can help you debug that.");
+    expect(texts).toContain(" And here is more info.");
   });
 
   it("strips thinking blocks", async () => {
@@ -267,9 +270,9 @@ describe("discover", () => {
       discovered.push(conv);
     }
 
-    // Fixtures create: 2 in project1, 2 in project2 (one with content + one file-history-only)
-    // file-history-only returns null from extractMetadata, so 4 conversations total
-    // but eeeeeeee is file-history-only -> null -> skipped
+    // Fixtures create: 2 in project1, 3 in project2 (two with content + one file-history-only)
+    // file-history-only (eeeeeeee) returns null from extractMetadata -> skipped
+    // So 4 conversations total
     expect(discovered).toHaveLength(4);
   });
 

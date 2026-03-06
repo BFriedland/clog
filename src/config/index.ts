@@ -9,10 +9,6 @@ export function getDbPath(): string {
   return path.join(getClogHome(), "clog.db");
 }
 
-export function getLockPath(): string {
-  return path.join(getClogHome(), "clog.db.lock");
-}
-
 export function getRawDir(): string {
   return path.join(getClogHome(), "raw");
 }
@@ -27,6 +23,10 @@ export function getClogignorePath(): string {
 
 export function getConfigPath(): string {
   return path.join(getClogHome(), "config.json");
+}
+
+export function getRemoteDir(): string {
+  return path.join(getClogHome(), "remote");
 }
 
 export function getDefaultSourcePaths(): string[] {

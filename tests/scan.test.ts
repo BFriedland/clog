@@ -98,6 +98,6 @@ describe("Clogignore rules filter conversations", () => {
 
     const counts = await scanSources();
     // cccccccc (2026-01-15) should be ignored
-    expect(counts.ignored).toBeGreaterThanOrEqual(1);
+    expect(counts.ignored).toBe(1);
   });
 });

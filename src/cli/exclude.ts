@@ -17,7 +17,7 @@ export async function excludeCommand(ids: string[]): Promise<void> {
       await addExcluded(conv.source, conv.sourceId);
       ctx.deleteConversation(resolvedId);
 
-      if (conv.filePath) {
+      if (conv.filePath && !conv.origin) {
         try {
           await rm(conv.filePath);
         } catch (err) {

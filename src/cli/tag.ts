@@ -8,6 +8,9 @@ export async function tagCommand(id: string, tags: string[]): Promise<void> {
     if (!conv) {
       throw new Error(`Conversation not found: ${fullId}`);
     }
+    if (conv.origin) {
+      throw new Error(`Cannot tag a remote conversation (synced from ${conv.origin}).`);
+    }
 
     // Normalize: lowercase, trim, deduplicate
     const normalized = [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];

@@ -8,6 +8,9 @@ export async function untagCommand(id: string, tags: string[]): Promise<void> {
     if (!conv) {
       throw new Error(`Conversation not found: ${fullId}`);
     }
+    if (conv.origin) {
+      throw new Error(`Cannot untag a remote conversation (synced from ${conv.origin}).`);
+    }
 
     // Normalize tags to remove
     const toRemove = new Set(tags.map((t) => t.trim().toLowerCase()));

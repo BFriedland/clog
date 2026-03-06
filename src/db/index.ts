@@ -83,8 +83,8 @@ export class DbContext {
       `INSERT OR IGNORE INTO conversations
         (id, source_id, source, title, summary, author, project, tags_json, slug,
          created_at, discovered_at, modified_at, state, published_at, publish_version,
-         source_path, file_path, source_mtime, indexed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         source_path, file_path, source_mtime, indexed_at, origin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conv.id,
         conv.sourceId,
@@ -105,6 +105,7 @@ export class DbContext {
         conv.filePath,
         conv.sourceMtime,
         conv.indexedAt,
+        conv.origin ?? null,
       ]
     );
   }
@@ -126,6 +127,10 @@ export class DbContext {
         | "slug"
         | "author"
         | "indexedAt"
+        | "origin"
+        | "project"
+        | "source"
+        | "sourcePath"
       >
     >
   ): void {
@@ -179,6 +184,22 @@ export class DbContext {
     if (updates.indexedAt !== undefined) {
       sets.push("indexed_at = ?");
       values.push(updates.indexedAt);
+    }
+    if (updates.origin !== undefined) {
+      sets.push("origin = ?");
+      values.push(updates.origin);
+    }
+    if (updates.project !== undefined) {
+      sets.push("project = ?");
+      values.push(updates.project);
+    }
+    if (updates.source !== undefined) {
+      sets.push("source = ?");
+      values.push(updates.source);
+    }
+    if (updates.sourcePath !== undefined) {
+      sets.push("source_path = ?");
+      values.push(updates.sourcePath);
     }
 
     if (sets.length === 0) return;
@@ -260,6 +281,7 @@ export class DbContext {
     author?: string;
     tag?: string;
     grep?: string;
+    origin?: "local" | "remote";
   }): ConversationMeta[] {
     const conditions: string[] = [];
     const values: unknown[] = [];
@@ -286,6 +308,11 @@ export class DbContext {
       conditions.push("(title LIKE ? OR summary LIKE ?)");
       const pattern = `%${filters.grep}%`;
       values.push(pattern, pattern);
+    }
+    if (filters?.origin === "local") {
+      conditions.push("origin IS NULL");
+    } else if (filters?.origin === "remote") {
+      conditions.push("origin IS NOT NULL");
     }
 
     const where =
@@ -437,6 +464,43 @@ export class DbContext {
     this.db.run("DELETE FROM conversations WHERE id = ?", [id]);
   }
 
+  deleteByOrigin(origin: string): number {
+    this.db.run("DELETE FROM conversations WHERE origin = ?", [origin]);
+    const result = this.db.exec("SELECT changes()");
+    return (result[0]?.values[0]?.[0] as number) || 0;
+  }
+
+  renameAuthor(oldName: string, newName: string): number {
+    this.db.run(
+      "UPDATE conversations SET author = ? WHERE author = ? AND origin IS NULL",
+      [newName, oldName]
+    );
+    const result = this.db.exec("SELECT changes()");
+    return (result[0]?.values[0]?.[0] as number) || 0;
+  }
+
+  countByOrigin(origin: string): number {
+    const stmt = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM conversations WHERE origin = ?",
+      [origin]
+    );
+    stmt.step();
+    const row = stmt.getAsObject();
+    stmt.free();
+    return (row.cnt as number) || 0;
+  }
+
+  countByAuthorLocal(author: string): number {
+    const stmt = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM conversations WHERE author = ? AND origin IS NULL",
+      [author]
+    );
+    stmt.step();
+    const row = stmt.getAsObject();
+    stmt.free();
+    return (row.cnt as number) || 0;
+  }
+
   browseDistinct(
     field: "tags" | "projects" | "authors"
   ): Array<{ name: string; count: number }> {
@@ -487,6 +551,7 @@ export class DbContext {
       filePath: (row.file_path as string) || null,
       sourceMtime: (row.source_mtime as string) || null,
       indexedAt: (row.indexed_at as string) || null,
+      origin: (row.origin as string) || null,
     };
   }
 }

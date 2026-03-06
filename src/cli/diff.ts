@@ -1,7 +1,8 @@
 import chalk from "chalk";
 import { withDb } from "../db/index.js";
 import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
-import { printMessages, getFilePath } from "./show.js";
+import { printMessages } from "./show.js";
+import { resolveContentPath } from "../sync/resolve-content-path.js";
 import type { Message } from "../models/conversation.js";
 
 export interface DiffOpts {
@@ -70,7 +71,7 @@ async function diffModified(ids: string[], limit: { head?: number; tail?: number
   let first = true;
 
   for (const conv of conversations) {
-    const filePath = getFilePath(conv);
+    const filePath = resolveContentPath(conv);
     const allMessages = await adapter.parseMessages(filePath);
 
     // Filter to messages after publishedAt
@@ -122,7 +123,7 @@ async function diffStaged(ids: string[], limit: { head?: number; tail?: number }
   let first = true;
 
   for (const conv of conversations) {
-    const filePath = getFilePath(conv);
+    const filePath = resolveContentPath(conv);
     const messages = await adapter.parseMessages(filePath);
 
     if (messages.length === 0) continue;

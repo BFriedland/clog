@@ -84,6 +84,7 @@ program
   .option("-a, --author <author>", "Filter by author")
   .option("-t, --tag <tag>", "Filter by tag")
   .option("-g, --grep <text>", "Filter by text match on title/summary")
+  .option("--origin <origin>", "Filter by origin (local, remote)")
   .option("-c, --columns <cols>", "Columns to show (comma-separated: id,date,state,project,author,title)")
   .action(wrapAction(async (opts) => {
     const { listCommand } = await import("./cli/list.js");
@@ -129,6 +130,7 @@ program
   .description("Edit conversation metadata")
   .option("--title <title>", "Set the conversation title")
   .option("--summary <summary>", "Set the conversation summary")
+  .option("--author <author>", "Set the conversation author")
   .action(wrapAction(async (id: string, opts) => {
     const { editCommand } = await import("./cli/edit.js");
     await editCommand(id, opts);
@@ -208,6 +210,70 @@ program
     const { logCommand } = await import("./cli/log.js");
     await logCommand();
   }));
+
+// --- Remote / Sync commands ---
+
+const remote = program.command("remote").description("Manage team sharing remote");
+
+remote
+  .command("add <url>")
+  .description("Configure a git remote for team sharing")
+  .action(wrapAction(async (url: string) => {
+    const { remoteAddCommand } = await import("./cli/remote.js");
+    await remoteAddCommand(url);
+  }));
+
+remote
+  .command("show")
+  .description("Show remote configuration and status")
+  .action(wrapAction(async () => {
+    const { remoteShowCommand } = await import("./cli/remote.js");
+    await remoteShowCommand();
+  }));
+
+remote
+  .command("remove")
+  .description("Remove the remote and delete pulled conversations")
+  .action(wrapAction(async () => {
+    const { remoteRemoveCommand } = await import("./cli/remote.js");
+    await remoteRemoveCommand();
+  }));
+
+const sync = program.command("sync").description("Sync conversations with team remote");
+
+sync
+  .command("push")
+  .description("Push published conversations to the remote")
+  .action(wrapAction(async () => {
+    const { syncPushCommand } = await import("./cli/sync.js");
+    await syncPushCommand();
+  }));
+
+sync
+  .command("pull")
+  .description("Pull conversations from the remote")
+  .action(wrapAction(async () => {
+    const { syncPullCommand } = await import("./cli/sync.js");
+    await syncPullCommand();
+  }));
+
+program
+  .command("refresh")
+  .description("Reconcile DB from git checkout without fetching")
+  .action(wrapAction(async () => {
+    const { refreshCommand } = await import("./cli/refresh.js");
+    await refreshCommand();
+  }));
+
+program
+  .command("rename-author <old> <new>")
+  .description("Rename an author across all local conversations")
+  .action(wrapAction(async (oldName: string, newName: string) => {
+    const { renameAuthorCommand } = await import("./cli/rename-author.js");
+    await renameAuthorCommand(oldName, newName);
+  }));
+
+// --- Config / Search commands ---
 
 program
   .command("config [action] [key] [value]")

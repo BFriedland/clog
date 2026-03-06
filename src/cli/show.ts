@@ -3,7 +3,8 @@ import { withDb } from "../db/index.js";
 import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
 import { stateColors } from "./colors.js";
 import { resolveLimit, applyLimit } from "./diff.js";
-import type { ConversationMeta, Message } from "../models/conversation.js";
+import { resolveContentPath } from "../sync/resolve-content-path.js";
+import type { Message } from "../models/conversation.js";
 
 export interface ShowOpts {
   path?: boolean;
@@ -26,7 +27,7 @@ export async function showCommand(
     return conversation;
   });
 
-  const resolvedPath = getFilePath(conv);
+  const resolvedPath = resolveContentPath(conv);
 
   // --path flag: just print the file path and return
   if (opts.path) {
@@ -96,13 +97,6 @@ export function printMessages(messages: Message[]): void {
     }
     console.log("");
   }
-}
-
-export function getFilePath(conv: ConversationMeta): string {
-  if (conv.state === "discovered") {
-    return conv.sourcePath;
-  }
-  return conv.filePath || conv.sourcePath;
 }
 
 function formatState(state: string): string {

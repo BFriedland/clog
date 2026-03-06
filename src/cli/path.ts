@@ -1,4 +1,5 @@
 import { withDb } from "../db/index.js";
+import { resolveContentPath } from "../sync/resolve-content-path.js";
 
 export async function pathCommand(id: string): Promise<void> {
   await withDb((ctx) => {
@@ -8,12 +9,6 @@ export async function pathCommand(id: string): Promise<void> {
       throw new Error(`Conversation not found: ${fullId}`);
     }
 
-    // filePath if staged/published, sourcePath if discovered
-    const filePath =
-      conv.state === "discovered"
-        ? conv.sourcePath
-        : conv.filePath || conv.sourcePath;
-
-    console.log(filePath);
+    console.log(resolveContentPath(conv));
   });
 }

@@ -5,8 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { withDb } from "../db/index.js";
 import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
-import { getDefaultSourcePaths } from "../config/index.js";
-import { loadConfig } from "../config/schema.js";
+import { resolveContentPath } from "../sync/resolve-content-path.js";
 
 const server = new McpServer(
   { name: "clog", version: "0.1.0" },
@@ -24,17 +23,19 @@ const listSchema = {
   project: z.string().optional().describe("Filter by project path"),
   author: z.string().optional().describe("Filter by author name"),
   grep: z.string().optional().describe("Search in title and summary text"),
+  origin: z.enum(["local", "remote"]).optional().describe("Filter by origin: 'local' for own conversations, 'remote' for team conversations"),
   limit: z.number().min(1).max(100).default(20).describe("Max results to return (1-100, default 20)"),
   offset: z.number().min(0).default(0).describe("Number of results to skip for pagination"),
 };
 
 async function listHandler(
   state: "published" | "staged",
-  { tags, project, author, grep, limit, offset }: {
+  { tags, project, author, grep, origin, limit, offset }: {
     tags?: string[];
     project?: string;
     author?: string;
     grep?: string;
+    origin?: "local" | "remote";
     limit: number;
     offset: number;
   },
@@ -46,6 +47,7 @@ async function listHandler(
       author: author ?? undefined,
       tag: tags?.[0] ?? undefined,
       grep: grep ?? undefined,
+      origin: origin ?? undefined,
     }),
   );
 
@@ -132,13 +134,9 @@ server.tool(
     }
 
     // Parse messages from the source file
-    const config = await loadConfig();
-    const sourcePaths = config.sources["claude-code"].paths.length > 0
-      ? config.sources["claude-code"].paths
-      : getDefaultSourcePaths();
-    const adapter = new ClaudeCodeAdapter(sourcePaths);
+    const adapter = new ClaudeCodeAdapter([]);
 
-    const filePath = conv.filePath || conv.sourcePath;
+    const filePath = resolveContentPath(conv);
     let messages = await adapter.parseMessages(filePath);
 
     const totalMessages = messages.length;
@@ -207,6 +205,10 @@ server.tool(
 
         if (conv.state === "discovered") {
           throw new Error(`Conversation "${id}" is in discovered state. Stage or publish it first.`);
+        }
+
+        if (conv.origin) {
+          throw new Error(`Cannot edit a remote conversation (synced from ${conv.origin}).`);
         }
 
         const updates: Parameters<typeof ctx.updateConversation>[1] = {
@@ -291,9 +293,10 @@ server.tool(
     tags: z.array(z.string()).optional().describe("Filter by tags (conversations must have at least one of these tags)"),
     project: z.string().optional().describe("Filter by project path"),
     author: z.string().optional().describe("Filter by author name"),
+    origin: z.enum(["local", "remote"]).optional().describe("Filter by origin: 'local' for own conversations, 'remote' for team conversations"),
     limit: z.number().min(1).max(50).default(10).describe("Max results (1-50, default 10)"),
   },
-  async ({ query, tags, project, author, limit }) => {
+  async ({ query, tags, project, author, origin, limit }) => {
     try {
       const { getSearchProviders } = await import("../search/deps.js");
       const { embedding, vectorStore } = await getSearchProviders();
@@ -301,13 +304,14 @@ server.tool(
 
       // Pre-filter via SQLite if metadata filters provided
       let conversationIdFilter: Set<string> | undefined;
-      if (project || author || (tags && tags.length > 0)) {
+      if (project || author || origin || (tags && tags.length > 0)) {
         const convs = await withDb((ctx) =>
           ctx.listConversations({
             state: "published",
             project: project ?? undefined,
             author: author ?? undefined,
             tag: tags?.[0] ?? undefined,
+            origin: origin ?? undefined,
           }),
         );
         // Multi-tag filter: keep conversations with at least one matching tag
@@ -429,13 +433,9 @@ server.resource(
       };
     }
 
-    const config = await loadConfig();
-    const sourcePaths = config.sources["claude-code"].paths.length > 0
-      ? config.sources["claude-code"].paths
-      : getDefaultSourcePaths();
-    const adapter = new ClaudeCodeAdapter(sourcePaths);
+    const adapter = new ClaudeCodeAdapter([]);
 
-    const filePath = conv.filePath || conv.sourcePath;
+    const filePath = resolveContentPath(conv);
     const messages = await adapter.parseMessages(filePath);
 
     const result = {

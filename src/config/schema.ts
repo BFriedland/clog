@@ -23,7 +23,15 @@ export const ConfigSchema = z.object({
     .default({}),
   defaultTags: z.array(z.string()).default([]),
   autoScan: z.boolean().default(false),
-  remote: z.unknown().nullable().default(null),
+  remote: z.preprocess(
+    (val) => (val === null || val === undefined ? {} : val),
+    z.object({
+      url: z.string().nullable().default(null),
+      allowPublicRemote: z.boolean().default(false),
+      visibilityConfirmed: z.boolean().default(false),
+      lastSyncHead: z.string().nullable().default(null),
+    })
+  ).default({}),
   search: SearchConfigSchema,
 });
 

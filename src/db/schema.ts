@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const CREATE_TABLES = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   file_path       TEXT,
   source_mtime    TEXT,
   indexed_at      TEXT,
+  origin          TEXT DEFAULT NULL,
   UNIQUE(source, source_id)
 );
 
@@ -60,8 +61,16 @@ export function migrate(db: DbLike): void {
   const result = db.exec("SELECT version FROM schema_version LIMIT 1");
   const currentVersion = (result[0]?.values[0]?.[0] as number) ?? 0;
 
+  if (currentVersion < 2) {
+    // Add origin column for Phase 3 team sharing
+    try {
+      db.run("ALTER TABLE conversations ADD COLUMN origin TEXT DEFAULT NULL");
+    } catch {
+      // Column may already exist if table was created fresh with v2 schema
+    }
+  }
+
   if (currentVersion < SCHEMA_VERSION) {
-    // Future migrations go here
     db.run(
       `UPDATE schema_version SET version = ${SCHEMA_VERSION}`
     );

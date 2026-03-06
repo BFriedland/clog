@@ -12,6 +12,13 @@ export async function unpublishCommand(ids: string[]): Promise<void> {
         continue;
       }
 
+      if (conv.origin) {
+        console.log(
+          `Skipping ${resolvedId.slice(0, 12)}... (remote conversation, synced from ${conv.origin})`
+        );
+        continue;
+      }
+
       if (conv.state !== "published") {
         console.log(
           `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, not published)`
