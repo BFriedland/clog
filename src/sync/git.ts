@@ -76,6 +76,23 @@ export async function gitRemoteUrl(cwd: string): Promise<string> {
   return git(["remote", "get-url", "origin"], cwd);
 }
 
+/**
+ * Returns true if the URL is an HTTPS GitHub URL (which won't work with password auth).
+ */
+export function isGitHubHttpsUrl(url: string): boolean {
+  return /^https:\/\/github\.com\//i.test(url);
+}
+
+/**
+ * Returns a suggested SSH URL for a GitHub HTTPS URL.
+ */
+export function suggestSshUrl(url: string): string {
+  let ssh = url.replace(/^https:\/\/github\.com\//i, "git@github.com:");
+  ssh = ssh.replace(/\/+$/, "");
+  if (!ssh.endsWith(".git")) ssh += ".git";
+  return ssh;
+}
+
 export async function isGitRepo(dir: string): Promise<boolean> {
   try {
     await access(path.join(dir, ".git"));

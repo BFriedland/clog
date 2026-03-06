@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { loadConfig, saveConfig } from "../config/schema.js";
 import { getRemoteDir } from "../config/index.js";
 import { withDb } from "../db/index.js";
+import { isGitHubHttpsUrl, suggestSshUrl } from "../sync/git.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -63,6 +64,22 @@ export async function remoteAddCommand(url: string): Promise<void> {
     throw new Error(
       "Remote already configured. Use `clog remote remove` first."
     );
+  }
+
+  // GitHub HTTPS warning — password auth is not supported
+  if (isGitHubHttpsUrl(url)) {
+    console.log(
+      chalk.yellow("Warning:") +
+        " GitHub does not support password authentication over HTTPS.\n" +
+        "Use an SSH URL instead: " +
+        chalk.bold(suggestSshUrl(url)) +
+        "\nOr configure a personal access token / GitHub CLI (`gh auth login`)."
+    );
+    const proceed = await confirm("Continue with this HTTPS URL anyway?");
+    if (!proceed) {
+      console.log("Aborted.");
+      return;
+    }
   }
 
   // GitHub public repo safety check
