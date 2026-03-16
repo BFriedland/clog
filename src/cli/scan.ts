@@ -14,6 +14,7 @@ export interface ScanCounts {
   filtered: number;
   ignored: number;
   updated: number;
+  pruned: number;
 }
 
 export async function scanSources(): Promise<ScanCounts> {
@@ -36,6 +37,7 @@ export async function scanSources(): Promise<ScanCounts> {
     filtered: 0,
     ignored: 0,
     updated: 0,
+    pruned: 0,
   };
 
   const passed: Array<{
@@ -43,7 +45,13 @@ export async function scanSources(): Promise<ScanCounts> {
     mtime: string;
   }> = [];
 
+  // Track all source IDs seen during discovery (before filtering)
+  // so we can prune DB entries whose source files no longer exist.
+  const allDiscoveredSourceIds = new Set<string>();
+
   for await (const conv of adapter.discover()) {
+    allDiscoveredSourceIds.add(conv.sourceId);
+
     // Layer 1: Check excluded list
     if (isExcluded(excludedEntries, "claude-code", conv.sourceId)) {
       counts.excluded++;
@@ -116,7 +124,17 @@ export async function scanSources(): Promise<ScanCounts> {
         });
         counts.discovered++;
       } else if (existing.sourceMtime === mtime) {
-        // Unchanged: skip
+        // Mtime unchanged, but source path may have changed (file moved)
+        if (existing.sourcePath !== conv.sourcePath) {
+          ctx.updateConversation(existing.id, {
+            sourcePath: conv.sourcePath,
+            modifiedAt: now,
+            ...(existing.state === "discovered"
+              ? { project: conv.metadata.project }
+              : {}),
+          });
+          counts.updated++;
+        }
         continue;
       } else {
         // Source file changed
@@ -126,12 +144,15 @@ export async function scanSources(): Promise<ScanCounts> {
             title: conv.metadata.title,
             summary: conv.metadata.summary,
             slug: conv.metadata.slug,
+            project: conv.metadata.project,
+            sourcePath: conv.sourcePath,
             sourceMtime: mtime,
             modifiedAt: now,
           });
         } else {
           // Staged or published: preserve user-edited metadata, update timestamps
           ctx.updateConversation(existing.id, {
+            sourcePath: conv.sourcePath,
             sourceMtime: mtime,
             modifiedAt: now,
           });
@@ -146,6 +167,22 @@ export async function scanSources(): Promise<ScanCounts> {
         }
 
         counts.updated++;
+      }
+    }
+
+    // Prune discovered entries whose source files no longer exist on disk.
+    // Only affects "discovered" state — staged/published have their own copies.
+    // Only prune entries whose sourcePath is under a scanned source directory,
+    // so we don't incorrectly prune entries from paths we didn't scan.
+    const allDiscovered = ctx.listConversations({ state: "discovered" });
+    for (const conv of allDiscovered) {
+      if (
+        conv.source === "claude-code" &&
+        !allDiscoveredSourceIds.has(conv.sourceId) &&
+        sourcePaths.some((sp) => conv.sourcePath.startsWith(sp))
+      ) {
+        ctx.deleteConversation(conv.id);
+        counts.pruned++;
       }
     }
   });

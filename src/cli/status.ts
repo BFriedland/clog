@@ -57,6 +57,7 @@ export async function statusCommand(): Promise<void> {
   if (scanCounts.excluded > 0) parts.push(`${scanCounts.excluded} excluded`);
   if (scanCounts.filtered > 0) parts.push(`${scanCounts.filtered} filtered by config`);
   if (scanCounts.ignored > 0) parts.push(`${scanCounts.ignored} ignored by clogignore`);
+  if (scanCounts.pruned > 0) parts.push(`${scanCounts.pruned} pruned (source deleted)`);
   if (parts.length > 0) {
     console.log(`(${parts.join(", ")})`);
   }

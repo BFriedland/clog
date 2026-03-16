@@ -1,8 +1,9 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, unlink, rename } from "node:fs/promises";
 import { createTestEnv, type TestEnv } from "./helpers/test-env.js";
 import { createFixtureDir } from "./helpers/fixtures.js";
 import { scanSources } from "../src/cli/scan.js";
+import { withDb } from "../src/db/index.js";
 import { saveConfig, defaultConfig } from "../src/config/schema.js";
 import { addExcluded } from "../src/cli/excluded.js";
 
@@ -63,6 +64,88 @@ describe("Excluded conversations are skipped", () => {
     const counts = await scanSources();
     expect(counts.excluded).toBe(1);
     expect(counts.discovered).toBe(3); // 4 - 1 excluded
+  });
+});
+
+describe("Pruning stale entries", () => {
+  it("prunes discovered entries when source file is deleted", async () => {
+    const sourceDir = await setupScanEnv();
+
+    // First scan discovers 4
+    const counts1 = await scanSources();
+    expect(counts1.discovered).toBe(4);
+    expect(counts1.pruned).toBe(0);
+
+    // Delete one source file
+    const deletedId = "aaaaaaaa-1111-2222-3333-444444444444";
+    await unlink(
+      path.join(
+        sourceDir,
+        "-Users-testuser-projects-webapp",
+        `${deletedId}.jsonl`
+      )
+    );
+
+    // Second scan should prune the deleted entry
+    const counts2 = await scanSources();
+    expect(counts2.pruned).toBe(1);
+
+    // Verify it's gone from the DB
+    const conv = await withDb((ctx) => ctx.getConversation(deletedId));
+    expect(conv).toBeNull();
+  });
+
+  it("does not prune staged entries when source file is deleted", async () => {
+    const sourceDir = await setupScanEnv();
+    await scanSources();
+
+    // Stage a conversation
+    const stagedId = "aaaaaaaa-1111-2222-3333-444444444444";
+    await withDb((ctx) =>
+      ctx.updateConversation(stagedId, { state: "staged" })
+    );
+
+    // Delete its source file
+    await unlink(
+      path.join(
+        sourceDir,
+        "-Users-testuser-projects-webapp",
+        `${stagedId}.jsonl`
+      )
+    );
+
+    // Scan should NOT prune staged entries
+    const counts = await scanSources();
+    expect(counts.pruned).toBe(0);
+
+    const conv = await withDb((ctx) => ctx.getConversation(stagedId));
+    expect(conv).not.toBeNull();
+    expect(conv!.state).toBe("staged");
+  });
+
+  it("updates sourcePath and project when a file is moved between project dirs", async () => {
+    const sourceDir = await setupScanEnv();
+    await scanSources();
+
+    const movedId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const oldDir = path.join(sourceDir, "-Users-testuser-projects-webapp");
+    const newDir = path.join(sourceDir, "-Users-testuser-projects-newproject");
+    await mkdir(newDir, { recursive: true });
+
+    // Move the file to a different project dir
+    await rename(
+      path.join(oldDir, `${movedId}.jsonl`),
+      path.join(newDir, `${movedId}.jsonl`)
+    );
+
+    const counts = await scanSources();
+    expect(counts.pruned).toBe(0);
+    expect(counts.updated).toBe(1);
+
+    const conv = await withDb((ctx) => ctx.getConversation(movedId));
+    expect(conv).not.toBeNull();
+    expect(conv!.project).toBe("/Users/testuser/projects/newproject");
+    expect(conv!.sourcePath).toContain("-Users-testuser-projects-newproject");
   });
 });
 

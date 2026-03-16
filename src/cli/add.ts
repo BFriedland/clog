@@ -41,7 +41,18 @@ export async function addCommand(
     const copied: Array<{ id: string; destPath: string }> = [];
     for (const conv of conversations) {
       const destPath = path.join(rawDir, `${conv.id}.jsonl`);
-      await copyFile(conv.sourcePath, destPath);
+      try {
+        await copyFile(conv.sourcePath, destPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          console.error(
+            `warning: source file missing for ${conv.id.slice(0, 7)}, skipping (source may have been deleted)`
+          );
+          ctx.deleteConversation(conv.id);
+          continue;
+        }
+        throw err;
+      }
       copied.push({ id: conv.id, destPath });
     }
 
