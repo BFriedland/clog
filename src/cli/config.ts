@@ -16,13 +16,11 @@ export async function configCommand(
 
   if (action === "get") {
     if (!key) {
-      console.log(chalk.red("Usage: clog config get <key>"));
-      return;
+      throw new Error("Usage: clog config get <key>");
     }
     const val = getNestedValue(config, key);
     if (val === undefined) {
-      console.log(chalk.red(`Key "${key}" not found in config.`));
-      return;
+      throw new Error(`Key "${key}" not found in config. Run \`clog config\` to see all keys.`);
     }
     if (typeof val === "object" && val !== null) {
       console.log(JSON.stringify(val, null, 2));
@@ -34,8 +32,7 @@ export async function configCommand(
 
   if (action === "set") {
     if (!key || value === undefined) {
-      console.log(chalk.red("Usage: clog config set <key> <value>"));
-      return;
+      throw new Error("Usage: clog config set <key> <value>");
     }
     const parsed = parseValue(value);
     setNestedValue(config, key, parsed);
@@ -45,8 +42,7 @@ export async function configCommand(
     return;
   }
 
-  console.log(chalk.red(`Unknown config action: ${action}`));
-  console.log("Usage: clog config [get <key> | set <key> <value>]");
+  throw new Error(`Unknown config action: ${action}. Usage: clog config [get <key> | set <key> <value>]`);
 }
 
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {

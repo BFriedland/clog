@@ -43,9 +43,7 @@ export async function scanCommand(): Promise<void> {
   }
 
   if (all.length === 0) {
-    console.log("No conversations found in source directories.");
-    console.log(chalk.dim(`Searched: ${sourcePaths.join(", ")}`));
-    return;
+    throw new Error(`No conversations found in source directories. Searched: ${sourcePaths.join(", ")}`);
   }
 
   // Sort by date descending

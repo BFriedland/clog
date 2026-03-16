@@ -8,14 +8,12 @@ export async function refreshCommand(): Promise<void> {
   const config = await loadConfig();
 
   if (!config.remote.url) {
-    console.log("No remote configured. Nothing to refresh.");
-    return;
+    throw new Error("No remote configured. Run `clog remote add <url>` to set up a remote.");
   }
 
   const remoteDir = getRemoteDir();
   if (!(await isGitRepo(remoteDir))) {
-    console.log("No checkout found. Run `clog sync pull` first.");
-    return;
+    throw new Error("No checkout found. Run `clog sync pull` first.");
   }
 
   const result = await reconcile(config);

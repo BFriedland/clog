@@ -8,20 +8,20 @@ export async function unpublishCommand(ids: string[]): Promise<void> {
       const resolvedId = ctx.resolveId(id);
       const conv = ctx.getConversation(resolvedId);
       if (!conv) {
-        console.log(`Conversation not found: ${resolvedId}`);
+        console.error(`Conversation not found: ${resolvedId}. Run \`clog list --all\` to see available IDs.`);
         continue;
       }
 
       if (conv.origin) {
-        console.log(
-          `Skipping ${resolvedId.slice(0, 12)}... (remote conversation, synced from ${conv.origin})`
+        console.error(
+          `Skipping ${resolvedId.slice(0, 12)}... (remote conversation, synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`
         );
         continue;
       }
 
       if (conv.state !== "published") {
-        console.log(
-          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, not published)`
+        console.error(
+          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, not published). Run \`clog publish <id>\` first.`
         );
         continue;
       }

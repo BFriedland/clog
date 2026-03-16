@@ -244,7 +244,7 @@ export class DbContext {
   resolveId(prefix: string): string {
     if (prefix.length < 4) {
       throw new Error(
-        `ID prefix too short: "${prefix}" (minimum 4 characters)`
+        `ID prefix too short: "${prefix}" (minimum 4 characters). Run \`clog list --all\` to see available IDs.`
       );
     }
 
@@ -261,7 +261,7 @@ export class DbContext {
     stmt.free();
 
     if (matches.length === 0) {
-      throw new Error(`No conversation found matching "${prefix}"`);
+      throw new Error(`No conversation found matching "${prefix}". Run \`clog list --all\` to see available IDs.`);
     }
     if (matches.length > 1) {
       const display = matches

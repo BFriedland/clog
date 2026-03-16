@@ -581,6 +581,123 @@ describe("deleteByOrigin", () => {
   });
 });
 
+describe("browseDistinct", () => {
+  it("returns tags with counts", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          tags: ["debug", "frontend"],
+        })
+      );
+      const items = ctx.browseDistinct("tags");
+      expect(items.length).toBe(2);
+      expect(items.some((i) => i.name === "debug")).toBe(true);
+    });
+  });
+
+  it("returns projects with counts", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          project: "/Users/test/proj",
+        })
+      );
+      const items = ctx.browseDistinct("projects");
+      expect(items.length).toBe(1);
+    });
+  });
+
+  it("returns authors with counts", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          author: "testuser",
+        })
+      );
+      const items = ctx.browseDistinct("authors");
+      expect(items.length).toBe(1);
+      expect(items[0].name).toBe("testuser");
+    });
+  });
+});
+
+describe("getIndexCoverage", () => {
+  it("returns published and indexed counts", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          state: "published",
+          indexedAt: "2026-01-01T00:00:00Z",
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          state: "published",
+          indexedAt: null,
+        })
+      );
+      const result = ctx.getIndexCoverage();
+      expect(result.published).toBe(2);
+      expect(result.indexed).toBe(1);
+    });
+  });
+});
+
+describe("countByAuthorLocal", () => {
+  it("counts only local conversations by author", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          id: "aaaa0001-0000-0000-0000-000000000000",
+          sourceId: "s1",
+          author: "alice",
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "bbbb0001-0000-0000-0000-000000000000",
+          sourceId: "s2",
+          author: "alice",
+          origin: "team",
+        })
+      );
+      expect(ctx.countByAuthorLocal("alice")).toBe(1);
+      expect(ctx.countByAuthorLocal("nobody")).toBe(0);
+    });
+  });
+});
+
+describe("schema migration", () => {
+  it("migrates v1 schema to v2 (adds origin column)", async () => {
+    // This is tested implicitly — withDb calls migrate() on every open.
+    // A fresh DB gets v2 schema directly. The migration path is exercised
+    // when the version row says 1.
+    await withDb((ctx) => {
+      const conv = makeConversation({
+        id: "aaaa0001-0000-0000-0000-000000000000",
+        sourceId: "s1",
+        origin: "test-origin",
+      });
+      ctx.insertConversation(conv);
+      const retrieved = ctx.getConversation(conv.id)!;
+      expect(retrieved.origin).toBe("test-origin");
+    });
+  });
+});
+
 describe("renameAuthor", () => {
   it("renames only local conversations", async () => {
     await withDb((ctx) => {

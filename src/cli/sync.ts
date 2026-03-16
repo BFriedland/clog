@@ -107,13 +107,13 @@ export async function syncPushCommand(): Promise<void> {
   }
 
   if (!result.pushed) {
-    console.log(
-      chalk.red("Push was rejected") +
-      " — likely a simultaneous push from a teammate. Run `clog sync push` again to retry."
+    console.error(
+      "Push was rejected — likely a simultaneous push from a teammate. Run `clog sync push` again to retry."
     );
     if (result.error) {
-      console.log(chalk.dim(result.error));
+      console.error(result.error);
     }
+    process.exitCode = 1;
     return;
   }
 

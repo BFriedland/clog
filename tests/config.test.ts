@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { createTestEnv, type TestEnv } from "./helpers/test-env.js";
 import { getClogHome, getDbPath, getRawDir, getConfigPath } from "../src/config/index.js";
 import {
@@ -8,6 +8,7 @@ import {
   loadConfig,
   saveConfig,
 } from "../src/config/schema.js";
+import { ensureClogHome, healthCheck } from "../src/config/init.js";
 
 let env: TestEnv;
 
@@ -133,5 +134,69 @@ describe("saveConfig + loadConfig round-trip", () => {
     const raw = await readFile(getConfigPath(), "utf-8");
     const parsed = JSON.parse(raw);
     expect(parsed.author).toBe("bob");
+  });
+});
+
+describe("ensureClogHome", () => {
+  it("creates clog home directory and raw dir", async () => {
+    await ensureClogHome();
+
+    // Should have created the directories
+    await expect(access(getClogHome())).resolves.toBeUndefined();
+    await expect(access(getRawDir())).resolves.toBeUndefined();
+    await expect(
+      access(path.join(getRawDir(), "claude-code"))
+    ).resolves.toBeUndefined();
+  });
+
+  it("creates config.json if missing", async () => {
+    await ensureClogHome();
+    await expect(access(getConfigPath())).resolves.toBeUndefined();
+  });
+
+  it("preserves existing config.json", async () => {
+    await mkdir(env.clogHome, { recursive: true });
+    const cfg = defaultConfig();
+    cfg.author = "preserved";
+    await saveConfig(cfg);
+
+    await ensureClogHome();
+
+    const loaded = await loadConfig();
+    expect(loaded.author).toBe("preserved");
+  });
+});
+
+describe("healthCheck", () => {
+  it("returns ok when everything is set up", async () => {
+    await ensureClogHome();
+    const result = await healthCheck();
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("reports missing CLOG_HOME directory", async () => {
+    // Don't create anything — clogHome dir doesn't exist
+    const result = await healthCheck();
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes("missing"))).toBe(true);
+  });
+
+  it("reports missing config.json", async () => {
+    await mkdir(env.clogHome, { recursive: true });
+    await mkdir(getRawDir(), { recursive: true });
+    // No config.json created
+    const result = await healthCheck();
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes("config.json"))).toBe(true);
+  });
+
+  it("reports invalid JSON in config.json", async () => {
+    await mkdir(env.clogHome, { recursive: true });
+    await mkdir(getRawDir(), { recursive: true });
+    await writeFile(getConfigPath(), "not valid json {{");
+    const result = await healthCheck();
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes("invalid JSON"))).toBe(true);
   });
 });

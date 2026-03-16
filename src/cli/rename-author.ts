@@ -19,8 +19,7 @@ export async function renameAuthorCommand(
   const count = await withDb((ctx) => ctx.countByAuthorLocal(oldName));
 
   if (count === 0) {
-    console.log(`No local conversations found with author "${oldName}".`);
-    return;
+    throw new Error(`No local conversations found with author "${oldName}". Run \`clog list --columns all\` to see authors.`);
   }
 
   console.log(

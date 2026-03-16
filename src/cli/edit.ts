@@ -6,19 +6,17 @@ export async function editCommand(
   opts: { title?: string; summary?: string; author?: string }
 ): Promise<void> {
   if (!opts.title && !opts.summary && !opts.author) {
-    console.log("Usage: clog edit <id> [--title <title>] [--summary <summary>] [--author <author>]");
-    console.log("Provide at least one of --title, --summary, or --author.");
-    return;
+    throw new Error("Provide at least one of --title, --summary, or --author. Usage: clog edit <id> [--title <title>] [--summary <summary>] [--author <author>]");
   }
 
   await withDb((ctx) => {
     const fullId = ctx.resolveId(id);
     const conv = ctx.getConversation(fullId);
     if (!conv) {
-      throw new Error(`Conversation not found: ${fullId}`);
+      throw new Error(`Conversation not found: ${fullId}. Run \`clog list --all\` to see available IDs.`);
     }
     if (conv.origin) {
-      throw new Error(`Cannot edit a remote conversation (synced from ${conv.origin}).`);
+      throw new Error(`Cannot edit a remote conversation (synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`);
     }
 
     const updates: Parameters<typeof ctx.updateConversation>[1] = {

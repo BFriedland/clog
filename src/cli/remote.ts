@@ -103,8 +103,7 @@ export async function remoteShowCommand(): Promise<void> {
   const config = await loadConfig();
 
   if (!config.remote.url) {
-    console.log("No remote configured.");
-    return;
+    throw new Error("No remote configured. Run `clog remote add <url>` to set up a remote.");
   }
 
   console.log(chalk.bold("Remote:") + ` ${config.remote.url}`);
@@ -128,8 +127,7 @@ export async function remoteRemoveCommand(): Promise<void> {
   const config = await loadConfig();
 
   if (!config.remote.url) {
-    console.log("No remote configured.");
-    return;
+    throw new Error("No remote configured. Run `clog remote add <url>` to set up a remote.");
   }
 
   const remoteUrl = config.remote.url;

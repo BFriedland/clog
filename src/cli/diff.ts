@@ -17,13 +17,13 @@ export function resolveLimit(opts: { head?: number; first?: number; tail?: numbe
   const head = opts.head ?? opts.first;
   const tail = opts.tail ?? opts.last;
   if (head != null && tail != null) {
-    throw new Error("Cannot use --head/--first and --tail/--last together.");
+    throw new Error("Cannot use --head/--first and --tail/--last together. Try using only one option.");
   }
   if (head != null && (isNaN(head) || head < 0)) {
-    throw new Error("--head/--first must be a non-negative integer.");
+    throw new Error("--head/--first must be a non-negative integer. Try `clog show <id> --head 10`.");
   }
   if (tail != null && (isNaN(tail) || tail < 0)) {
-    throw new Error("--tail/--last must be a non-negative integer.");
+    throw new Error("--tail/--last must be a non-negative integer. Try `clog show <id> --tail 10`.");
   }
   return { head, tail };
 }
@@ -53,7 +53,7 @@ async function diffModified(ids: string[], limit: { head?: number; tail?: number
       return ids.map((id) => {
         const fullId = ctx.resolveId(id);
         const conv = ctx.getConversation(fullId);
-        if (!conv) throw new Error(`Conversation not found: ${id}`);
+        if (!conv) throw new Error(`Conversation not found: ${id}. Run \`clog list --all\` to see available IDs.`);
         if (conv.state !== "published") {
           throw new Error(
             `Conversation ${id} is ${conv.state}, not published. Use --staged for staged conversations.`
@@ -105,7 +105,7 @@ async function diffStaged(ids: string[], limit: { head?: number; tail?: number }
       return ids.map((id) => {
         const fullId = ctx.resolveId(id);
         const conv = ctx.getConversation(fullId);
-        if (!conv) throw new Error(`Conversation not found: ${id}`);
+        if (!conv) throw new Error(`Conversation not found: ${id}. Run \`clog list --all\` to see available IDs.`);
         if (conv.state !== "staged") {
           throw new Error(
             `Conversation ${id} is ${conv.state}, not staged.`
