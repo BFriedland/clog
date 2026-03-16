@@ -10,7 +10,7 @@ export async function excludeCommand(ids: string[]): Promise<void> {
       const resolvedId = ctx.resolveId(id);
       const conv = ctx.getConversation(resolvedId);
       if (!conv) {
-        console.log(`Conversation not found: ${resolvedId}`);
+        console.error(`Conversation not found: ${resolvedId}. Run \`clog list --all\` to see available IDs.`);
         continue;
       }
 

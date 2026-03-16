@@ -9,13 +9,13 @@ export async function resetCommand(ids: string[]): Promise<void> {
       const resolvedId = ctx.resolveId(id);
       const conv = ctx.getConversation(resolvedId);
       if (!conv) {
-        console.log(`Conversation not found: ${resolvedId}`);
+        console.error(`Conversation not found: ${resolvedId}. Run \`clog list --all\` to see available IDs.`);
         continue;
       }
 
       if (conv.state !== "staged" && conv.state !== "published") {
-        console.log(
-          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state})`
+        console.error(
+          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, try \`clog add\` first)`
         );
         continue;
       }

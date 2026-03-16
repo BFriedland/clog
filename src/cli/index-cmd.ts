@@ -16,8 +16,7 @@ export async function indexCommand(opts: { rebuild?: boolean } = {}): Promise<vo
     ({ embedding, vectorStore } = await getSearchProviders());
   } catch (err) {
     if (err instanceof SearchNotConfiguredError || err instanceof SearchDepsError) {
-      console.error(err.message);
-      return;
+      throw new Error(`${err.message} Run \`clog search --init\` to configure search.`);
     }
     throw err;
   }

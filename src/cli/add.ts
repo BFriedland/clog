@@ -30,7 +30,7 @@ export async function addCommand(
         const resolvedId = ctx.resolveId(id);
         const conv = ctx.getConversation(resolvedId);
         if (!conv) {
-          throw new Error(`Conversation not found: ${resolvedId}`);
+          throw new Error(`Conversation not found: ${resolvedId}. Run \`clog list --all\` to see available IDs.`);
         }
         return conv;
       });

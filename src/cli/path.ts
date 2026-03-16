@@ -6,7 +6,7 @@ export async function pathCommand(id: string): Promise<void> {
     const fullId = ctx.resolveId(id);
     const conv = ctx.getConversation(fullId);
     if (!conv) {
-      throw new Error(`Conversation not found: ${fullId}`);
+      throw new Error(`Conversation not found: ${fullId}. Run \`clog list --all\` to see available IDs.`);
     }
 
     console.log(resolveContentPath(conv));

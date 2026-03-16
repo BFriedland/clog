@@ -22,7 +22,7 @@ export async function showCommand(
     const fullId = ctx.resolveId(id);
     const conversation = ctx.getConversation(fullId);
     if (!conversation) {
-      throw new Error(`Conversation not found: ${fullId}`);
+      throw new Error(`Conversation not found: ${fullId}. Run \`clog list --all\` to see available IDs.`);
     }
     return conversation;
   });

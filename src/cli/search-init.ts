@@ -16,10 +16,9 @@ export async function searchInitCommand(): Promise<void> {
   try {
     ({ select, confirm } = await import("@inquirer/prompts"));
   } catch {
-    console.error(
-      'Missing dependency: @inquirer/prompts\n  npm install @inquirer/prompts',
+    throw new Error(
+      'Missing dependency: @inquirer/prompts. Run `npm install @inquirer/prompts` to install.',
     );
-    return;
   }
 
   const config = await loadConfig();

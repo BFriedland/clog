@@ -6,10 +6,10 @@ export async function untagCommand(id: string, tags: string[]): Promise<void> {
     const fullId = ctx.resolveId(id);
     const conv = ctx.getConversation(fullId);
     if (!conv) {
-      throw new Error(`Conversation not found: ${fullId}`);
+      throw new Error(`Conversation not found: ${fullId}. Run \`clog list --all\` to see available IDs.`);
     }
     if (conv.origin) {
-      throw new Error(`Cannot untag a remote conversation (synced from ${conv.origin}).`);
+      throw new Error(`Cannot untag a remote conversation (synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`);
     }
 
     // Normalize tags to remove
