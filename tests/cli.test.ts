@@ -840,7 +840,7 @@ describe("listCommand", () => {
       );
     });
 
-    await listCommand({ state: "staged", project: "/Users/testuser/projects/webapp" });
+    await listCommand({ state: "staged", project: "webapp" });
     const calls = logSpy.mock.calls.map((c) => String(c[0]));
     expect(calls.some((c) => c.includes("aaaaaaa"))).toBe(true);
   });
@@ -1027,7 +1027,7 @@ describe("addCommand", () => {
       );
     });
 
-    await addCommand([], { project: "/Users/testuser/projects/webapp" });
+    await addCommand([], { project: "webapp" });
     expect(logSpy).toHaveBeenCalledWith("Added 1 conversation(s)");
   });
 

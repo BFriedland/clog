@@ -15,7 +15,7 @@ const server = new McpServer(
 
 const listSchema = {
   tags: z.array(z.string()).optional().describe("Filter by tags (conversations must have at least one of these tags)"),
-  project: z.string().optional().describe("Filter by project path"),
+  project: z.string().optional().describe("Filter by project name"),
   author: z.string().optional().describe("Filter by author name"),
   grep: z.string().optional().describe("Search in title and summary text"),
   origin: z.enum(["local", "remote"]).optional().describe("Filter by origin: 'local' for own conversations, 'remote' for team conversations"),
@@ -66,7 +66,7 @@ server.tool(
   {
     query: z.string().describe("Natural language search query"),
     tags: z.array(z.string()).optional().describe("Filter by tags (conversations must have at least one of these tags)"),
-    project: z.string().optional().describe("Filter by project path"),
+    project: z.string().optional().describe("Filter by project name"),
     author: z.string().optional().describe("Filter by author name"),
     origin: z.enum(["local", "remote"]).optional().describe("Filter by origin: 'local' for own conversations, 'remote' for team conversations"),
     limit: z.number().min(1).max(50).default(10).describe("Max results (1-50, default 10)"),

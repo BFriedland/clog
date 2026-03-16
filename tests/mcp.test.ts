@@ -86,7 +86,7 @@ describe("listHandler", () => {
     });
 
     const result = await listHandler("published", {
-      project: "/Users/testuser/projects/webapp",
+      project: "webapp",
       limit: 20,
       offset: 0,
     });

@@ -310,7 +310,8 @@ async function buildAllRows(opts: ListOpts): Promise<ListRow[]> {
     if (opts.state && state !== opts.state) continue;
     if (opts.project) {
       const project = dbConv?.project ?? conv.metadata.project ?? "";
-      if (!project.toLowerCase().includes(opts.project.toLowerCase())) continue;
+      const basename = project ? path.basename(project) : "";
+      if (basename.toLowerCase() !== opts.project.toLowerCase()) continue;
     }
     if (opts.author && dbConv) {
       if (!dbConv.author.toLowerCase().includes(opts.author.toLowerCase())) continue;
@@ -349,7 +350,8 @@ async function buildAllRows(opts: ListOpts): Promise<ListRow[]> {
     if (opts.state && conv.state !== opts.state) continue;
     if (opts.project) {
       const project = conv.project ?? "";
-      if (!project.toLowerCase().includes(opts.project.toLowerCase())) continue;
+      const basename = project ? path.basename(project) : "";
+      if (basename.toLowerCase() !== opts.project.toLowerCase()) continue;
     }
     if (opts.author) {
       if (!conv.author.toLowerCase().includes(opts.author.toLowerCase())) continue;

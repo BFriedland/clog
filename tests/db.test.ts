@@ -191,12 +191,31 @@ describe("listConversations with filters", () => {
     });
   });
 
-  it("filters by project", async () => {
+  it("filters by project using basename matching", async () => {
     await insertTestSet();
 
+    // Insert a conversation whose full path contains "project-a" as a parent dir
     await withDb((ctx) => {
-      const projectA = ctx.listConversations({ project: "/project-a" });
+      ctx.insertConversation(
+        makeConversation({
+          id: "dddd0000-0000-0000-0000-000000000004",
+          sourceId: "s4",
+          state: "discovered",
+          project: "/project-a/subdir/other-tool",
+          title: "Nested project",
+          summary: "Should not match project-a",
+        })
+      );
+    });
+
+    await withDb((ctx) => {
+      const projectA = ctx.listConversations({ project: "project-a" });
       expect(projectA).toHaveLength(2);
+      expect(projectA.every((c) => c.project === "/project-a")).toBe(true);
+
+      // Case-insensitive
+      const upper = ctx.listConversations({ project: "Project-A" });
+      expect(upper).toHaveLength(2);
     });
   });
 

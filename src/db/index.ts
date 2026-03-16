@@ -291,8 +291,13 @@ export class DbContext {
       values.push(filters.state);
     }
     if (filters?.project) {
-      conditions.push("project = ?");
-      values.push(filters.project);
+      // Case-insensitive match against the last path component (basename).
+      // Escape LIKE wildcards (%, _) in the project name.
+      const escaped = filters.project.replace(/[%_]/g, "\\$&");
+      conditions.push(
+        "(project LIKE ? ESCAPE '\\' COLLATE NOCASE OR project = ? COLLATE NOCASE)"
+      );
+      values.push(`%/${escaped}`, filters.project);
     }
     if (filters?.author) {
       conditions.push("author = ?");
