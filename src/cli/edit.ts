@@ -47,7 +47,7 @@ export async function editCommand(
 
     console.log(
       chalk.green("Updated") +
-        ` ${fields.join(" and ")} for ${chalk.cyan(fullId.slice(0, 12))}`
+        ` ${fields.join(" and ")} for ${chalk.cyan(fullId.slice(0, 7))}`
     );
   });
 }

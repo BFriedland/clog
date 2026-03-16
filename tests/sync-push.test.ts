@@ -13,36 +13,36 @@ describe("generateCommitMessage", () => {
 
   it("generates detailed output for <=10 changes", () => {
     const changes: PushChange[] = [
-      { id: "abc123-full-uuid", title: "Fix auth bug", type: "added" },
-      { id: "def456-full-uuid", title: "Refactor DB", type: "added" },
-      { id: "aaa111-full-uuid", title: "Update metadata", type: "updated" },
+      { id: "abc1234-full-uuid", title: "Fix auth bug", type: "added" },
+      { id: "def4567-full-uuid", title: "Refactor DB", type: "added" },
+      { id: "aaa1112-full-uuid", title: "Update metadata", type: "updated" },
     ];
     const msg = generateCommitMessage("alice", changes);
     expect(msg).toContain("clog: alice — 2 added, 1 updated");
-    expect(msg).toContain("+ abc123 Fix auth bug");
-    expect(msg).toContain("~ aaa111 Update metadata");
+    expect(msg).toContain("+ abc1234 Fix auth bug");
+    expect(msg).toContain("~ aaa1112 Update metadata");
   });
 
   it("includes retracted in summary", () => {
     const changes: PushChange[] = [
-      { id: "abc123-full-uuid", title: "Fix auth", type: "added" },
-      { id: "def456-full-uuid", title: "Removed", type: "retracted" },
+      { id: "abc1234-full-uuid", title: "Fix auth", type: "added" },
+      { id: "def4567-full-uuid", title: "Removed", type: "retracted" },
     ];
     const msg = generateCommitMessage("bob", changes);
     expect(msg).toContain("1 added, 1 removed");
-    expect(msg).toContain("- def456");
+    expect(msg).toContain("- def4567");
   });
 
   it("handles all change types", () => {
     const changes: PushChange[] = [
-      { id: "aaa111-full-uuid", title: "Added", type: "added" },
-      { id: "bbb222-full-uuid", title: "Updated", type: "updated" },
-      { id: "ccc333-full-uuid", title: "Retracted", type: "retracted" },
+      { id: "aaa1112-full-uuid", title: "Added", type: "added" },
+      { id: "bbb2223-full-uuid", title: "Updated", type: "updated" },
+      { id: "ccc3334-full-uuid", title: "Retracted", type: "retracted" },
     ];
     const msg = generateCommitMessage("alice", changes);
     expect(msg).toContain("1 added, 1 updated, 1 removed");
-    expect(msg).toContain("+ aaa111");
-    expect(msg).toContain("~ bbb222");
-    expect(msg).toContain("- ccc333");
+    expect(msg).toContain("+ aaa1112");
+    expect(msg).toContain("~ bbb2223");
+    expect(msg).toContain("- ccc3334");
   });
 });

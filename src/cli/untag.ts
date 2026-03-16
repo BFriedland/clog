@@ -27,12 +27,12 @@ export async function untagCommand(id: string, tags: string[]): Promise<void> {
     if (removed.length > 0) {
       console.log(
         chalk.green("Removed") +
-          ` ${removed.map((t) => chalk.yellow(t)).join(", ")} from ${chalk.cyan(fullId.slice(0, 12))}`
+          ` ${removed.map((t) => chalk.yellow(t)).join(", ")} from ${chalk.cyan(fullId.slice(0, 7))}`
       );
     } else {
       console.log(
         chalk.dim("No matching tags found") +
-          ` on ${chalk.cyan(fullId.slice(0, 12))}`
+          ` on ${chalk.cyan(fullId.slice(0, 7))}`
       );
     }
   });

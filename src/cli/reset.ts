@@ -15,7 +15,7 @@ export async function resetCommand(ids: string[]): Promise<void> {
 
       if (conv.state !== "staged" && conv.state !== "published") {
         console.error(
-          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, try \`clog add\` first)`
+          `Skipping ${resolvedId.slice(0, 7)} (state is ${conv.state}, try \`clog add\` first)`
         );
         continue;
       }

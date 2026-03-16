@@ -33,12 +33,12 @@ export async function tagCommand(id: string, tags: string[]): Promise<void> {
     if (added.length > 0) {
       console.log(
         chalk.green("Tagged") +
-          ` ${chalk.cyan(fullId.slice(0, 12))} with ${added.map((t) => chalk.yellow(t)).join(", ")}`
+          ` ${chalk.cyan(fullId.slice(0, 7))} with ${added.map((t) => chalk.yellow(t)).join(", ")}`
       );
     } else {
       console.log(
         chalk.dim("No new tags added") +
-          ` (already present on ${chalk.cyan(fullId.slice(0, 12))})`
+          ` (already present on ${chalk.cyan(fullId.slice(0, 7))})`
       );
     }
   });

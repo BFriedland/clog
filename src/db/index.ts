@@ -266,7 +266,7 @@ export class DbContext {
     if (matches.length > 1) {
       const display = matches
         .slice(0, 5)
-        .map((m) => `  ${m.slice(0, 12)}...`)
+        .map((m) => `  ${m.slice(0, 7)}`)
         .join("\n");
       throw new Error(
         `Ambiguous prefix "${prefix}" matches ${matches.length} conversations:\n${display}\nProvide more characters to disambiguate.`

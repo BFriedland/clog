@@ -70,13 +70,13 @@ export async function publishCommand(
         message: opts.message || "",
       });
 
-      const prefix = `Published ${conv.id.slice(0, 12)} v${newVersion} `;
+      const prefix = `Published ${conv.id.slice(0, 7)} v${newVersion} `;
       const termWidth = process.stdout.columns || 80;
       const titleWidth = Math.max(1, termWidth - prefix.length);
       const title = conv.title.replace(/[\r\n]+/g, " ").slice(0, titleWidth);
       console.log(
         chalk.green("Published") +
-          ` ${chalk.cyan(conv.id.slice(0, 12))} v${newVersion} ${chalk.dim(title)}`
+          ` ${chalk.cyan(conv.id.slice(0, 7))} v${newVersion} ${chalk.dim(title)}`
       );
 
       publishedIds.push(conv.id);

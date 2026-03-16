@@ -148,7 +148,7 @@ export function generateCommitMessage(
   if (changes.length <= 10) {
     const lines = changes.map((c) => {
       const prefix = c.type === "added" ? "+" : c.type === "updated" ? "~" : "-";
-      return `  ${prefix} ${c.id.slice(0, 6)} ${c.title}`;
+      return `  ${prefix} ${c.id.slice(0, 7)} ${c.title}`;
     });
     return `${firstLine}\n\n${lines.join("\n")}`;
   }

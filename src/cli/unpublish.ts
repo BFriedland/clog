@@ -14,14 +14,14 @@ export async function unpublishCommand(ids: string[]): Promise<void> {
 
       if (conv.origin) {
         console.error(
-          `Skipping ${resolvedId.slice(0, 12)}... (remote conversation, synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`
+          `Skipping ${resolvedId.slice(0, 7)} (remote conversation, synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`
         );
         continue;
       }
 
       if (conv.state !== "published") {
         console.error(
-          `Skipping ${resolvedId.slice(0, 12)}... (state is ${conv.state}, not published). Run \`clog publish <id>\` first.`
+          `Skipping ${resolvedId.slice(0, 7)} (state is ${conv.state}, not published). Run \`clog publish <id>\` first.`
         );
         continue;
       }

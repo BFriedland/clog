@@ -134,7 +134,7 @@ export async function syncPushCommand(): Promise<void> {
           : c.type === "updated"
             ? chalk.yellow
             : chalk.red;
-      console.log(color(`  ${prefix} ${c.id.slice(0, 6)} ${c.title}`));
+      console.log(color(`  ${prefix} ${c.id.slice(0, 7)} ${c.title}`));
     }
     console.log("");
   }
