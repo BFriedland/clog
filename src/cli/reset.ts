@@ -1,8 +1,10 @@
 import { rm } from "node:fs/promises";
 import { withDb } from "../db/index.js";
+import { deindexConversations } from "../search/coherence.js";
 
 export async function resetCommand(ids: string[]): Promise<void> {
   let count = 0;
+  const deindexIds: string[] = [];
 
   await withDb(async (ctx) => {
     for (const id of ids) {
@@ -20,10 +22,15 @@ export async function resetCommand(ids: string[]): Promise<void> {
         continue;
       }
 
+      const isPublished = conv.state === "published";
       ctx.updateConversation(resolvedId, {
         state: "discovered",
         filePath: null,
+        ...(isPublished ? { indexedAt: null } : {}),
       });
+      if (isPublished) {
+        deindexIds.push(resolvedId);
+      }
 
       if (conv.filePath) {
         try {
@@ -36,5 +43,6 @@ export async function resetCommand(ids: string[]): Promise<void> {
     }
   });
 
+  await deindexConversations(deindexIds);
   console.log(`Reset ${count} conversation(s)`);
 }

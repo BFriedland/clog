@@ -1,6 +1,10 @@
 import { withDb } from "../db/index.js";
 import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
 import { resolveContentPath } from "../sync/resolve-content-path.js";
+import {
+  isConversationSearchable,
+  markConversationIndexStale,
+} from "../search/coherence.js";
 
 export async function listHandler(
   state: "published" | "staged",
@@ -148,14 +152,23 @@ export async function updateHandler({ id, title, summary, addTags, removeTags }:
       }
 
       const updates: Parameters<typeof ctx.updateConversation>[1] = {
-        modifiedAt: new Date().toISOString(),
       };
+      let searchContentChanged = false;
+      let metadataChanged = false;
 
       if (title !== undefined) {
-        updates.title = title;
+        if (title !== conv.title) {
+          updates.title = title;
+          searchContentChanged = true;
+          metadataChanged = true;
+        }
       }
       if (summary !== undefined) {
-        updates.summary = summary;
+        if (summary !== conv.summary) {
+          updates.summary = summary;
+          searchContentChanged = true;
+          metadataChanged = true;
+        }
       }
 
       // Compute new tags: merge existing + addTags, remove removeTags, dedupe, lowercase
@@ -163,27 +176,52 @@ export async function updateHandler({ id, title, summary, addTags, removeTags }:
         const existing = new Set(conv.tags);
         if (addTags) {
           for (const t of addTags) {
-            existing.add(t.trim().toLowerCase());
+            const normalized = t.trim().toLowerCase();
+            if (normalized) {
+              existing.add(normalized);
+            }
           }
         }
         if (removeTags) {
-          const toRemove = new Set(removeTags.map((t) => t.trim().toLowerCase()));
+          const toRemove = new Set(
+            removeTags
+              .map((t) => t.trim().toLowerCase())
+              .filter(Boolean),
+          );
           for (const t of toRemove) {
             existing.delete(t);
           }
         }
-        updates.tags = [...existing];
+        const nextTags = [...existing];
+        if (
+          nextTags.length !== conv.tags.length ||
+          nextTags.some((tag, index) => tag !== conv.tags[index])
+        ) {
+          updates.tags = nextTags;
+          searchContentChanged = true;
+          metadataChanged = true;
+        }
       }
 
+      if (!metadataChanged) {
+        return {
+          id: conv.id,
+          title: conv.title,
+          summary: conv.summary,
+          tags: conv.tags,
+          author: conv.author,
+          project: conv.project,
+          state: conv.state,
+          createdAt: conv.createdAt,
+          modifiedAt: conv.modifiedAt,
+        };
+      }
+
+      updates.modifiedAt = new Date().toISOString();
       ctx.updateConversation(fullId, updates);
 
-      // Mark for re-indexing if title/summary changed on a published conversation
-      if (
-        (title !== undefined || summary !== undefined) &&
-        conv.state === "published" &&
-        conv.indexedAt
-      ) {
-        ctx.setIndexedAt(fullId, null);
+      if (searchContentChanged) {
+        markConversationIndexStale(ctx, conv);
       }
 
       // Return updated conversation
@@ -263,21 +301,37 @@ export async function searchHandler({ query, tags, project, author, origin, limi
       }
       conversationIdFilter = new Set(filtered.map((c) => c.id));
       if (conversationIdFilter.size === 0) {
+        const indexCoverage = await withDb((ctx) => ctx.getIndexCoverage());
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify({ results: [], totalCount: 0 }, null, 2),
+            text: JSON.stringify({ results: [], totalCount: 0, indexCoverage }, null, 2),
           }],
         };
       }
     }
 
+    const searchableIds = await withDb((ctx) => {
+      const convs = ctx.listConversations({ state: "published" });
+      return new Set(
+        convs
+          .filter((conv) => isConversationSearchable(conv))
+          .map((conv) => conv.id),
+      );
+    });
+
+    let scanCapReached = false;
     const searchResults = await searchConversations(
       query,
       limit,
       embedding,
       vectorStore,
       conversationIdFilter,
+      undefined,
+      (conversationId) => searchableIds.has(conversationId),
+      () => {
+        scanCapReached = true;
+      },
     );
 
     // Enrich with full metadata from DB and get index coverage
@@ -285,30 +339,41 @@ export async function searchHandler({ query, tags, project, author, origin, limi
       const map = new Map<string, ReturnType<typeof ctx.getConversation>>();
       for (const r of searchResults) {
         const conv = ctx.getConversation(r.conversationId);
-        if (conv) map.set(r.conversationId, conv);
+        if (isConversationSearchable(conv)) {
+          map.set(r.conversationId, conv);
+        }
       }
       return { convMap: map, indexCoverage: ctx.getIndexCoverage() };
     });
 
-    const results = searchResults.map((r) => {
-      const conv = convMap.get(r.conversationId);
-      return {
-        id: r.conversationId,
-        title: conv?.title ?? "",
-        summary: conv?.summary ?? "",
-        tags: conv?.tags ?? [],
-        author: conv?.author ?? "",
-        project: conv?.project ?? null,
-        createdAt: conv?.createdAt ?? "",
-        relevanceScore: r.score,
-        snippet: r.text.slice(0, 300),
-      };
-    });
+    const results = searchResults
+      .filter((r) => convMap.has(r.conversationId))
+      .map((r) => {
+        const conv = convMap.get(r.conversationId);
+        return {
+          id: r.conversationId,
+          title: conv?.title ?? "",
+          summary: conv?.summary ?? "",
+          tags: conv?.tags ?? [],
+          author: conv?.author ?? "",
+          project: conv?.project ?? null,
+          createdAt: conv?.createdAt ?? "",
+          relevanceScore: r.score,
+          snippet: r.text.slice(0, 300),
+        };
+      });
 
     return {
       content: [{
         type: "text" as const,
-        text: JSON.stringify({ results, totalCount: results.length, indexCoverage }, null, 2),
+        text: JSON.stringify({
+          results,
+          totalCount: results.length,
+          indexCoverage,
+          ...(scanCapReached
+            ? { warning: "Search hit the maximum scan window; completeness is not guaranteed." }
+            : {}),
+        }, null, 2),
       }],
     };
   } catch (err) {

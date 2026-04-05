@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { withDb } from "../db/index.js";
+import { markConversationIndexStale } from "../search/coherence.js";
 
 export async function tagCommand(id: string, tags: string[]): Promise<void> {
   await withDb((ctx) => {
@@ -25,12 +26,12 @@ export async function tagCommand(id: string, tags: string[]): Promise<void> {
       }
     }
 
-    ctx.updateConversation(fullId, {
-      tags: [...existing],
-      modifiedAt: new Date().toISOString(),
-    });
-
     if (added.length > 0) {
+      ctx.updateConversation(fullId, {
+        tags: [...existing],
+        modifiedAt: new Date().toISOString(),
+      });
+      markConversationIndexStale(ctx, conv);
       console.log(
         chalk.green("Tagged") +
           ` ${chalk.cyan(fullId.slice(0, 7))} with ${added.map((t) => chalk.yellow(t)).join(", ")}`

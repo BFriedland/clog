@@ -1,12 +1,22 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTestEnv, type TestEnv } from "./helpers/test-env.js";
 import { createMinimalJsonl } from "./helpers/fixtures.js";
 import { withDb } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 
-import { listHandler, getHandler, updateHandler, browseHandler, resourceHandler } from "../src/mcp/handlers.js";
+import { listHandler, getHandler, updateHandler, browseHandler, resourceHandler, searchHandler } from "../src/mcp/handlers.js";
+import { getSearchProviders } from "../src/search/deps.js";
+import { searchConversations } from "../src/search/indexer.js";
+
+vi.mock("../src/search/deps.js", () => ({
+  getSearchProviders: vi.fn(),
+}));
+
+vi.mock("../src/search/indexer.js", () => ({
+  searchConversations: vi.fn(),
+}));
 
 let env: TestEnv;
 
@@ -42,9 +52,16 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
 
 beforeEach(async () => {
   env = await createTestEnv();
+  vi.mocked(getSearchProviders).mockResolvedValue({
+    embedding: {} as never,
+    vectorStore: {} as never,
+  });
+  vi.mocked(searchConversations).mockResolvedValue([]);
 });
 
 afterEach(async () => {
+  vi.mocked(getSearchProviders).mockReset();
+  vi.mocked(searchConversations).mockReset();
   await env.cleanup();
 });
 
@@ -351,6 +368,54 @@ describe("updateHandler", () => {
       expect(conv.indexedAt).toBeNull();
     });
   });
+
+  it("clears indexedAt when updating tags on a published indexed conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["existing"],
+          indexedAt: new Date().toISOString(),
+        })
+      );
+    });
+
+    await updateHandler({
+      id: CONV_ID.slice(0, 8),
+      addTags: ["new-tag"],
+    });
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBeNull();
+    });
+  });
+
+  it("does not clear indexedAt when a tag update is a no-op", async () => {
+    const indexedAt = "2026-03-01T00:00:00.000Z";
+    const modifiedAt = "2026-03-01T00:00:00.000Z";
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["existing"],
+          indexedAt,
+          modifiedAt,
+        })
+      );
+    });
+
+    await updateHandler({
+      id: CONV_ID.slice(0, 8),
+      addTags: ["existing"],
+    });
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBe(indexedAt);
+      expect(conv.modifiedAt).toBe(modifiedAt);
+    });
+  });
 });
 
 // ── browseHandler ───────────────────────────────────────────────
@@ -392,6 +457,121 @@ describe("browseHandler", () => {
     const result = await browseHandler({ by: "tags" });
     const data = JSON.parse(result.content[0].text);
     expect(data.items).toHaveLength(0);
+  });
+});
+
+// ── searchHandler ───────────────────────────────────────────────
+
+describe("searchHandler", () => {
+  it("includes indexCoverage when metadata filters eliminate all candidates", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published", indexedAt: new Date().toISOString(), tags: ["keep"] })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: "cccccccc-1111-2222-3333-444444444444",
+          sourceId: "source-3",
+          title: "Unindexed conversation",
+          tags: ["other"],
+          state: "published",
+          indexedAt: null,
+        })
+      );
+    });
+
+    const result = await searchHandler({
+      query: "test",
+      tags: ["missing"],
+      limit: 10,
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.results).toEqual([]);
+    expect(data.totalCount).toBe(0);
+    expect(data.indexCoverage).toEqual({ indexed: 1, published: 2 });
+  });
+
+  it("filters out stale hits for conversations no longer published", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "staged" })
+      );
+    });
+
+    vi.mocked(searchConversations).mockResolvedValue([
+      {
+        conversationId: CONV_ID,
+        chunkIndex: 0,
+        score: 0.9,
+        text: "matched text",
+      },
+    ]);
+
+    const result = await searchHandler({
+      query: "test",
+      limit: 10,
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.results).toEqual([]);
+    expect(data.totalCount).toBe(0);
+  });
+
+  it("filters out published hits whose index state is stale", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published", indexedAt: null })
+      );
+    });
+
+    vi.mocked(searchConversations).mockResolvedValue([
+      {
+        conversationId: CONV_ID,
+        chunkIndex: 0,
+        score: 0.9,
+        text: "matched text",
+      },
+    ]);
+
+    const result = await searchHandler({
+      query: "test",
+      limit: 10,
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.results).toEqual([]);
+    expect(data.totalCount).toBe(0);
+  });
+
+  it("returns a warning that completeness is not guaranteed when search hits the maximum scan window", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published", indexedAt: new Date().toISOString() })
+      );
+    });
+
+    vi.mocked(searchConversations).mockImplementation(async (
+      _query,
+      _limit,
+      _embedding,
+      _vectorStore,
+      _conversationIdFilter,
+      _minScore,
+      _isSearchableConversation,
+      onIncompleteResults,
+    ) => {
+      onIncompleteResults?.();
+      return [];
+    });
+
+    const result = await searchHandler({
+      query: "test",
+      limit: 10,
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.warning).toContain("completeness is not guaranteed");
   });
 });
 

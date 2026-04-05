@@ -27,7 +27,34 @@ import { scanCommand } from "../src/cli/scan-command.js";
 import { remoteShowCommand } from "../src/cli/remote.js";
 import { refreshCommand } from "../src/cli/refresh.js";
 import { syncPullCommand, syncPushCommand } from "../src/cli/sync.js";
-import { remoteAddCommand } from "../src/cli/remote.js";
+import { remoteAddCommand, remoteRemoveCommand } from "../src/cli/remote.js";
+import { getSearchProviders } from "../src/search/deps.js";
+import { searchConversations } from "../src/search/indexer.js";
+import { searchCommand } from "../src/cli/search.js";
+
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn((
+    _file: string,
+    _args: string[],
+    callback: (err: Error | null, stdout: string, stderr: string) => void,
+  ) => callback(null, "private", "")),
+}));
+
+vi.mock("node:readline", async () => {
+  const actual = await vi.importActual<typeof import("node:readline")>("node:readline");
+  return {
+    ...actual,
+    createInterface: vi.fn((opts: Parameters<typeof actual.createInterface>[0]) => {
+      if ("crlfDelay" in opts) {
+        return actual.createInterface(opts);
+      }
+      return {
+        question: (_message: string, cb: (answer: string) => void) => cb("y"),
+        close: vi.fn(),
+      };
+    }),
+  };
+});
 
 vi.mock("../src/sync/pull.js", () => ({
   syncPull: vi.fn().mockResolvedValue({
@@ -58,6 +85,10 @@ vi.mock("../src/search/deps.js", () => ({
   getSearchProviders: vi.fn(),
 }));
 
+vi.mock("../src/search/indexer.js", () => ({
+  searchConversations: vi.fn(),
+}));
+
 vi.mock("../src/cli/scan.js", () => ({
   scanSources: vi.fn().mockResolvedValue({
     discovered: 0, excluded: 0, filtered: 0, ignored: 0, updated: 0,
@@ -71,6 +102,7 @@ vi.mock("../src/sync/staleness.js", () => ({
 let env: TestEnv;
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let deleteSpy: ReturnType<typeof vi.fn>;
 
 const CONV_ID = "aaaaaaaa-1111-2222-3333-444444444444";
 const CONV_ID2 = "bbbbbbbb-1111-2222-3333-444444444444";
@@ -106,11 +138,21 @@ beforeEach(async () => {
   env = await createTestEnv();
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  deleteSpy = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(getSearchProviders).mockResolvedValue({
+    embedding: {} as never,
+    vectorStore: {
+      delete: deleteSpy,
+    } as never,
+  });
+  vi.mocked(searchConversations).mockResolvedValue([]);
 });
 
 afterEach(async () => {
   logSpy.mockRestore();
   errorSpy.mockRestore();
+  vi.mocked(getSearchProviders).mockReset();
+  vi.mocked(searchConversations).mockReset();
   await env.cleanup();
 });
 
@@ -190,6 +232,29 @@ describe("editCommand", () => {
       expect(conv.indexedAt).toBeNull();
     });
   });
+
+  it("does not clear indexedAt for a no-op edit", async () => {
+    const indexedAt = "2026-03-01T00:00:00.000Z";
+    const modifiedAt = "2026-03-01T00:00:00.000Z";
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          title: "Same title",
+          indexedAt,
+          modifiedAt,
+        })
+      );
+    });
+
+    await editCommand(CONV_ID.slice(0, 8), { title: "Same title" });
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBe(indexedAt);
+      expect(conv.modifiedAt).toBe(modifiedAt);
+    });
+  });
 });
 
 // ── tagCommand ──────────────────────────────────────────────────
@@ -238,6 +303,48 @@ describe("tagCommand", () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No new tags"));
   });
 
+  it("does not clear indexedAt when tagging adds no new tags", async () => {
+    const indexedAt = "2026-03-01T00:00:00.000Z";
+    const modifiedAt = "2026-03-01T00:00:00.000Z";
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["existing"],
+          indexedAt,
+          modifiedAt,
+        })
+      );
+    });
+
+    await tagCommand(CONV_ID.slice(0, 8), ["existing"]);
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBe(indexedAt);
+      expect(conv.modifiedAt).toBe(modifiedAt);
+    });
+  });
+
+  it("clears indexedAt when tagging a published indexed conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["existing"],
+          indexedAt: new Date().toISOString(),
+        })
+      );
+    });
+
+    await tagCommand(CONV_ID.slice(0, 8), ["new"]);
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBeNull();
+    });
+  });
+
   it("rejects tagging a remote conversation", async () => {
     await withDb((ctx) => {
       ctx.insertConversation(
@@ -278,6 +385,48 @@ describe("untagCommand", () => {
 
     await untagCommand(CONV_ID.slice(0, 8), ["nonexistent"]);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No matching"));
+  });
+
+  it("does not clear indexedAt when untagging removes nothing", async () => {
+    const indexedAt = "2026-03-01T00:00:00.000Z";
+    const modifiedAt = "2026-03-01T00:00:00.000Z";
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["keep"],
+          indexedAt,
+          modifiedAt,
+        })
+      );
+    });
+
+    await untagCommand(CONV_ID.slice(0, 8), ["missing"]);
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBe(indexedAt);
+      expect(conv.modifiedAt).toBe(modifiedAt);
+    });
+  });
+
+  it("clears indexedAt when untagging a published indexed conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          state: "published",
+          tags: ["keep", "remove"],
+          indexedAt: new Date().toISOString(),
+        })
+      );
+    });
+
+    await untagCommand(CONV_ID.slice(0, 8), ["remove"]);
+
+    await withDb((ctx) => {
+      const conv = ctx.getConversation(CONV_ID)!;
+      expect(conv.indexedAt).toBeNull();
+    });
   });
 
   it("rejects untagging a remote conversation", async () => {
@@ -421,6 +570,18 @@ describe("resetCommand", () => {
     await resetCommand([CONV_ID.slice(0, 8)]);
     expect(logSpy).toHaveBeenCalledWith("Reset 1 conversation(s)");
   });
+
+  it("deindexes when resetting a published conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published", filePath: "/tmp/nonexistent.jsonl" })
+      );
+    });
+
+    await resetCommand([CONV_ID.slice(0, 8)]);
+
+    expect(deleteSpy).toHaveBeenCalledWith(CONV_ID);
+  });
 });
 
 // ── excludeCommand ──────────────────────────────────────────────
@@ -453,6 +614,18 @@ describe("excludeCommand", () => {
 
     await excludeCommand([CONV_ID.slice(0, 8)]);
     expect(logSpy).toHaveBeenCalledWith("Excluded 1 conversation(s)");
+  });
+
+  it("deindexes when excluding a published conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published" })
+      );
+    });
+
+    await excludeCommand([CONV_ID.slice(0, 8)]);
+
+    expect(deleteSpy).toHaveBeenCalledWith(CONV_ID);
   });
 });
 
@@ -1200,6 +1373,18 @@ describe("unpublishCommand", () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("remote"));
     expect(logSpy).toHaveBeenCalledWith("Unpublished 0 conversation(s)");
   });
+
+  it("deindexes when unpublishing a published conversation", async () => {
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({ state: "published", publishVersion: 1 })
+      );
+    });
+
+    await unpublishCommand([CONV_ID.slice(0, 8)]);
+
+    expect(deleteSpy).toHaveBeenCalledWith(CONV_ID);
+  });
 });
 
 // ── scanCommand ─────────────────────────────────────────────────
@@ -1444,9 +1629,71 @@ describe("remoteAddCommand", () => {
   });
 
   it("configures a new SSH remote", async () => {
+    const cfg = defaultConfig();
+    cfg.author = "testuser";
+    cfg.remote.allowPublicRemote = true;
+    await saveConfig(cfg);
+
     await remoteAddCommand("git@github.com:user/repo.git");
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining("Remote configured")
     );
+  });
+});
+
+describe("remoteRemoveCommand", () => {
+  it("deindexes only conversations from the removed remote", async () => {
+    await mkdir(env.clogHome, { recursive: true });
+    const cfg = defaultConfig();
+    cfg.author = "testuser";
+    cfg.remote.url = "git@github.com:user/repo.git";
+    await saveConfig(cfg);
+
+    await withDb((ctx) => {
+      ctx.insertConversation(
+        makeConversation({
+          origin: "git@github.com:user/repo.git",
+          state: "published",
+        })
+      );
+      ctx.insertConversation(
+        makeConversation({
+          id: CONV_ID2,
+          sourceId: "source-2",
+          title: "Other remote conversation",
+          origin: "git@github.com:other/repo.git",
+          state: "published",
+        })
+      );
+    });
+
+    await remoteRemoveCommand();
+
+    expect(deleteSpy).toHaveBeenCalledWith(CONV_ID);
+    expect(deleteSpy).not.toHaveBeenCalledWith(CONV_ID2);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Remote removed."));
+  });
+});
+
+describe("searchCommand", () => {
+  it("warns that completeness is not guaranteed when search hits the maximum scan window", async () => {
+    vi.mocked(searchConversations).mockImplementation(async (
+      _query,
+      _limit,
+      _embedding,
+      _vectorStore,
+      _conversationIdFilter,
+      _minScore,
+      _isSearchableConversation,
+      onIncompleteResults,
+    ) => {
+      onIncompleteResults?.();
+      return [];
+    });
+
+    await searchCommand("test", {});
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("completeness is not guaranteed"));
+    expect(logSpy).toHaveBeenCalledWith("No results found.");
   });
 });

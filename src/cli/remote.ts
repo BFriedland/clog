@@ -7,6 +7,7 @@ import { loadConfig, saveConfig } from "../config/schema.js";
 import { getRemoteDir } from "../config/index.js";
 import { withDb } from "../db/index.js";
 import { isGitHubHttpsUrl, suggestSshUrl } from "../sync/git.js";
+import { deindexConversations } from "../search/coherence.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -146,7 +147,9 @@ export async function remoteRemoveCommand(): Promise<void> {
 
   // Get IDs for deindexing before deletion
   const remoteIds = await withDb((ctx) =>
-    ctx.listConversations({ origin: "remote" }).map((c) => c.id)
+    ctx.listConversations({ origin: "remote" })
+      .filter((c) => c.origin === remoteUrl)
+      .map((c) => c.id)
   );
 
   // Delete remote conversations from DB
@@ -154,18 +157,7 @@ export async function remoteRemoveCommand(): Promise<void> {
     ctx.deleteByOrigin(remoteUrl);
   });
 
-  // Deindex from vector store (best-effort)
-  if (remoteIds.length > 0) {
-    try {
-      const { getSearchProviders } = await import("../search/deps.js");
-      const { vectorStore } = await getSearchProviders();
-      for (const id of remoteIds) {
-        await vectorStore.delete(id);
-      }
-    } catch {
-      // Search not configured or deps unavailable — skip
-    }
-  }
+  await deindexConversations(remoteIds);
 
   // Remove checkout directory
   const remoteDir = getRemoteDir();

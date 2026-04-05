@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { withDb } from "../db/index.js";
+import { markConversationIndexStale } from "../search/coherence.js";
 
 export async function untagCommand(id: string, tags: string[]): Promise<void> {
   await withDb((ctx) => {
@@ -18,13 +19,13 @@ export async function untagCommand(id: string, tags: string[]): Promise<void> {
     // Filter out the specified tags (silent if not present)
     const remaining = conv.tags.filter((t) => !toRemove.has(t));
 
-    ctx.updateConversation(fullId, {
-      tags: remaining,
-      modifiedAt: new Date().toISOString(),
-    });
-
     const removed = conv.tags.filter((t) => toRemove.has(t));
     if (removed.length > 0) {
+      ctx.updateConversation(fullId, {
+        tags: remaining,
+        modifiedAt: new Date().toISOString(),
+      });
+      markConversationIndexStale(ctx, conv);
       console.log(
         chalk.green("Removed") +
           ` ${removed.map((t) => chalk.yellow(t)).join(", ")} from ${chalk.cyan(fullId.slice(0, 7))}`
