@@ -134,6 +134,53 @@ export class DbContext {
       >
     >
   ): void {
+    let shouldInvalidateIndex = false;
+    const touchesIndexedContent =
+      updates.title !== undefined ||
+      updates.summary !== undefined ||
+      updates.tags !== undefined ||
+      updates.sourcePath !== undefined ||
+      updates.sourceMtime !== undefined ||
+      updates.filePath !== undefined;
+    const touchesIndexEligibility = updates.state !== undefined;
+
+    if (updates.indexedAt === undefined && (touchesIndexedContent || touchesIndexEligibility)) {
+      const stmt = this.db.prepare(
+        `SELECT state, indexed_at, title, summary, tags_json, source_path, source_mtime, file_path
+         FROM conversations
+         WHERE id = ?`,
+        [id],
+      );
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as {
+          state?: ConversationState;
+          indexed_at?: string | null;
+          title?: string;
+          summary?: string;
+          tags_json?: string;
+          source_path?: string;
+          source_mtime?: string | null;
+          file_path?: string | null;
+        };
+        const existingTags = JSON.parse((row.tags_json as string) || "[]") as string[];
+        shouldInvalidateIndex =
+          row.state === "published" &&
+          Boolean(row.indexed_at) &&
+          (
+            (updates.title !== undefined && updates.title !== row.title) ||
+            (updates.summary !== undefined && updates.summary !== row.summary) ||
+            (updates.tags !== undefined &&
+              JSON.stringify(updates.tags) !== JSON.stringify(existingTags)) ||
+            (updates.sourcePath !== undefined && updates.sourcePath !== row.source_path) ||
+            (updates.sourceMtime !== undefined &&
+              updates.sourceMtime !== row.source_mtime) ||
+            (updates.filePath !== undefined && updates.filePath !== row.file_path) ||
+            (updates.state !== undefined && updates.state !== row.state)
+          );
+      }
+      stmt.free();
+    }
+
     const sets: string[] = [];
     const values: unknown[] = [];
 
@@ -184,6 +231,9 @@ export class DbContext {
     if (updates.indexedAt !== undefined) {
       sets.push("indexed_at = ?");
       values.push(updates.indexedAt);
+    } else if (shouldInvalidateIndex) {
+      sets.push("indexed_at = ?");
+      values.push(null);
     }
     if (updates.origin !== undefined) {
       sets.push("origin = ?");
@@ -453,7 +503,7 @@ export class DbContext {
     const sql = `
       SELECT * FROM conversations
       WHERE state = 'published'
-        AND (indexed_at IS NULL OR modified_at > indexed_at)
+        AND indexed_at IS NULL
       ORDER BY created_at DESC
     `;
     const results: ConversationMeta[] = [];

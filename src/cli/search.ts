@@ -8,6 +8,7 @@ import {
 } from "../search/deps.js";
 import { searchConversations } from "../search/indexer.js";
 import type { ConversationMeta } from "../models/conversation.js";
+import { isConversationSearchable } from "../search/coherence.js";
 
 export async function searchCommand(
   query: string,
@@ -48,15 +49,33 @@ export async function searchCommand(
     }
   }
 
+  const searchableIds = await withDb((ctx) => {
+    const convs = ctx.listConversations({ state: "published" });
+    return new Set(
+      convs
+        .filter((conv) => isConversationSearchable(conv))
+        .map((conv) => conv.id),
+    );
+  });
+
+  let scanCapReached = false;
   const results = await searchConversations(
     query,
     limit,
     embedding,
     vectorStore,
     conversationIdFilter,
+    undefined,
+    (conversationId) => searchableIds.has(conversationId),
+    () => {
+      scanCapReached = true;
+    },
   );
 
   if (results.length === 0) {
+    if (scanCapReached) {
+      console.log(chalk.yellow("warning:") + " search hit the maximum scan window; completeness is not guaranteed.");
+    }
     console.log("No results found.");
     return;
   }
@@ -66,14 +85,31 @@ export async function searchCommand(
     const map = new Map<string, ConversationMeta>();
     for (const r of results) {
       const conv = ctx.getConversation(r.conversationId);
-      if (conv) map.set(r.conversationId, conv);
+      if (isConversationSearchable(conv)) {
+        map.set(r.conversationId, conv);
+      }
     }
     return map;
   });
 
+  const visibleResults = results.filter((r) => convMap.has(r.conversationId));
+
   // Display results
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
+  if (visibleResults.length === 0) {
+    if (scanCapReached) {
+      console.log(chalk.yellow("warning:") + " search hit the maximum scan window; completeness is not guaranteed.");
+    }
+    console.log("No results found.");
+    return;
+  }
+
+  if (scanCapReached) {
+    console.log(chalk.yellow("warning:") + " search hit the maximum scan window; completeness is not guaranteed.");
+    console.log("");
+  }
+
+  for (let i = 0; i < visibleResults.length; i++) {
+    const r = visibleResults[i];
     const conv = convMap.get(r.conversationId);
     if (!conv) continue;
 
@@ -92,6 +128,6 @@ export async function searchCommand(
     // Show snippet (first 200 chars of matched chunk)
     const snippet = r.text.replace(/\n/g, " ").slice(0, 200);
     console.log(`   ${chalk.dim(snippet)}`);
-    if (i < results.length - 1) console.log("");
+    if (i < visibleResults.length - 1) console.log("");
   }
 }

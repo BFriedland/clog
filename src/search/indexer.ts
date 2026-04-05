@@ -50,6 +50,7 @@ export async function indexConversation(
 
 /** Default minimum cosine similarity score for search results. */
 export const DEFAULT_MIN_SCORE = 0.15;
+export const MAX_SEARCH_SCAN_WINDOW = 5000;
 
 /**
  * Search the vector store for conversations matching a query.
@@ -65,26 +66,59 @@ export async function searchConversations(
   vectorStore: VectorStore,
   conversationIdFilter?: Set<string>,
   minScore: number = DEFAULT_MIN_SCORE,
+  isSearchableConversation?: (conversationId: string) => boolean | Promise<boolean>,
+  onIncompleteResults?: () => void,
 ): Promise<VectorResult[]> {
   const [queryVector] = await embedding.embed([query]);
-
-  // Over-fetch to account for dedup and filtering
-  const fetchCount = conversationIdFilter
+  const deduped: VectorResult[] = [];
+  const searchableCache = new Map<string, boolean>();
+  let fetchCount = conversationIdFilter
     ? Math.min(limit * 10, 200)
     : limit * 3;
-  const raw = await vectorStore.query(queryVector, fetchCount);
 
-  // Deduplicate: keep best-scoring chunk per conversation
-  const seen = new Set<string>();
-  const deduped: VectorResult[] = [];
+  while (deduped.length < limit) {
+    const requestCount = Math.min(fetchCount, MAX_SEARCH_SCAN_WINDOW);
+    const raw = await vectorStore.query(queryVector, requestCount);
+    const seen = new Set<string>();
+    deduped.length = 0;
 
-  for (const r of raw) {
-    if (r.score < minScore) continue;
-    if (conversationIdFilter && !conversationIdFilter.has(r.conversationId)) continue;
-    if (seen.has(r.conversationId)) continue;
-    seen.add(r.conversationId);
-    deduped.push(r);
-    if (deduped.length >= limit) break;
+    for (const r of raw) {
+      if (r.score < minScore) continue;
+      if (conversationIdFilter && !conversationIdFilter.has(r.conversationId)) continue;
+      if (seen.has(r.conversationId)) continue;
+
+      if (isSearchableConversation) {
+        let searchable = searchableCache.get(r.conversationId);
+        if (searchable === undefined) {
+          searchable = await isSearchableConversation(r.conversationId);
+          searchableCache.set(r.conversationId, searchable);
+        }
+        if (!searchable) continue;
+      }
+
+      seen.add(r.conversationId);
+      deduped.push(r);
+      if (deduped.length >= limit) break;
+    }
+
+    if (deduped.length >= limit) {
+      break;
+    }
+
+    const hitScanCapWithoutEnoughResults =
+      requestCount === MAX_SEARCH_SCAN_WINDOW &&
+      raw.length === MAX_SEARCH_SCAN_WINDOW &&
+      deduped.length < limit;
+    if (hitScanCapWithoutEnoughResults) {
+      onIncompleteResults?.();
+      break;
+    }
+
+    if (raw.length < requestCount) {
+      break;
+    }
+
+    fetchCount = Math.min(fetchCount * 2, MAX_SEARCH_SCAN_WINDOW);
   }
 
   return deduped;

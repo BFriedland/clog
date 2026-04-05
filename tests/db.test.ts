@@ -421,7 +421,7 @@ describe("listConversationsNeedingIndex", () => {
     });
   });
 
-  it("returns published conversations with stale indexed_at", async () => {
+  it("does not return published conversations whose indexed_at is set even if modified_at is newer", async () => {
     const conv = makeConversation({
       state: "published",
       modifiedAt: "2026-02-20T14:00:00.000Z",
@@ -432,7 +432,7 @@ describe("listConversationsNeedingIndex", () => {
       ctx.insertConversation(conv);
 
       const needing = ctx.listConversationsNeedingIndex();
-      expect(needing).toHaveLength(1);
+      expect(needing).toHaveLength(0);
     });
   });
 
@@ -484,6 +484,169 @@ describe("updateConversation with indexedAt", () => {
       });
 
       const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+
+  it("clears indexedAt when published search metadata changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        title: "Updated title",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.title).toBe("Updated title");
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+
+  it("keeps indexedAt when only non-search metadata changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        author: "someone-else",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.author).toBe("someone-else");
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+
+  it("clears indexedAt when published sourcePath changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        sourcePath: "/tmp/updated-source.jsonl",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.sourcePath).toBe("/tmp/updated-source.jsonl");
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+
+  it("clears indexedAt when published sourceMtime changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        sourceMtime: "2026-02-20T13:00:00.000Z",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.sourceMtime).toBe("2026-02-20T13:00:00.000Z");
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+
+  it("clears indexedAt when published filePath changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+      filePath: "/tmp/original-raw.jsonl",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        filePath: "/tmp/updated-raw.jsonl",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.filePath).toBe("/tmp/updated-raw.jsonl");
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+
+  it("clears indexedAt when published state changes away from published", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        state: "staged",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.state).toBe("staged");
+      expect(fetched.indexedAt).toBeNull();
+    });
+  });
+
+  it("keeps indexedAt when only modifiedAt changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        modifiedAt: "2026-02-20T13:00:00.000Z",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.modifiedAt).toBe("2026-02-20T13:00:00.000Z");
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+
+  it("keeps indexedAt when project changes", async () => {
+    const conv = makeConversation({
+      state: "published",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        project: "/Users/testuser/projects/updated-webapp",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.project).toBe("/Users/testuser/projects/updated-webapp");
+      expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
+    });
+  });
+
+  it("does not clear indexedAt for unpublished conversations", async () => {
+    const conv = makeConversation({
+      state: "staged",
+      indexedAt: "2026-02-20T12:00:00.000Z",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation(conv);
+      ctx.updateConversation(conv.id, {
+        title: "Updated title",
+      });
+
+      const fetched = ctx.getConversation(conv.id)!;
+      expect(fetched.title).toBe("Updated title");
       expect(fetched.indexedAt).toBe("2026-02-20T12:00:00.000Z");
     });
   });

@@ -8,6 +8,7 @@ import { loadExcluded, isExcluded } from "../cli/excluded.js";
 import { readMetaJson, metaToConversation } from "./meta.js";
 import { gitClone, gitPull, isGitRepo, gitRemoteUrl, gitRevParseHead } from "./git.js";
 import type { ConversationMeta } from "../models/conversation.js";
+import { deindexConversations } from "../search/coherence.js";
 
 export interface PullResult {
   inserted: number;
@@ -135,6 +136,7 @@ export async function reconcile(config: Config): Promise<PullResult> {
   }
 
   // Reconcile against DB in a single transaction
+  const deindexIds: string[] = [];
   const result = await withDb((ctx) => {
     let inserted = 0;
     let updated = 0;
@@ -143,7 +145,8 @@ export async function reconcile(config: Config): Promise<PullResult> {
     let skippedDuplicate = 0;
 
     // Get all remote conversations currently in DB
-    const remoteInDb = ctx.listConversations({ origin: "remote" });
+    const remoteInDb = ctx.listConversations({ origin: "remote" })
+      .filter((c) => c.origin === remoteUrl);
     const remoteDbMap = new Map(remoteInDb.map((c) => [c.id, c]));
 
     // Process what's on disk
@@ -167,7 +170,7 @@ export async function reconcile(config: Config): Promise<PullResult> {
 
       if (existing) {
         // Update if metadata changed
-        if (metadataChanged(existing, meta)) {
+        if (metadataChanged(existing, meta, sourcePath)) {
           ctx.updateConversation(id, {
             title: meta.title,
             summary: meta.summary,
@@ -179,7 +182,10 @@ export async function reconcile(config: Config): Promise<PullResult> {
             publishedAt: meta.publishedAt,
             source: meta.source,
             sourcePath,
-            indexedAt: null, // Mark for re-indexing
+            filePath: sourcePath,
+            ...(searchMetadataChanged(existing, meta)
+              ? { indexedAt: null }
+              : {}),
           });
           updated++;
         }
@@ -199,19 +205,24 @@ export async function reconcile(config: Config): Promise<PullResult> {
     // Delete conversations that are in DB but no longer on disk
     for (const [id] of remoteDbMap) {
       ctx.deleteConversation(id);
+      deindexIds.push(id);
       deleted++;
     }
 
     return { inserted, updated, deleted, skippedExcluded, skippedDuplicate };
   });
 
+  await deindexConversations(deindexIds);
   return { ...result, warnings };
 }
 
 function metadataChanged(
   existing: ConversationMeta,
-  meta: { title: string; summary: string; tags: string[]; author: string; project: string | null; slug: string | null; modifiedAt: string; publishedAt: string; source: string }
+  meta: { title: string; summary: string; tags: string[]; author: string; project: string | null; slug: string | null; modifiedAt: string; publishedAt: string; source: string },
+  sourcePath: string,
 ): boolean {
+  if (existing.sourcePath !== sourcePath) return true;
+  if (existing.filePath !== sourcePath) return true;
   if (existing.title !== meta.title) return true;
   if (existing.summary !== meta.summary) return true;
   if (existing.author !== meta.author) return true;
@@ -220,6 +231,16 @@ function metadataChanged(
   if (existing.modifiedAt !== meta.modifiedAt) return true;
   if (existing.publishedAt !== meta.publishedAt) return true;
   if (existing.source !== meta.source) return true;
+  if (JSON.stringify(existing.tags) !== JSON.stringify(meta.tags)) return true;
+  return false;
+}
+
+function searchMetadataChanged(
+  existing: ConversationMeta,
+  meta: { title: string; summary: string; tags: string[] },
+): boolean {
+  if (existing.title !== meta.title) return true;
+  if (existing.summary !== meta.summary) return true;
   if (JSON.stringify(existing.tags) !== JSON.stringify(meta.tags)) return true;
   return false;
 }

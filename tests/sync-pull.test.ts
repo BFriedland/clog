@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
+import { vi } from "vitest";
 import { createTestEnv, type TestEnv } from "./helpers/test-env.js";
 import { withDb } from "../src/db/index.js";
 import { reconcile } from "../src/sync/pull.js";
@@ -7,14 +8,28 @@ import { writeMetaJson } from "../src/sync/meta.js";
 import { addExcluded } from "../src/cli/excluded.js";
 import type { Config } from "../src/config/schema.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import { getSearchProviders } from "../src/search/deps.js";
+
+vi.mock("../src/search/deps.js", () => ({
+  getSearchProviders: vi.fn(),
+}));
 
 let env: TestEnv;
+let deleteSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   env = await createTestEnv();
+  deleteSpy = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(getSearchProviders).mockResolvedValue({
+    embedding: {} as never,
+    vectorStore: {
+      delete: deleteSpy,
+    } as never,
+  });
 });
 
 afterEach(async () => {
+  vi.mocked(getSearchProviders).mockReset();
   await env.cleanup();
 });
 
@@ -119,6 +134,60 @@ describe("reconcile", () => {
     expect(conv!.title).toBe("Updated title");
   });
 
+  it("does not clear indexedAt when only non-search metadata changes", async () => {
+    const config = makeConfig();
+    const remoteDir = path.join(env.clogHome, "remote");
+    const id = "abc11111-1111-1111-1111-111111111111";
+    const indexedAt = "2026-03-02T00:00:00.000Z";
+
+    await createRemoteConversation(remoteDir, "alice", id);
+    await reconcile(config);
+    await withDb((ctx) => {
+      ctx.setIndexedAt(id, indexedAt);
+    });
+
+    await createRemoteConversation(remoteDir, "alice", id, {
+      author: "alice-renamed",
+      project: "renamed-project",
+      modifiedAt: "2026-03-03T00:00:00Z",
+    });
+
+    const result = await reconcile(config);
+    expect(result.updated).toBe(1);
+
+    const conv = await withDb((ctx) => ctx.getConversation(id));
+    expect(conv!.author).toBe("alice-renamed");
+    expect(conv!.project).toBe("renamed-project");
+    expect(conv!.indexedAt).toBe(indexedAt);
+  });
+
+  it("updates both sourcePath and filePath when a remote conversation moves author directories", async () => {
+    const config = makeConfig();
+    const remoteDir = path.join(env.clogHome, "remote");
+    const id = "abc11111-1111-1111-1111-111111111111";
+
+    await createRemoteConversation(remoteDir, "alice", id);
+    await reconcile(config);
+
+    await createRemoteConversation(remoteDir, "bob", id, {
+      author: "bob",
+      modifiedAt: "2026-03-04T00:00:00Z",
+    });
+
+    const { rm } = await import("node:fs/promises");
+    await rm(path.join(remoteDir, "alice", `${id}.meta.json`));
+    await rm(path.join(remoteDir, "alice", `${id}.jsonl`));
+
+    const result = await reconcile(config);
+    expect(result.updated).toBe(1);
+
+    const conv = await withDb((ctx) => ctx.getConversation(id));
+    const expectedPath = path.join(remoteDir, "bob", `${id}.jsonl`);
+    expect(conv!.author).toBe("bob");
+    expect(conv!.sourcePath).toBe(expectedPath);
+    expect(conv!.filePath).toBe(expectedPath);
+  });
+
   it("deletes conversations removed from remote", async () => {
     const config = makeConfig();
     const remoteDir = path.join(env.clogHome, "remote");
@@ -134,9 +203,49 @@ describe("reconcile", () => {
 
     const result = await reconcile(config);
     expect(result.deleted).toBe(1);
+    expect(deleteSpy).toHaveBeenCalledWith(id);
 
     const conv = await withDb((ctx) => ctx.getConversation(id));
     expect(conv).toBeNull();
+  });
+
+  it("does not delete conversations from a different remote origin", async () => {
+    const config = makeConfig({
+      url: "git@github.com:user/repo.git",
+    });
+
+    await withDb((ctx) => {
+      ctx.insertConversation({
+        id: "bbb22222-2222-2222-2222-222222222222",
+        sourceId: "bbb22222-2222-2222-2222-222222222222",
+        source: "claude-code",
+        title: "Other remote conversation",
+        summary: "",
+        author: "bob",
+        project: null,
+        tags: [],
+        slug: null,
+        createdAt: "2026-02-19T09:15:00Z",
+        discoveredAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        state: "published",
+        publishedAt: new Date().toISOString(),
+        publishVersion: 1,
+        sourcePath: "/tmp/other-remote.jsonl",
+        filePath: null,
+        sourceMtime: null,
+        indexedAt: null,
+        origin: "git@github.com:other/repo.git",
+      });
+    });
+
+    const result = await reconcile(config);
+
+    expect(result.deleted).toBe(0);
+    expect(deleteSpy).not.toHaveBeenCalledWith("bbb22222-2222-2222-2222-222222222222");
+    const conv = await withDb((ctx) =>
+      ctx.getConversation("bbb22222-2222-2222-2222-222222222222"));
+    expect(conv?.origin).toBe("git@github.com:other/repo.git");
   });
 
   it("skips excluded conversations", async () => {

@@ -1,9 +1,11 @@
 import { rm } from "node:fs/promises";
 import { withDb } from "../db/index.js";
 import { addExcluded } from "./excluded.js";
+import { deindexConversations } from "../search/coherence.js";
 
 export async function excludeCommand(ids: string[]): Promise<void> {
   let count = 0;
+  const deindexIds: string[] = [];
 
   await withDb(async (ctx) => {
     for (const id of ids) {
@@ -15,6 +17,7 @@ export async function excludeCommand(ids: string[]): Promise<void> {
       }
 
       await addExcluded(conv.source, conv.sourceId);
+      deindexIds.push(resolvedId);
       ctx.deleteConversation(resolvedId);
 
       if (conv.filePath && !conv.origin) {
@@ -28,5 +31,6 @@ export async function excludeCommand(ids: string[]): Promise<void> {
     }
   });
 
+  await deindexConversations(deindexIds);
   console.log(`Excluded ${count} conversation(s)`);
 }

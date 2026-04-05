@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { withDb } from "../db/index.js";
+import { markConversationIndexStale } from "../search/coherence.js";
 
 export async function editCommand(
   id: string,
@@ -19,31 +20,49 @@ export async function editCommand(
       throw new Error(`Cannot edit a remote conversation (synced from ${conv.origin}). Run \`clog list --origin local\` to see local conversations.`);
     }
 
-    const updates: Parameters<typeof ctx.updateConversation>[1] = {
-      modifiedAt: new Date().toISOString(),
-    };
+    const updates: Parameters<typeof ctx.updateConversation>[1] = {};
+    let searchContentChanged = false;
+    let metadataChanged = false;
 
     if (opts.title !== undefined) {
-      updates.title = opts.title;
+      if (opts.title !== conv.title) {
+        updates.title = opts.title;
+        searchContentChanged = true;
+        metadataChanged = true;
+      }
     }
     if (opts.summary !== undefined) {
-      updates.summary = opts.summary;
+      if (opts.summary !== conv.summary) {
+        updates.summary = opts.summary;
+        searchContentChanged = true;
+        metadataChanged = true;
+      }
     }
     if (opts.author !== undefined) {
-      updates.author = opts.author;
+      if (opts.author !== conv.author) {
+        updates.author = opts.author;
+        metadataChanged = true;
+      }
     }
 
-    ctx.updateConversation(fullId, updates);
+    if (!metadataChanged) {
+      console.log(
+        chalk.dim("No changes") +
+          ` for ${chalk.cyan(fullId.slice(0, 7))}`
+      );
+      return;
+    }
 
-    // Mark for re-indexing if published and previously indexed
-    if (conv.state === "published" && conv.indexedAt) {
-      ctx.setIndexedAt(fullId, null);
+    updates.modifiedAt = new Date().toISOString();
+    ctx.updateConversation(fullId, updates);
+    if (searchContentChanged) {
+      markConversationIndexStale(ctx, conv);
     }
 
     const fields: string[] = [];
-    if (opts.title !== undefined) fields.push("title");
-    if (opts.summary !== undefined) fields.push("summary");
-    if (opts.author !== undefined) fields.push("author");
+    if (updates.title !== undefined) fields.push("title");
+    if (updates.summary !== undefined) fields.push("summary");
+    if (updates.author !== undefined) fields.push("author");
 
     console.log(
       chalk.green("Updated") +

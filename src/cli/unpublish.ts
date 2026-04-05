@@ -1,7 +1,9 @@
 import { withDb } from "../db/index.js";
+import { deindexConversations } from "../search/coherence.js";
 
 export async function unpublishCommand(ids: string[]): Promise<void> {
   let count = 0;
+  const deindexIds: string[] = [];
 
   await withDb(async (ctx) => {
     for (const id of ids) {
@@ -28,10 +30,13 @@ export async function unpublishCommand(ids: string[]): Promise<void> {
 
       ctx.updateConversation(resolvedId, {
         state: "staged",
+        indexedAt: null,
       });
+      deindexIds.push(resolvedId);
       count++;
     }
   });
 
+  await deindexConversations(deindexIds);
   console.log(`Unpublished ${count} conversation(s)`);
 }

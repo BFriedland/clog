@@ -630,7 +630,7 @@ clog index [--rebuild]     Index published conversations for search
 # Phase 3 — Team Sharing (see §11 for details)
 clog remote add <url>      Configure a git remote for team sharing
 clog remote show           Show remote configuration and sync status
-clog remote remove         Remove remote and purge remote conversations
+clog remote remove         Remove remote and purge conversations from the configured remote
 clog sync push             Push published conversations to the remote
 clog sync pull             Pull conversations from the remote
 clog refresh               Reconcile DB from git checkout without fetching
@@ -765,6 +765,8 @@ The `--author` flag changes the author on an individual conversation. This is di
 
 Tags are managed separately via `clog tag` / `clog untag`. Staging is managed via `clog add` / `clog reset`.
 
+If every supplied value already matches the current metadata, `clog edit` is a no-op: it does not update `modified_at` and reports that nothing changed.
+
 **Message-level editing is not supported.** If a user needs to redact sensitive data from conversation content, they should edit the raw JSONL file directly:
 
 ```bash
@@ -773,6 +775,28 @@ $ clog path a1b2c3
 
 # User opens and edits the file with their preferred editor
 ```
+
+### 5.4.1 The `tag` and `untag` Commands
+
+`clog tag` and `clog untag` manage the `tags` array on a conversation's metadata row. They operate on any local conversation already tracked in the database; remote conversations are read-only and are rejected (see §11.6).
+
+```bash
+# Add tags
+$ clog tag a1b2c3 auth debugging
+
+# Remove tags
+$ clog untag a1b2c3 debugging
+```
+
+**Normalization:** Input tags are trimmed, lowercased, and deduplicated before applying the operation. Empty tags are ignored.
+
+**`clog tag`:** Adds tags that are not already present. Existing tags are preserved.
+
+If every requested tag is already present, `clog tag` is a no-op: it does not update `modified_at` and reports that no new tags were added.
+
+**`clog untag`:** Removes tags that are present. Tags that are not currently on the conversation are ignored.
+
+If none of the requested tags are present, `clog untag` is a no-op: it does not update `modified_at` and reports that no matching tags were found.
 
 ### 5.5 Implicit Scanning
 
@@ -1087,6 +1111,8 @@ returns: {
   };
 }
 
+If the requested update would not change the conversation's title, summary, or tags, `clog_update` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
+
 // List available tags, projects, authors (for discovery)
 tool: "clog_browse"
 input: {
@@ -1378,9 +1404,15 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness detection:** If `modified_at > indexed_at`, the conversation's metadata has changed since it was last embedded and needs re-indexing.
+**Staleness marker:** `indexed_at = null` is the authoritative signal that a published conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `project`, `slug`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. For local scan workflows, a `sourceMtime` change also clears `indexed_at`; remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
 **Embedding is optional per conversation.** A conversation can be published without being indexed. This decouples the curation workflow from search infrastructure — publishing works without a vector DB.
+
+**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `published` state, and has a non-null `indexed_at` timestamp. A published conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past publishes. Semantic search must not return conversations that have been deleted, excluded, reset to `discovered`, or moved out of `published` state.
+
+**Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
+
+If a deindex operation fails after the database has already been updated, the command still succeeds but prints a warning. Cleanup failures must be observable rather than silent. If search is not configured, deindexing is silently skipped because cleanup cannot be initialized. Vector-store files may still exist on disk from earlier indexing, but while search is unconfigured they are inert, and searchability continues to be governed by the database invariant.
 
 ### 10.8 CLI Commands
 
@@ -1415,6 +1447,23 @@ $ clog index --rebuild    # Re-index all published conversations from scratch
 
 `--rebuild` sets `indexed_at = null` on all published conversations before indexing, forcing a full re-index.
 
+### 10.8.1 Searchability Lifecycle
+
+The search index follows the lifecycle of conversations in the database:
+
+| Operation | DB effect | Search effect |
+|-----------|-----------|---------------|
+| `publish` | Conversation enters `published` state | Conversation becomes searchable; vectors are created or refreshed |
+| `edit`, `tag`, `untag`, MCP `clog_update` on a published conversation | Conversation remains `published`, but search-visible metadata may change | If the operation actually changes title, summary, or tags, `indexed_at` is set to `null` so the conversation is treated as stale until re-indexed. Title and summary are part of the embedded metadata chunk; tags are not currently embedded, but tag edits still conservatively invalidate the index so search never mixes current DB metadata with stale vector-store state. No-op updates (e.g. setting a title to its current value, adding an already-present tag) skip the stale marking to avoid unnecessary re-indexing and `modified_at` bumps. |
+| Remote reconciliation metadata update on a published conversation | Conversation remains `published`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, project, or slug do not clear `indexed_at`. |
+| `unpublish` | Conversation leaves `published` state and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
+| `reset` of a published conversation | Conversation leaves `published` state, `filePath` is cleared, and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
+| `exclude` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-published conversation is a harmless no-op. |
+| `remote remove` | All conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
+| Remote reconciliation delete/retract | Conversation is removed from the DB or replaced by a non-searchable state | Conversation ceases to be searchable; vectors are deleted |
+
+The authoritative definition of whether a conversation is eligible to appear in semantic search is its current row in the local database, not whether it was indexed at some point in the past.
+
 ### 10.9 MCP Tool
 
 Phase 2 adds one tool to the MCP server:
@@ -1427,6 +1476,7 @@ input: {
   tags?: string[];         // Filter by tags
   project?: string;        // Filter by project name
   author?: string;         // Filter by author
+  origin?: "local" | "remote"; // Optional origin filter (see §11.12)
   limit?: number;          // Default 10, max 50
 }
 returns: {
@@ -1446,10 +1496,17 @@ returns: {
     indexed: number;     // How many published conversations are indexed
     published: number;   // Total published conversations
   };
+  warning?: string;      // Present when search hit the scan cap and completeness is not guaranteed
 }
 ```
 
 `clog_search` only searches **published** conversations, consistent with `clog_list_published` and `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
+
+Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (published state with non-null `indexed_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `published` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
+
+Search uses an expanding query window: it starts by fetching a small multiple of the requested limit from the vector store, then doubles the fetch count on each iteration until it either collects enough valid results or reaches the 5,000-entry scan cap. If search stops because it reached that 5,000-entry cap before finding enough valid results, it returns the best results found so far and includes a warning that results may be incomplete. If search stops for any other reason (enough results found, or vector store exhausted below the cap), it does not include that warning.
+
+For the CLI command, this warning is printed as a visible warning line before the results (or before `No results found.` if filtering removes every scanned hit). For the MCP tool, the same condition is reported via the optional `warning` field in the response object.
 
 ### 10.10 Modifications to Phase 1 Features
 
@@ -1457,7 +1514,9 @@ Phase 2 requires changes to existing Phase 1 code:
 
 **Publish** (`clog publish`): After publishing, auto-index the newly published conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, publish still succeeds silently. This keeps search up-to-date without requiring a manual `clog index` after every publish.
 
-**Edit** (`clog edit` and MCP `clog_update`): When a title or summary changes on a published conversation that has been indexed (`indexed_at` is not null), set `indexed_at = null`. The conversation will be re-indexed on the next `clog index` or `clog publish`.
+**Edit / tagging** (`clog edit`, `clog tag`, `clog untag`, and MCP `clog_update`): When a published indexed conversation is changed in a way that affects search-visible metadata, set `indexed_at = null`. This includes title and summary changes, plus tag changes as a conservative invalidation rule. No-op updates do not clear `indexed_at` and do not bump `modified_at`. The conversation will be re-indexed on the next `clog index` or `clog publish`.
+
+**Unpublish / reset / exclude**: When a published conversation stops being searchable because it is unpublished, reset out of `published`, excluded, deleted during reconciliation, or otherwise removed from the database, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk.
 
 **Config schema**: Add `search.embedding.type` and `search.vectorStore.type` fields to the config schema (Section 7).
 
@@ -1873,7 +1932,7 @@ Confirmation is persisted in config (`remote.visibilityConfirmed: true`) so it d
 
 ### 11.8 Pull Flow: Full Reconciliation
 
-After `git pull` (or in `clog refresh`, without the git pull), scan the entire checkout directory. Compare what's on disk to what's in the DB with `origin IS NOT NULL`:
+After `git pull` (or in `clog refresh`, without the git pull), scan the entire checkout directory. Compare what's on disk to the subset of DB rows whose `origin` exactly matches the currently configured remote URL:
 
 | Disk state | DB state | Action |
 |------------|----------|--------|
@@ -1881,7 +1940,13 @@ After `git pull` (or in `clog refresh`, without the git pull), scan the entire c
 | `.meta.json` exists | In DB | Update if metadata changed (see below) |
 | Not on disk | In DB with matching origin | Delete from DB |
 
+Remote reconciliation is scoped to the configured remote only. Conversations imported from a different remote origin are left untouched, even if they also have `origin IS NOT NULL`.
+
 **Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns. If any field differs, update the DB row. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
+
+Reconciliation also compares the derived checkout path for the conversation. If the same imported conversation now lives at a different checkout path (for example because the author directory changed), update `sourcePath` and `filePath` in place on the existing DB row rather than treating it as a delete plus re-import.
+
+For search coherence, imported conversations follow the same stale-index rule as local edits: changes to search-visible metadata (`title`, `summary`, or `tags`) or content-indicating fields (`sourcePath`, `filePath`) clear `indexed_at`. Changes only to non-search metadata such as `author`, `project`, or `slug` do not.
 
 **Orphaned files:** If a `.meta.json` exists without a corresponding `.jsonl`, or a `.jsonl` exists without a `.meta.json`, skip the conversation and print a warning. Do not import incomplete pairs.
 
@@ -2133,6 +2198,7 @@ tests/
 ├── models.test.ts           # Zod schema validation for conversation and message types
 ├── scan.test.ts             # Scan pipeline, 3-layer filtering, stale entry pruning
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
+├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
 ├── workflow.test.ts         # Multi-step workflows: add → publish, etc.
 ├── sync-meta.test.ts        # .meta.json serialization/deserialization (Phase 3)
 ├── sync-pull.test.ts        # Reconciliation logic: import, update, delete (Phase 3)
@@ -2195,6 +2261,13 @@ The application code respects `CLOG_HOME` and `CLOG_SOURCES` when set, falling b
 - Tool handler tests for `clog_list_published`, `clog_list_staged`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`
 - Input validation and error responses
 - Filter behavior (tags, project, author, grep)
+
+**Search coherence tests** (`search-coherence.test.ts`):
+
+- Deindexing behavior: per-conversation delete failures warn and continue
+- Search-not-configured vs dependency-failure warning behavior during deindex initialization
+- Searchability invariant (`published` + non-null `indexed_at`)
+- Expanding search window behavior and the 5,000-result scan-cap warning
 
 **Models tests** (`models.test.ts`):
 
@@ -2279,4 +2352,3 @@ Linting is not gated by `npm test` — it's a separate `npm run lint` step. This
   }
 }
 ```
-
