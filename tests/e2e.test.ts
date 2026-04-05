@@ -11,7 +11,7 @@ const exec = promisify(execFile);
 const cli = path.resolve("src/index.ts");
 
 function run(args: string[], env: TestEnv, sourcesDir?: string) {
-  return exec("npx", ["tsx", cli, ...args], {
+  return exec("node", ["--import", "tsx", cli, ...args], {
     env: {
       ...process.env,
       CLOG_HOME: env.clogHome,
