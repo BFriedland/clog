@@ -21,6 +21,7 @@ export interface ListConversationFilters {
   projectName?: string;
   author?: string;
   tag?: string;
+  indexed?: boolean;
 }
 
 export interface ResolvedConversationId {
@@ -206,8 +207,9 @@ export function insertConversationInDb(
         publish_version,
         source_path,
         file_path,
-        source_mtime
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_mtime,
+        indexed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     conversationToParams(conversation),
   );
@@ -239,7 +241,8 @@ export function updateConversationInDb(
         publish_version = ?,
         source_path = ?,
         file_path = ?,
-        source_mtime = ?
+        source_mtime = ?,
+        indexed_at = ?
       WHERE id = ?
     `,
     [
@@ -262,6 +265,7 @@ export function updateConversationInDb(
       conversation.sourcePath,
       conversation.filePath,
       conversation.sourceMtime,
+      conversation.indexedAt,
       conversation.id,
     ],
   );
@@ -291,6 +295,10 @@ export function listConversationsInDb(
   if (filters.author) {
     whereParts.push("author = ?");
     params.push(filters.author);
+  }
+
+  if (filters.indexed != null) {
+    whereParts.push(filters.indexed ? "indexed_at IS NOT NULL" : "indexed_at IS NULL");
   }
 
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -327,6 +335,30 @@ export function getConversationBySourceIdentityInDb(
     [source, sourceId],
   );
   return firstConversation(result);
+}
+
+export async function listConversationsNeedingIndex(): Promise<ConversationMeta[]> {
+  return withDb((db) =>
+    listConversationsInDb(db, {
+      states: ["published"],
+      indexed: false,
+    }),
+  );
+}
+
+export async function setConversationIndexedAt(
+  id: string,
+  indexedAt: string | null,
+): Promise<void> {
+  await withDb((db) => {
+    db.run("UPDATE conversations SET indexed_at = ? WHERE id = ?", [indexedAt, id]);
+  });
+}
+
+export async function clearPublishedIndexedAt(): Promise<void> {
+  await withDb((db) => {
+    db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'published'");
+  });
 }
 
 function parseResolvableId(input: string): { prefix: string; source: string | null } {
@@ -379,6 +411,7 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.sourcePath,
     conversation.filePath,
     conversation.sourceMtime,
+    conversation.indexedAt,
   ];
 }
 
@@ -431,6 +464,7 @@ function rowToConversation(row: Record<string, unknown>): ConversationMeta {
     sourcePath: String(row.source_path),
     filePath: nullableString(row.file_path),
     sourceMtime: nullableString(row.source_mtime),
+    indexedAt: nullableString(row.indexed_at),
   });
 }
 

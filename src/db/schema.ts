@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -14,6 +14,11 @@ export function applyMigrations(db: Database): void {
   if (currentVersion < 1) {
     createConversationsTable(db);
     setSchemaVersion(db, 1);
+  }
+
+  if (currentVersion < 2) {
+    addColumnIfMissing(db, "conversations", "indexed_at", "TEXT");
+    setSchemaVersion(db, 2);
   }
 }
 
@@ -51,6 +56,7 @@ function createConversationsTable(db: Database): void {
       source_path TEXT NOT NULL,
       file_path TEXT,
       source_mtime TEXT,
+      indexed_at TEXT,
       UNIQUE(source, source_id)
     );
   `);
@@ -78,4 +84,22 @@ function tableExists(db: Database, tableName: string): boolean {
   );
 
   return result.length > 0 && result[0]?.values.length > 0;
+}
+
+function addColumnIfMissing(
+  db: Database,
+  tableName: string,
+  columnName: string,
+  definition: string,
+): void {
+  const result = db.exec(`PRAGMA table_info(${tableName})`);
+  const existingColumns = new Set(
+    result[0]?.values.map((row) => String(row[1])) ?? [],
+  );
+
+  if (existingColumns.has(columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }

@@ -34,6 +34,7 @@ export function getDefaultConfig(author = ""): Config {
     },
     defaultTags: [],
     autoScan: false,
+    search: null,
   });
 }
 

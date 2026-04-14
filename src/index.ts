@@ -7,6 +7,7 @@ import { buildConfigCommand } from "./cli/config.js";
 import { buildDiffCommand } from "./cli/diff.js";
 import { buildEditCommand } from "./cli/edit.js";
 import { buildExcludeCommand } from "./cli/exclude.js";
+import { runIndexCommand } from "./cli/index-cmd.js";
 import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
 import { preAction, runWithCliErrorHandling } from "./cli/prelude.js";
@@ -19,6 +20,8 @@ import { buildTagCommand } from "./cli/tag.js";
 import { buildUnexcludeCommand } from "./cli/unexclude.js";
 import { buildUnpublishCommand } from "./cli/unpublish.js";
 import { buildUntagCommand } from "./cli/untag.js";
+import { runSearchInitCommand } from "./cli/search-init.js";
+import { runSearchCommand } from "./cli/search.js";
 import { initializeClog } from "./config/init.js";
 import { getClogHome } from "./utils/paths.js";
 
@@ -60,6 +63,34 @@ async function main(): Promise<void> {
   program.addCommand(buildUnexcludeCommand());
   program.addCommand(buildConfigCommand());
   program.addCommand(buildRenameAuthorCommand());
+  program
+    .command("index")
+    .description("Index published conversations for semantic search")
+    .option("--rebuild", "Re-index all published conversations from scratch")
+    .action(async (options: { rebuild?: boolean }) => {
+      await runIndexCommand(options);
+    });
+
+  program
+    .command("search [query]")
+    .description("Semantic search across published conversations")
+    .option("--init", "Set up search")
+    .option("-p, --project <name>")
+    .option("-a, --author <name>")
+    .option("-t, --tag <tag>")
+    .option("-l, --limit <n>", "Maximum results", (value) => Number(value))
+    .action(async (query: string | undefined, options) => {
+      if (options.init) {
+        await runSearchInitCommand();
+        return;
+      }
+
+      if (!query) {
+        throw new Error('Usage: clog search <query>\n\nRun "clog search --init" to set up search.');
+      }
+
+      await runSearchCommand(query, options);
+    });
 
   await program.parseAsync(process.argv);
 }

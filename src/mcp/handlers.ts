@@ -3,6 +3,10 @@ import { z } from "zod";
 import { loadConfig } from "../config/index.js";
 import { browseValues, getConversationById, listConversations, resolveConversationId, updateConversation } from "../db/index.js";
 import { type ConversationMeta } from "../models/conversation.js";
+import { getSearchProviders } from "../search/deps.js";
+import { SearchDepsError, SearchNotConfiguredError } from "../search/errors.js";
+import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
+import { searchConversations } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
 import { filterConversationsByGrep, parseConversationMessages } from "../cli/common.js";
 
@@ -30,6 +34,14 @@ const updateInputSchema = z.object({
 
 const browseInputSchema = z.object({
   by: z.enum(["tags", "projects", "authors"]),
+});
+
+const searchInputSchema = z.object({
+  query: z.string(),
+  tags: z.array(z.string()).optional(),
+  project: z.string().optional(),
+  author: z.string().optional(),
+  limit: z.number().int().positive().max(50).default(10),
 });
 
 export async function handleListPublished(input: unknown) {
@@ -108,10 +120,18 @@ export async function handleUpdate(input: unknown) {
     ...updated,
     modifiedAt: nowIso(),
   };
-  await updateConversation(nextConversation);
+  const finalConversation =
+    conversation.state === "published" &&
+    (
+      updated.title !== conversation.title ||
+      updated.summary !== conversation.summary
+    )
+      ? await maybeReindexUpdatedConversation(nextConversation)
+      : nextConversation;
+  await updateConversation(finalConversation);
 
   return {
-    conversation: summarizeConversation(nextConversation),
+    conversation: summarizeConversation(finalConversation),
   };
 }
 
@@ -126,6 +146,83 @@ export async function handleBrowse(input: unknown) {
 
   const items = await browseValues(field);
   return { items };
+}
+
+export async function handleSearch(input: unknown) {
+  const parsed = searchInputSchema.parse(input);
+  const { embedding, vectorStore } = await requireSearchProviders();
+  let published = await listConversations({
+    states: ["published"],
+    projectName: parsed.project,
+    author: parsed.author,
+  });
+
+  if (parsed.tags && parsed.tags.length > 0) {
+    const tags = new Set(normalizeTags(parsed.tags));
+    published = published.filter((conversation) =>
+      conversation.tags.some((tag) => tags.has(tag)),
+    );
+  }
+
+  const searchableIds = new Set(
+    published
+      .filter((conversation) => isConversationSearchable(conversation))
+      .map((conversation) => conversation.id),
+  );
+
+  if (searchableIds.size === 0) {
+    return {
+      results: [],
+      totalCount: 0,
+      indexCoverage: {
+        indexed: 0,
+        published: published.length,
+      },
+    };
+  }
+
+  let warning: string | undefined;
+  const hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
+    isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+    onScanCapReached: () => {
+      warning = "Search hit the maximum scan window; completeness is not guaranteed.";
+    },
+  });
+
+  const conversationsById = new Map(
+    published.map((conversation) => [conversation.id, conversation] as const),
+  );
+  const results = hits
+    .map((hit) => {
+      const conversation = conversationsById.get(hit.conversationId);
+      if (!conversation || !isConversationSearchable(conversation)) {
+        return null;
+      }
+
+      return {
+        id: conversation.id,
+        source: conversation.source,
+        title: conversation.title,
+        summary: conversation.summary,
+        tags: conversation.tags,
+        author: conversation.author,
+        projectName: conversation.projectName,
+        createdAt: conversation.createdAt,
+        relevanceScore: hit.score,
+        snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
+      };
+    })
+    .filter((result): result is NonNullable<typeof result> => Boolean(result));
+
+  return {
+    results,
+    totalCount: results.length,
+    indexCoverage: {
+      indexed: searchableIds.size,
+      published: published.length,
+    },
+    warning,
+  };
 }
 
 async function listConversationsForState(
@@ -197,4 +294,16 @@ function summarizeConversation(conversation: ConversationMeta) {
     createdAt: conversation.createdAt,
     modifiedAt: conversation.modifiedAt,
   };
+}
+
+async function requireSearchProviders() {
+  try {
+    return await getSearchProviders();
+  } catch (error) {
+    if (error instanceof SearchNotConfiguredError || error instanceof SearchDepsError) {
+      throw error;
+    }
+
+    throw error;
+  }
 }

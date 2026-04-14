@@ -32,6 +32,12 @@ describe("e2e", () => {
     expect(stdout.trim()).toBe('"alice"');
   });
 
+  it("search guides the user to setup when search is not configured", async () => {
+    await expect(run(["search", "jwt refresh"])).rejects.toMatchObject({
+      stderr: expect.stringContaining('Search is not configured. Run "clog search --init".'),
+    });
+  });
+
   it("status discovers conversations after source path configuration", async () => {
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", "11111111-1111-1111-1111-111111111111.jsonl"),

@@ -50,6 +50,10 @@ export function getRawRoot(): string {
   return path.join(getClogHome(), "raw");
 }
 
+export function getVectorsRoot(): string {
+  return path.join(getClogHome(), "vectors");
+}
+
 export function getRawSourceDir(source: string): string {
   return path.join(getRawRoot(), source);
 }

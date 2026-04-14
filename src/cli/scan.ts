@@ -210,6 +210,7 @@ function buildDiscoveredConversation(
     sourcePath: candidate.sourcePath,
     filePath: null,
     sourceMtime: candidate.sourceMtime,
+    indexedAt: null,
   };
 }
 

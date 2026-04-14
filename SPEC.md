@@ -1710,6 +1710,10 @@ Conversations are chunked by turn (user message + assistant response) rather tha
 
 When search is configured and dependencies are available, indexing runs automatically during `clog publish`, not on MCP server startup. Publishing is the moment new content enters the knowledge base, so indexing there keeps search current without adding latency to agent sessions. If search deps are missing or indexing fails, publish still succeeds and leaves `indexed_at = null`; the conversation is published but not searchable until `clog index` succeeds.
 
+#### Setup Owns Search Downloads
+
+Any third-party package installation or embedding-model download required for semantic search happens only during `clog search --init`, after explicit user confirmation. `clog index`, `clog search <query>`, publish auto-indexing, metadata-edit reindexing, and MCP search must not trigger surprise package installs or model downloads. If search is not set up, non-search commands remain fully inert with respect to Phase 2.
+
 ### 10.2 Install and Configuration
 
 Search dependencies are installed separately from core clog:
@@ -1718,7 +1722,7 @@ Search dependencies are installed separately from core clog:
 npm install vectra @huggingface/transformers
 ```
 
-If the search dependencies aren't installed, `clog search` and `clog index` print a helpful message explaining how to enable search. All other commands work normally.
+If the search dependencies aren't installed, `clog search --init` is the setup entry point that installs them after confirmation. `clog search` and `clog index` do not install packages themselves. All other commands work normally.
 
 Search is configured in `config.json` via interactive setup (`clog search --init`):
 
@@ -1744,6 +1748,8 @@ High-signal conversation content is embedded for search. Low-signal bulk (tool o
 | Tool metadata | Tool name + command summary (see below) |
 | Title | Conversation title |
 | Summary | Conversation summary |
+
+Tags are **not** embedded. They are metadata filters applied from the local database before or alongside semantic search, not part of vector similarity scoring.
 
 **Tool metadata format** — a one-liner capturing what the tool did, without the full output:
 
@@ -1787,7 +1793,7 @@ interface EmbeddingProvider {
 }
 ```
 
-**Default: `@huggingface/transformers`** — runs `all-MiniLM-L6-v2` locally via WASM. No native deps, no API key needed, works offline. Downloads the model (~30MB) on first use. This is the recommended starting point.
+**Default: `@huggingface/transformers`** — runs `all-MiniLM-L6-v2` locally via WASM. No native deps, no API key needed, works offline. The setup flow (`clog search --init`) initializes the provider so the model download (~30MB) happens there rather than later during `clog index` or `clog search`. This is the recommended starting point.
 
 Additional providers (e.g., OpenAI embeddings, Voyage, Cohere) can be added later as the need arises. Each is a separate implementation of `EmbeddingProvider`, selectable via config. API-based providers require an API key in `config.json` and network access.
 
@@ -1834,7 +1840,7 @@ If a deindex operation fails after the database has already been updated, the co
 
 Phase 2 adds three commands:
 
-**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options. Writes the selection to `config.json`. This is the only interactive prompt in Phase 2 (consistent with the Phase 1 principle of flags over wizards for routine operations).
+**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently published conversations immediately. This is the only interactive prompt flow in Phase 2.
 
 **`clog search <query>`** — Semantic search across published conversations.
 
@@ -1870,7 +1876,8 @@ The search index follows the lifecycle of conversations in the database:
 | Operation | DB effect | Search effect |
 |-----------|-----------|---------------|
 | `publish` | Conversation enters `published` state; `published_at`, `modified_at`, and `published_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set. If search is unconfigured or indexing fails, publish still succeeds and `indexed_at` remains `null`, so the conversation is published but not searchable until indexed. |
-| `edit`, `tag`, `untag`, MCP `clog_update` on a published conversation | Conversation remains `published`, but search-visible metadata may change | If the operation actually changes title, summary, or tags, `indexed_at` is set to `null` so the conversation is treated as stale until re-indexed. Title and summary are part of the embedded metadata chunk; tags are not currently embedded, but tag edits still conservatively invalidate the index so search never mixes current DB metadata with stale vector-store state. No-op updates (e.g. setting a title to its current value, adding an already-present tag) skip the stale marking to avoid unnecessary re-indexing and `modified_at` bumps. |
+| `edit`, MCP `clog_update` title/summary change on a published conversation | Conversation remains `published`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
+| `tag`, `untag`, MCP `clog_update` tag change on a published conversation | Conversation remains `published`; DB metadata filters change | No vector re-index occurs because tags are not part of the embedded search content. Tag-based filtering reflects the new DB state immediately. `indexed_at` is unchanged. No-op tag updates do not bump `modified_at`. |
 | Local scan detects source mtime change on a published conversation | Conversation remains `published`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The published/searchable content has not changed until `clog add <id>` refreshes the raw copy or explicit `clog publish <id>` pushthrough refreshes and republishes it. |
 | A command detects a raw copy mtime newer than `published_at` or `indexed_at` | Conversation remains `published`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
 | Remote reconciliation metadata update on a published conversation | Conversation remains `published`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, or slug do not clear `indexed_at`. |
@@ -1932,7 +1939,9 @@ Phase 2 requires changes to existing Phase 1 code:
 
 **Publish** (`clog publish`): After publishing, auto-index the newly published conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, publish still succeeds and leaves `indexed_at = null`. The conversation is published but not searchable until `clog index` or a later publish indexes it successfully.
 
-**Edit / tagging** (`clog edit`, `clog tag`, `clog untag`, and MCP `clog_update`): When a published indexed conversation is changed in a way that affects search-visible metadata, set `indexed_at = null`. This includes title and summary changes, plus tag changes as a conservative invalidation rule. No-op updates do not clear `indexed_at` and do not bump `modified_at`. The conversation will be re-indexed on the next `clog index` or `clog publish`.
+**Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a published conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and summary changes. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
+
+**Tagging** (`clog tag`, `clog untag`, and MCP `clog_update` tag changes): Tags are DB-side metadata filters, not embedded vector content. Tag changes do not trigger re-indexing and do not change `indexed_at`. Tag-based filtering reflects the new DB state immediately.
 
 **Unpublish / exclude / deletion**: When a published conversation stops being searchable because it is unpublished, excluded, deleted during reconciliation, or otherwise removed from the database, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk. `clog reset` has no search cleanup role because it only operates on staged conversations, which are not searchable.
 

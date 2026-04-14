@@ -95,6 +95,8 @@ export function buildAddCommand(): Command {
           state: conversation.state === "published" ? "published" : "staged",
           filePath: destination,
           modifiedAt: identical ? conversation.modifiedAt : nowIso(),
+          indexedAt:
+            conversation.state === "published" && !identical ? null : conversation.indexedAt,
         } as const;
 
         await updateConversation(updated);

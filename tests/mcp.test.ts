@@ -57,6 +57,7 @@ describe("mcp handlers", () => {
       sourcePath: filePath,
       filePath,
       sourceMtime: null,
+      indexedAt: "2026-02-01T10:00:03.000Z",
     });
   });
 
@@ -100,6 +101,26 @@ describe("mcp handlers", () => {
 
     expect(result.conversation.title).toBe("Updated title");
     expect(result.conversation.tags).toContain("debugging");
+  });
+
+  it("leaves indexedAt unchanged for tag-only updates", async () => {
+    await handleUpdate({
+      id: "abc12345",
+      addTags: ["debugging"],
+    });
+
+    const conversation = await getConversationById("abc12345-1234-1234-1234-123456789012");
+    expect(conversation?.indexedAt).toBe("2026-02-01T10:00:03.000Z");
+  });
+
+  it("leaves indexedAt unchanged when search is not configured", async () => {
+    await handleUpdate({
+      id: "abc12345",
+      title: "Updated title",
+    });
+
+    const conversation = await getConversationById("abc12345-1234-1234-1234-123456789012");
+    expect(conversation?.indexedAt).toBe("2026-02-01T10:00:03.000Z");
   });
 
   it("leaves modifiedAt unchanged for no-op updates", async () => {

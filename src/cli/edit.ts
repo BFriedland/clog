@@ -1,7 +1,9 @@
 import { Command } from "commander";
 
+import type { ConversationMeta } from "../models/conversation.js";
 import { nowIso } from "../utils/time.js";
 import { updateConversation } from "../db/index.js";
+import { maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { resolveConversationOrFail } from "./common.js";
 
 export function buildEditCommand(): Command {
@@ -39,10 +41,22 @@ export function buildEditCommand(): Command {
         return;
       }
 
-      await updateConversation({
+      let nextConversation: ConversationMeta = {
         ...updated,
         modifiedAt: nowIso(),
-      });
+      };
+
+      if (
+        conversation.state === "published" &&
+        (
+          updated.title !== conversation.title ||
+          updated.summary !== conversation.summary
+        )
+      ) {
+        nextConversation = await maybeReindexUpdatedConversation(nextConversation);
+      }
+
+      await updateConversation(nextConversation);
       process.stdout.write(`Updated ${conversation.id.slice(0, 7)}\n`);
     });
 

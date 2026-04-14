@@ -1,6 +1,7 @@
 import { Command } from "commander";
 
 import { updateConversation } from "../db/index.js";
+import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { resolveManyConversationsOrFail } from "./common.js";
 
 export function buildUnpublishCommand(): Command {
@@ -20,7 +21,15 @@ export function buildUnpublishCommand(): Command {
         await updateConversation({
           ...conversation,
           state: "staged",
+          indexedAt: null,
         });
+      }
+
+      const failures = await tryDeleteConversationVectors(conversations.map((conversation) => conversation.id));
+      for (const failedId of failures) {
+        process.stderr.write(
+          `warning: ${failedId.slice(0, 7)} was unpublished but its search vectors could not be deleted\n`,
+        );
       }
 
       process.stdout.write(`Unpublished ${conversations.length} conversation(s) (moved to staged)\n`);

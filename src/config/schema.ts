@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { SearchConfigSchema } from "../search/providers.js";
 import { BUILTIN_SOURCES } from "../utils/paths.js";
 
 const sourceConfigSchema = z.object({
@@ -18,6 +19,7 @@ export const configSchema = z.object({
   sources: z.object(sourceEntries),
   defaultTags: z.array(z.string()).default([]),
   autoScan: z.boolean().default(false),
+  search: SearchConfigSchema,
 });
 
 export type SourceConfig = z.infer<typeof sourceConfigSchema>;

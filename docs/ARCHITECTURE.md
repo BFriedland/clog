@@ -34,6 +34,7 @@ The important centers are:
 - DB and ID resolution
 - scan pipeline
 - content-path and publish-candidate resolution
+- optional search composition and coherence
 - thin CLI handlers
 - MCP handlers that reuse the same semantics as the CLI
 
@@ -43,8 +44,9 @@ The intended flow is:
 2. the scan pipeline decides what enters or updates the DB
 3. DB helpers own stored state and filtering
 4. shared CLI helpers resolve content paths, publish candidates, warnings, and table rendering
-5. command handlers compose those shared helpers
-6. MCP handlers stay close to CLI semantics instead of inventing a parallel model
+5. optional search modules index and query through their own interfaces
+6. command handlers compose those shared helpers
+7. MCP handlers stay close to CLI semantics instead of inventing a parallel model
 
 ## Module Boundaries
 
@@ -114,6 +116,44 @@ Rules:
 - commands should not issue ad hoc SQL
 - filtering semantics that affect multiple surfaces should live here or be composed from DB results in one shared place
 - ID ambiguity and not-found behavior should be centralized here, not reimplemented per command
+- searchability bookkeeping such as `indexedAt` storage belongs here, but provider-specific search logic does not
+
+### `src/search`
+
+Owns the optional semantic-search subsystem.
+
+- `types.ts` defines search-facing interfaces
+- `providers.ts` defines the provider registry, config schema fragments, and
+  package checks
+- `deps.ts` is the composition root for optional runtime providers
+- `chunker.ts` owns deterministic turn-based chunking
+- `indexer.ts` owns chunk embedding and vector-query orchestration
+- `coherence.ts` owns DB/vector-store coherence helpers and best-effort search
+  lifecycle hooks
+- `embeddings/transformers.ts` and `vectorstores/vectra.ts` hold the default
+  provider implementations
+
+The intended boundary is:
+
+- Phase 1 provides canonical `ConversationMeta`, parsed `Message[]`, and DB
+  state
+- the search module turns those into derived vector artifacts
+- command handlers and MCP use the search module through narrow helpers rather
+  than importing provider-specific code directly
+
+Rules:
+
+- keep optional dependency imports inside `src/search`
+- keep the database authoritative for whether a conversation is searchable
+- query-time snippets should come from stored chunk text, not transcript
+  reparsing
+- lifecycle hooks should invalidate or delete vectors through coherence
+  helpers, not by duplicating search policy in commands
+- package installation and model warm-up belong only to `search-init`, not to
+  `search`, `index`, or background lifecycle hooks
+- DB metadata filters such as tags are not part of vector similarity unless
+  they are explicitly embedded; DB-only filter changes should not trigger
+  reindexing
 
 ### `src/cli/scan.ts`
 
@@ -180,6 +220,7 @@ Notable command groupings:
 - metadata changes: `edit`, `tag`, `rename-author`
 - inspection: `status`, `list`, `show`, `path`, `diff`
 - exclusion/filter control: `exclude`, `unexclude`, `excluded`, `clogignore`
+- search: `search-init`, `search`, `index-cmd`
 
 Rules:
 
@@ -201,6 +242,8 @@ Rules:
 - MCP handlers should reuse the same stored metadata and parser behavior as the CLI
 - differences should mostly be about schema validation, truncation defaults, and response shaping
 - do not create MCP-only state or duplicate source parsing logic here
+- semantic search should reuse the same DB searchability checks as the CLI rather
+  than trusting raw vector-store hits
 
 ### `src/utils`
 
@@ -238,6 +281,19 @@ All transcript reads should flow through shared path resolution and adapter disp
 2. resolve its content path or publish candidate
 3. dispatch to `getAdapter(conversation.source, config)`
 4. parse into canonical `Message[]`
+
+### Search
+
+Semantic search flows through these layers:
+
+1. command or MCP handler resolves the configured providers via `src/search/deps`
+2. DB state determines which published conversations are currently searchable
+3. `chunker.ts` builds deterministic search chunks from canonical messages
+4. `indexer.ts` embeds and upserts chunks into the configured vector store
+5. query handlers validate vector hits back against current DB state before
+   returning them
+
+This keeps the vector store a derived cache instead of a second authority.
 
 This is used by:
 

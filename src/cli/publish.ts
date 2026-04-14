@@ -2,6 +2,8 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import { listConversations, updateConversation } from "../db/index.js";
+import type { ConversationMeta } from "../models/conversation.js";
+import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { nowIso } from "../utils/time.js";
 import {
   defaultPublishFilePath,
@@ -27,6 +29,8 @@ export function buildPublishCommand(): Command {
         process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
         return;
       }
+
+      const publishedConversations: ConversationMeta[] = [];
 
       for (const conversation of conversations) {
         if (ids.length > 0 && conversation.state !== "discovered" && conversation.state !== "staged" && conversation.state !== "published") {
@@ -60,15 +64,27 @@ export function buildPublishCommand(): Command {
             : await parseConversationMessagesFromPath(config, conversation.source, parsePath);
         const timestamp = nowIso();
 
-        await updateConversation({
+        const publishedConversation = {
           ...conversation,
           filePath: rawPath,
-          state: "published",
+          state: "published" as const,
           publishVersion: conversation.publishVersion + 1,
           publishedAt: timestamp,
           modifiedAt: timestamp,
           publishedMessageCount: messages.length,
-        });
+          indexedAt: null,
+        };
+
+        await updateConversation(publishedConversation);
+        publishedConversations.push(publishedConversation);
+      }
+
+      const indexedFailures = await maybeAutoIndexConversations(publishedConversations);
+
+      for (const failedId of indexedFailures) {
+        process.stderr.write(
+          `warning: published ${failedId.slice(0, 7)} but failed to index it for search\n`,
+        );
       }
 
       process.stdout.write(`Published ${conversations.length} conversation(s)\n`);

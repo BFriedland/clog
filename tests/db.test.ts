@@ -188,5 +188,6 @@ function baseConversation() {
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: null,
+    indexedAt: null,
   };
 }

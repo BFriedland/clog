@@ -11,6 +11,7 @@ import {
   handleBrowse,
   handleGet,
   handleListPublished,
+  handleSearch,
   handleListStaged,
   handleUpdate,
 } from "./handlers.js";
@@ -84,6 +85,21 @@ export async function startMcpServer(): Promise<void> {
       },
     },
     async (input) => toToolResult(await handleUpdate(input), "Updated conversation metadata."),
+  );
+
+  server.registerTool(
+    "clog_search",
+    {
+      description: "Semantic search across published conversations.",
+      inputSchema: {
+        query: z.string(),
+        tags: z.array(z.string()).optional(),
+        project: z.string().optional(),
+        author: z.string().optional(),
+        limit: z.number().int().positive().max(50).optional(),
+      },
+    },
+    async (input) => toToolResult(await handleSearch(input), "Searched published conversations."),
   );
 
   server.registerTool(

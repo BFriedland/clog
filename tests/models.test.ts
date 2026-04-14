@@ -40,6 +40,7 @@ describe("conversationMetaSchema", () => {
       sourcePath: "/tmp/source.jsonl",
       filePath: null,
       sourceMtime: null,
+      indexedAt: null,
     });
 
     expect(parsed.state).toBe("discovered");
