@@ -1,0 +1,50 @@
+import { Command } from "commander";
+
+import { nowIso } from "../utils/time.js";
+import { updateConversation } from "../db/index.js";
+import { resolveConversationOrFail } from "./common.js";
+
+export function buildEditCommand(): Command {
+  const command = new Command("edit")
+    .description("Edit conversation metadata")
+    .argument("<id>")
+    .option("--title <text>")
+    .option("--summary <text>")
+    .option("--author <name>")
+    .action(async (id: string, options, actionCommand: Command) => {
+      if (
+        options.title === undefined &&
+        options.summary === undefined &&
+        options.author === undefined
+      ) {
+        process.stdout.write(actionCommand.helpInformation());
+        return;
+      }
+
+      const conversation = await resolveConversationOrFail(id);
+      const updated = {
+        ...conversation,
+        title: options.title ?? conversation.title,
+        summary: options.summary ?? conversation.summary,
+        author: options.author ?? conversation.author,
+      };
+
+      const changed =
+        updated.title !== conversation.title ||
+        updated.summary !== conversation.summary ||
+        updated.author !== conversation.author;
+
+      if (!changed) {
+        process.stdout.write("Nothing changed.\n");
+        return;
+      }
+
+      await updateConversation({
+        ...updated,
+        modifiedAt: nowIso(),
+      });
+      process.stdout.write(`Updated ${conversation.id.slice(0, 7)}\n`);
+    });
+
+  return command;
+}

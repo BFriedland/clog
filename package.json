@@ -1,0 +1,40 @@
+{
+  "name": "clog",
+  "version": "0.1.0",
+  "description": "Discover, curate, and share AI coding agent conversations as a searchable knowledge base",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "clog": "dist/index.js",
+    "clog-mcp": "dist/mcp/server.js"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/fix-bin-permissions.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint src/ tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "glob": "^11.0.1",
+    "proper-lockfile": "^4.1.2",
+    "sql.js": "^1.12.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/proper-lockfile": "^4.1.4",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^9.22.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.1",
+    "vitest": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

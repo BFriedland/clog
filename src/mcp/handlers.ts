@@ -1,0 +1,200 @@
+import { z } from "zod";
+
+import { loadConfig } from "../config/index.js";
+import { browseValues, getConversationById, listConversations, resolveConversationId, updateConversation } from "../db/index.js";
+import { type ConversationMeta } from "../models/conversation.js";
+import { nowIso } from "../utils/time.js";
+import { filterConversationsByGrep, parseConversationMessages } from "../cli/common.js";
+
+const listInputSchema = z.object({
+  tags: z.array(z.string()).optional(),
+  project: z.string().optional(),
+  author: z.string().optional(),
+  grep: z.string().optional(),
+  limit: z.number().int().positive().max(100).default(20),
+  offset: z.number().int().nonnegative().default(0),
+});
+
+const getInputSchema = z.object({
+  id: z.string(),
+  maxMessages: z.number().int().positive().max(200).default(20),
+});
+
+const updateInputSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  summary: z.string().optional(),
+  addTags: z.array(z.string()).optional(),
+  removeTags: z.array(z.string()).optional(),
+});
+
+const browseInputSchema = z.object({
+  by: z.enum(["tags", "projects", "authors"]),
+});
+
+export async function handleListPublished(input: unknown) {
+  const parsed = listInputSchema.parse(input ?? {});
+  return listConversationsForState("published", parsed);
+}
+
+export async function handleListStaged(input: unknown) {
+  const parsed = listInputSchema.parse(input ?? {});
+  return listConversationsForState("staged", parsed);
+}
+
+export async function handleGet(input: unknown) {
+  const parsed = getInputSchema.parse(input);
+  const config = await loadConfig();
+  const conversation = await resolveConversationByInput(parsed.id);
+
+  if (conversation.state === "discovered") {
+    throw new Error("clog_get only works on staged or published conversations.");
+  }
+
+  const messages = await parseConversationMessages(config, conversation);
+  const startIndex = Math.max(0, messages.length - parsed.maxMessages);
+  const truncated = startIndex > 0;
+
+  return {
+    id: conversation.id,
+    source: conversation.source,
+    title: conversation.title,
+    summary: conversation.summary,
+    tags: conversation.tags,
+    author: conversation.author,
+    projectName: conversation.projectName,
+    state: conversation.state,
+    createdAt: conversation.createdAt,
+    messages: messages.slice(startIndex),
+    totalMessages: messages.length,
+    truncated,
+    truncationNote: truncated
+      ? `Showing the last ${parsed.maxMessages} of ${messages.length} messages. Request a larger maxMessages value to retrieve more.`
+      : undefined,
+  };
+}
+
+export async function handleUpdate(input: unknown) {
+  const parsed = updateInputSchema.parse(input);
+  const conversation = await resolveConversationByInput(parsed.id);
+
+  if (conversation.state === "discovered") {
+    throw new Error("clog_update only works on staged or published conversations.");
+  }
+
+  const addTags = normalizeTags(parsed.addTags ?? []);
+  const removeTags = new Set(normalizeTags(parsed.removeTags ?? []));
+  const nextTags = [...new Set([...conversation.tags, ...addTags])].filter(
+    (tag) => !removeTags.has(tag),
+  );
+
+  const updated = {
+    ...conversation,
+    title: parsed.title ?? conversation.title,
+    summary: parsed.summary ?? conversation.summary,
+    tags: nextTags,
+  };
+
+  const changed =
+    updated.title !== conversation.title ||
+    updated.summary !== conversation.summary ||
+    JSON.stringify(updated.tags) !== JSON.stringify(conversation.tags);
+
+  if (!changed) {
+    return { conversation: summarizeConversation(conversation) };
+  }
+
+  const nextConversation = {
+    ...updated,
+    modifiedAt: nowIso(),
+  };
+  await updateConversation(nextConversation);
+
+  return {
+    conversation: summarizeConversation(nextConversation),
+  };
+}
+
+export async function handleBrowse(input: unknown) {
+  const parsed = browseInputSchema.parse(input);
+  const field =
+    parsed.by === "tags"
+      ? "tags_json"
+      : parsed.by === "projects"
+        ? "project_name"
+        : "author";
+
+  const items = await browseValues(field);
+  return { items };
+}
+
+async function listConversationsForState(
+  state: "staged" | "published",
+  input: z.infer<typeof listInputSchema>,
+) {
+  let conversations = await listConversations({
+    states: [state],
+    projectName: input.project,
+    author: input.author,
+  });
+
+  if (input.tags && input.tags.length > 0) {
+    const tags = new Set(normalizeTags(input.tags));
+    conversations = conversations.filter((conversation) =>
+      conversation.tags.some((tag) => tags.has(tag)),
+    );
+  }
+
+  if (input.grep) {
+    const config = await loadConfig();
+    conversations = await filterConversationsByGrep(config, input.grep, conversations);
+  }
+
+  const totalCount = conversations.length;
+  const page = conversations
+    .slice(input.offset, input.offset + input.limit)
+    .map((conversation) => ({
+      id: conversation.id,
+      source: conversation.source,
+      title: conversation.title,
+      summary: conversation.summary,
+      tags: conversation.tags,
+      author: conversation.author,
+      projectName: conversation.projectName,
+      createdAt: conversation.createdAt,
+    }));
+
+  return {
+    conversations: page,
+    totalCount,
+  };
+}
+
+async function resolveConversationByInput(input: string): Promise<ConversationMeta> {
+  const resolved = await resolveConversationId(input);
+  const conversation = await getConversationById(resolved.id);
+  if (!conversation) {
+    throw new Error(`Conversation "${input}" not found.`);
+  }
+
+  return conversation;
+}
+
+function normalizeTags(tags: string[]): string[] {
+  return [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+}
+
+function summarizeConversation(conversation: ConversationMeta) {
+  return {
+    id: conversation.id,
+    source: conversation.source,
+    title: conversation.title,
+    summary: conversation.summary,
+    tags: conversation.tags,
+    author: conversation.author,
+    projectName: conversation.projectName,
+    state: conversation.state,
+    createdAt: conversation.createdAt,
+    modifiedAt: conversation.modifiedAt,
+  };
+}

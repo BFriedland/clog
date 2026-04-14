@@ -29,6 +29,12 @@ Every user-facing behavior, architectural decision, data format, and convention 
 
 This specification is maintained independently of any codebase. It describes the intended system — not any particular implementation of it. Anyone may use it to produce their own clog. When a spec and an implementation diverge, either may be the one that needs updating — the spec may need to incorporate a design evolution, or the implementation may need to be corrected against the spec.
 
+This document sits at the top of clog's documentation hierarchy.
+
+- `SPEC.md` is the authority on intended behavior and design contracts.
+- Architecture/reference docs describe one implementation shape that satisfies the spec and should be updated when stable code boundaries change.
+- Phase implementation plans are lower-level execution documents. They describe sequencing and build strategy for a specific phase and may later become historical artifacts without becoming incorrect.
+
 Updates to the spec should be deliberate and self-contained. When writing or revising:
 
 - **Describe the intended behavior, not a delta.** Write as if the feature always existed. Don't use language like "now does X" or "was changed to Y."
@@ -289,11 +295,11 @@ Adapter parsing must be deterministic. For a given raw file, source adapter, ada
 
 Claude Code JSONL (Section 4.2) is normalized as follows:
 
-- Raw user line with `content: string` → `Message` with `role: "user"`
+- Raw user line with `content: string` → `Message` with `role: "user"` after applying the narrow hidden-wrapper filtering rule in §4.2.7. Confirmed hidden model scaffolding may be dropped; user-visible local-command/status entries remain canonical even when encoded with wrapper tags.
 - Raw assistant `text` content block → `Message` with `role: "assistant"`, `content` = the text
 - Raw assistant `tool_use` content block → `Message` with `role: "tool_use"`, `toolName` / `toolInput` populated
 - Raw user line with `tool_result` content block → `Message` with `role: "tool_result"`, `content` = status summary (e.g. `"Read: ok"`, `"Bash: error"`), `toolName` from the matching tool_use. The actual tool output is stripped — it's bulk content (file dumps, command output) that would bloat MCP payloads. The `is_error` field from the JSONL determines the status.
-- Raw assistant `thinking` content blocks → **stripped during normalization** (internal model reasoning, not useful for the knowledge base)
+- Raw assistant `thinking` content blocks and confirmed hidden model-only wrapper records → **stripped during normalization** (internal or non-user-visible scaffolding, not useful for the knowledge base)
 
 Codex CLI JSONL (Section 4.3) is normalized as follows:
 
@@ -612,7 +618,7 @@ During discovery (lightweight metadata extraction), the adapter will:
 2. Ignore `~/.claude/projects/*/*/subagents/` files for discovery. They are auxiliary sidechain logs, not separate discovered conversations.
 3. Set `projectPath` from the first `cwd` field found in the main conversation JSONL. Claude records may contain multiple `cwd` values over the life of a conversation as the agent moves into subdirectories; for project identity, the first `cwd` is authoritative because it best represents where Claude Code was started. Later `cwd` values must not overwrite `projectPath` during discovery.
 4. Scan each JSONL file for metadata only:
-   a. Find the first `type: "user"` line where `message.content` is a string → use as title (truncated to 100 chars)
+   a. Find the first projected canonical user message represented by a `type: "user"` line where `message.content` is a string, after skipping any string that is wrapper-only under the hidden-wrapper rule in §4.2.7 → use as title (truncated to 100 chars)
    b. Find the `type: "summary"` line if present → use as summary
    c. Extract the first valid `cwd` found → use as `projectPath`
    d. Set `projectName` to the basename of `projectPath` when `projectPath` is available; otherwise leave `projectName = null`
@@ -632,9 +638,14 @@ When full conversation content is needed (`parseMessages()`), the adapter will:
 3. Skip `system`, `progress`, `file-history-snapshot`, `queue-operation` lines
 4. For assistant messages, deduplicate by `message.id` — merge content blocks from lines sharing the same API message ID
 5. Strip `thinking` content blocks
-6. Do not parse or inline transcript content from `subagents/` sidechain files. If delegated work is visible to the user, it must already be represented by canonical transcript records in the parent file itself rather than by sidechain logs.
-7. Preserve parser-derived transcript order. When multiple raw assistant entries merge into one rendered message, the merged message appears at the position of its first raw occurrence.
-8. Normalize into the `Message[]` format (Section 3.2)
+6. For user-string records, apply a narrow hidden-wrapper filter before deciding whether to emit a canonical `Message`. In Phase 1, only confirmed hidden model scaffolding may be dropped; user-visible local-command or status entries must remain canonical even when encoded with XML-like wrapper tags.
+7. Do not parse or inline transcript content from `subagents/` sidechain files. If delegated work is visible to the user, it must already be represented by canonical transcript records in the parent file itself rather than by sidechain logs.
+8. Preserve parser-derived transcript order. When multiple raw assistant entries merge into one rendered message, the merged message appears at the position of its first raw occurrence.
+9. Normalize into the `Message[]` format (Section 3.2)
+
+For Claude canonical user-message projection, a user-string record is wrapper-only only when its trimmed text consists entirely of one or more known hidden wrapper blocks and contains no other user-visible content. This allowlist is intentionally narrow. Unknown XML-like tags are not treated as hidden automatically, and known user-visible local-command/status wrappers remain in the canonical transcript.
+
+In Phase 1, the only confirmed hidden Claude wrapper block name is `local-command-caveat`.
 
 **Edge cases the adapter must handle:**
 - Files containing only `file-history-snapshot` lines (no actual messages) — skip, treat as empty
@@ -715,7 +726,7 @@ Discovery filtering operates on the detected `projectPath`, not the `~/.codex/se
 
 If `projectPath` cannot be determined, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery, and including projectless conversations would make later filter changes change what private data had already entered the DB.
 
-For Codex title extraction, a canonical user message is wrapper-only when its trimmed extracted text consists entirely of one or more known context wrapper blocks and contains no other human prose. In Phase 1, the known wrapper block names are `environment_context` and `user_shell_command`. This allowlist is intentionally narrow because the exact set of Codex wrapper tags may evolve; unknown XML-like tags are not treated as wrapper-only automatically. Wrapper-only filtering applies only to title extraction. Transcript projection remains source-faithful and does not drop canonical user messages on this basis.
+For Codex title extraction, a canonical user message is wrapper-only when its trimmed extracted text consists entirely of one or more known context wrapper blocks and contains no other human prose. In Phase 1, the known wrapper block names are `environment_context` and `user_shell_command`. This allowlist is intentionally narrow because the exact set of Codex wrapper tags may evolve; unknown XML-like tags are not treated as wrapper-only automatically.
 
 #### 4.3.3 Adapter Full Parse Behavior
 
@@ -733,6 +744,13 @@ When full conversation content is needed, the adapter will:
 10. Drop `session_meta`, `turn_context`, `token_count`, `agent_message`, and `reasoning` records
 
 For Codex message text extraction, process `payload.content` in array order. For user messages, concatenate blocks where `type == "input_text"` and `text` is a string. For assistant messages, concatenate blocks where `type == "output_text"` and `text` is a string. Join multiple extracted text blocks with a blank line (`"\n\n"`). If no matching text blocks are present, emit no `Message` for that record. Unknown content block types are ignored for transcript projection.
+
+For canonical Codex user-message projection, strip a leading hidden wrapper prelude before deciding whether to emit a `Message`. In Phase 1, this prelude consists of:
+
+- an optional `# AGENTS.md instructions for ...` header followed by an `<INSTRUCTIONS>...</INSTRUCTIONS>` block
+- zero or more leading known wrapper blocks such as `environment_context` and `user_shell_command`
+
+After stripping that leading prelude, emit the remaining user text if any; if nothing remains, emit no canonical user `Message` for that record. This normalization is intentional: the raw JSONL remains the source of truth, but clog's projected transcript should not surface agent-only setup or environment wrapper text that Codex treats as hidden scaffolding rather than user-authored conversation content.
 
 For fallback `event_msg.user_message` extraction, use `payload.message` when it is a string. If `payload.message` is missing, non-string, or empty after trimming, emit no fallback `Message` and do not use that event for title extraction.
 
@@ -798,7 +816,7 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 
 ```
 clog init                  Initialize clog (runs automatically on first use)
-clog status                Show staged, modified, and discovered conversations + scan filter counts
+clog status [--source]     Show staged, modified, and discovered conversations + scan filter counts
 clog list [filters]        List conversations (default: staged + published)
 clog add <id...>           Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
 clog add --all             Add all discovered conversations
@@ -846,16 +864,16 @@ A typical session looks like:
 $ clog status
 Conversations to be published:
   (use "clog reset <id>" to unstage)
-    added:         a1b2c3d  2026-02-18  api-service      Debug auth token refresh logic
+    added:         a1b2c3d  2026-02-18  api-service Debug auth token refresh logic
 
 Changes to be published:
   (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)
-    modified:      b2c3d4e  2026-02-15  api-service      Set up CI pipeline
+    modified:      b2c3d4e  2026-02-15  api-service Set up CI pipeline
 
 Conversations not staged for publishing:
   (use "clog add <id>" to stage for publishing)
-    discovered:    d4e5f6a  2026-02-18  api-service      Add rate limiting middleware
-    discovered:    g7h8i9b  2026-02-17  frontend         Fix SSR hydration mismatch
+    discovered:    d4e5f6a  2026-02-18  api-service Add rate limiting middleware
+    discovered:    g7h8i9b  2026-02-17  frontend Fix SSR hydration mismatch
 
 (23 excluded, 8 filtered by config, 4 ignored by clogignore)
 
@@ -891,6 +909,28 @@ $ clog path a1b2c3
 $ clog show a1b2c3
 ```
 
+### 5.2 The `status` Command
+
+`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local conversations that need attention:
+
+- staged conversations ready to publish
+- published conversations modified since the last publish
+- discovered conversations not yet staged
+
+When there is nothing pending publication, `clog status` prints the existing clean-state message instead of empty sections.
+
+`clog status` accepts an optional `--source` flag. When present, each status row includes a `SOURCE` column immediately after the short `ID` column. The value is the canonical source key such as `claude-code` or `codex-cli`. When `--source` is absent, `clog status` preserves its default row layout.
+
+Example shape with `--source`:
+
+```text
+Conversations not staged for publishing:
+  (use "clog add <id>" to stage for publishing)
+    discovered:    d4e5f6a  claude-code  2026-02-18  api-service Add rate limiting middleware
+```
+
+`clog status` uses its own compact row format rather than the generic `clog list` table. The `PROJECT` field in status output is content-width: it is sized to the widest displayed project name in that status view, plus one trailing space of padding. It must not expand to consume additional terminal width beyond that content-based width. Any remaining horizontal space belongs to the rendered title text.
+
 ### 5.2.1 The `reset` Command
 
 `clog reset <id...>` is the inverse of `clog add`: it unstages staged conversations and moves them back to `discovered`.
@@ -919,7 +959,7 @@ For each staged conversation, reset:
 | `--project <name>` | `-p` | Filter by project |
 | `--author <name>` | `-a` | Filter by author |
 | `--tag <tag>` | `-t` | Filter by tag |
-| `--grep <text>` | `-g` | Filter by text match on title/summary |
+| `--grep <text>` | `-g` | Filter by text match on title, summary, or message content |
 | `--columns <cols>` | `-c` | Columns to show (comma-separated: `id,date,state,source,project,author,title`, or `all`) |
 
 ```bash
@@ -943,13 +983,13 @@ $ clog list --columns all
 $ clog list -c id,date,title
 ```
 
-Columns are dynamically sized to the terminal width. The `author` column is auto-shown when multiple distinct authors are present, even without `--columns`. The `source` column is auto-shown when the selected result set contains conversations from multiple distinct sources. `--columns` still overrides the default column set.
+Columns are dynamically sized to the terminal width. For every non-terminal column, width is computed from the current result set as `max(header width, widest rendered cell width) + 1`, producing dense output without large fixed-width gaps. The final visible column absorbs the remaining terminal width. When that final column is truncated, it must still allow at least `1` visible character plus `...` (minimum width `4`). The `author` column is auto-shown when multiple distinct authors are present, even without `--columns`. The `source` column is auto-shown when the selected result set contains conversations from multiple distinct sources. `--columns` still overrides the default column set.
 
 `clog list --all` is partly discovery-backed. It lists DB-backed conversations in any state, and it may also scan enabled local source paths to show excluded conversations that are still present on disk. These excluded rows are ephemeral display rows: they are not stored in the database, they are shown dimmed with state `excluded`, and they disappear from `list --all` if the source file is deleted, moved outside enabled scan scope, or belongs to a disabled source. Remote excluded conversations are not listed; remote exclusion blocks import.
 
 `--project` matches against `projectName`, using case-insensitive exact matching. Users pass `api-service`, not `/Users/alice/work/api-service`. LIKE wildcards (`%`, `_`) in the project name are escaped to prevent injection in DB queries. There is no default user-facing path filter flag; local path filtering belongs in config and `clogignore`.
 
-`--grep` performs a simple case-insensitive substring match against the `title` and `summary` fields. A conversation matches if either field contains the search text. This is deliberately simple — it's not regex, not full-text search, not semantic. It's the equivalent of piping through `grep -i` and is intended to remain useful alongside semantic search (Section 10), since it's fast, predictable, and doesn't require any additional dependencies.
+`--grep` performs a simple case-insensitive substring match against the `title`, `summary`, and message `content` fields. A conversation matches if any of those contain the search text. This is deliberately simple — it's not regex, not full-text search, not semantic. It's the equivalent of piping through `grep -i` and is intended to remain useful alongside semantic search (Section 10), since it's fast, predictable, and doesn't require any additional dependencies. Message-content matching requires reading the curated raw file for each candidate conversation, which is acceptable at Phase 1 scale; if this becomes a bottleneck, Phase 2's search index is the right place to optimize it. Conversations whose raw content cannot be read fall back to metadata-only matching.
 
 ### 5.4 The `edit` Command
 
@@ -1158,6 +1198,8 @@ Unpublish changes only curation state and search eligibility. It does not clear 
 
 `clog show <id>` displays conversation metadata followed by parsed messages. It works for staged and published conversations. Discovered conversations can be shown from the source file when the source file is still available.
 
+`clog show <id> --path` is path-output shorthand on the `show` command and is equivalent to `clog path <id>`.
+
 The metadata header includes the canonical source key for every conversation:
 
 ```
@@ -1166,6 +1208,8 @@ Source:  claude-code
 Title:   Debug JWT refresh race condition
 Project: api-service
 ```
+
+Header metadata values are presentation-normalized. In particular, the `Title:` field is rendered as a single line with internal whitespace collapsed, even if the stored title contains embedded newlines or other multi-line whitespace. This normalization applies only to the metadata header; parsed transcript messages remain source-faithful.
 
 When source is shown in CLI or MCP metadata, use the canonical raw source key such as `claude-code` or `codex-cli`, not a separate human-friendly display label.
 
@@ -1370,7 +1414,7 @@ input: {
   tags?: string[];         // Filter by tags (OR — conversations with at least one matching tag)
   project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
   author?: string;         // Filter by author
-  grep?: string;           // Case-insensitive substring match on title/summary
+  grep?: string;           // Case-insensitive substring match on title, summary, or message content
   limit?: number;          // Default 20, max 100
   offset?: number;         // For pagination
 }
