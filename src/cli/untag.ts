@@ -2,7 +2,7 @@ import { Command } from "commander";
 
 import { nowIso } from "../utils/time.js";
 import { updateConversation } from "../db/index.js";
-import { resolveConversationOrFail } from "./common.js";
+import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 import { normalizeTags } from "./tag.js";
 
 export function buildUntagCommand(): Command {
@@ -12,6 +12,7 @@ export function buildUntagCommand(): Command {
     .argument("<tags...>")
     .action(async (id: string, tags: string[]) => {
       const conversation = await resolveConversationOrFail(id);
+      assertNotRemote(conversation, "clog untag");
       const remove = new Set(normalizeTags(tags));
       const nextTags = conversation.tags.filter((tag) => !remove.has(tag));
 

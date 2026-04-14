@@ -6,6 +6,7 @@ import type { ConversationMeta } from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { nowIso } from "../utils/time.js";
 import {
+  assertNoneRemote,
   defaultPublishFilePath,
   ensureRawCopy,
   getPublishCandidate,
@@ -29,6 +30,8 @@ export function buildPublishCommand(): Command {
         process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
         return;
       }
+
+      assertNoneRemote(conversations, "clog publish");
 
       const publishedConversations: ConversationMeta[] = [];
 

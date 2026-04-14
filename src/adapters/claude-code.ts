@@ -230,6 +230,15 @@ export class ClaudeCodeAdapter implements SourceAdapter {
         ) {
           metadata.summary = (line as { summary: string }).summary;
         }
+
+        if (
+          metadata.title !== "(untitled)" &&
+          metadata.summary !== "" &&
+          metadata.slug !== null &&
+          metadata.projectPath !== null
+        ) {
+          break;
+        }
       }
     } finally {
       rl.close();

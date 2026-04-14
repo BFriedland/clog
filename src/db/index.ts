@@ -16,12 +16,16 @@ import { applyMigrations } from "./schema.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
 
+export type OriginFilter = "local" | "remote" | { url: string };
+
 export interface ListConversationFilters {
   states?: ConversationState[];
   projectName?: string;
   author?: string;
   tag?: string;
   indexed?: boolean;
+  origin?: OriginFilter;
+  curatedDefault?: { author: string } | null;
 }
 
 export interface ResolvedConversationId {
@@ -208,8 +212,9 @@ export function insertConversationInDb(
         source_path,
         file_path,
         source_mtime,
-        indexed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        indexed_at,
+        origin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     conversationToParams(conversation),
   );
@@ -242,7 +247,8 @@ export function updateConversationInDb(
         source_path = ?,
         file_path = ?,
         source_mtime = ?,
-        indexed_at = ?
+        indexed_at = ?,
+        origin = ?
       WHERE id = ?
     `,
     [
@@ -266,6 +272,7 @@ export function updateConversationInDb(
       conversation.filePath,
       conversation.sourceMtime,
       conversation.indexedAt,
+      conversation.origin,
       conversation.id,
     ],
   );
@@ -299,6 +306,20 @@ export function listConversationsInDb(
 
   if (filters.indexed != null) {
     whereParts.push(filters.indexed ? "indexed_at IS NOT NULL" : "indexed_at IS NULL");
+  }
+
+  if (filters.origin === "local") {
+    whereParts.push("origin IS NULL");
+  } else if (filters.origin === "remote") {
+    whereParts.push("origin IS NOT NULL");
+  } else if (filters.origin && typeof filters.origin === "object") {
+    whereParts.push("origin = ?");
+    params.push(filters.origin.url);
+  }
+
+  if (filters.curatedDefault) {
+    whereParts.push("(author = ? OR origin IS NULL)");
+    params.push(filters.curatedDefault.author);
   }
 
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -412,6 +433,7 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.filePath,
     conversation.sourceMtime,
     conversation.indexedAt,
+    conversation.origin,
   ];
 }
 
@@ -465,6 +487,7 @@ function rowToConversation(row: Record<string, unknown>): ConversationMeta {
     filePath: nullableString(row.file_path),
     sourceMtime: nullableString(row.source_mtime),
     indexedAt: nullableString(row.indexed_at),
+    origin: nullableString(row.origin),
   });
 }
 

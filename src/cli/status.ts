@@ -1,8 +1,10 @@
+import chalk from "chalk";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
+import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
 import {
   getFileMtimeIso,
@@ -21,9 +23,9 @@ export function buildStatusCommand(): Command {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
       renderWarnings(scanResult.warnings);
-      const staged = await listConversations({ states: ["staged"] });
-      const published = await listConversations({ states: ["published"] });
-      const discovered = await listConversations({ states: ["discovered"] });
+      const staged = await listConversations({ states: ["staged"], origin: "local" });
+      const published = await listConversations({ states: ["published"], origin: "local" });
+      const discovered = await listConversations({ states: ["discovered"], origin: "local" });
       const modifiedPublished: ConversationMeta[] = [];
       const cleanPublished: ConversationMeta[] = [];
 
@@ -95,7 +97,40 @@ export function buildStatusCommand(): Command {
           `\n${dimText(`(${counts.excluded} excluded, ${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned)`)}\n`,
         );
       }
+
+      await renderRemoteSection(config);
     });
+}
+
+async function renderRemoteSection(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<void> {
+  if (!config.remote.url) {
+    return;
+  }
+
+  const remoteCount = (await listConversations({ origin: "remote" })).length;
+  const unindexed = (
+    await listConversations({ states: ["published"], indexed: false })
+  ).length;
+
+  process.stdout.write(`\nRemote: ${config.remote.url}\n`);
+  process.stdout.write(`  ${remoteCount} conversation(s) imported from remote.\n`);
+
+  if (unindexed > 0) {
+    process.stdout.write(
+      `  ${unindexed} conversation(s) not yet indexed. Run \`clog index\` to index.\n`,
+    );
+  }
+
+  const staleness = await checkStaleness();
+  if (staleness.kind === "stale") {
+    process.stdout.write(
+      `${chalk.yellow(
+        "  Warning: remote checkout has changed outside of clog. Run `clog refresh` to reconcile.",
+      )}\n`,
+    );
+  }
 }
 
 function renderStatusLikeRows(

@@ -2,11 +2,38 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { handleBrowse, handleGet, handleListPublished, handleListStaged, handleUpdate } from "../src/mcp/handlers.js";
+import {
+  handleBrowse,
+  handleGet,
+  handleListPublished,
+  handleListStaged,
+  handleSearch,
+  handleUpdate,
+} from "../src/mcp/handlers.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
+import { SearchNotConfiguredError } from "../src/search/errors.js";
+import type {
+  EmbeddingProvider,
+  SearchHit,
+  VectorStore,
+} from "../src/search/types.js";
+import type { ConversationMeta } from "../src/models/conversation.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+
+vi.mock("../src/search/deps.js", async () => {
+  return {
+    getSearchProviders: vi.fn(async () => {
+      throw new SearchNotConfiguredError();
+    }),
+    searchAvailable: vi.fn(async () => false),
+    resetSearchProviders: () => undefined,
+  };
+});
+
+const depsModule = await import("../src/search/deps.js");
+const mockedGetSearchProviders = vi.mocked(depsModule.getSearchProviders);
 
 describe("mcp handlers", () => {
   let tempDir: string;
@@ -58,6 +85,7 @@ describe("mcp handlers", () => {
       filePath,
       sourceMtime: null,
       indexedAt: "2026-02-01T10:00:03.000Z",
+      origin: null,
     });
   });
 
@@ -147,4 +175,312 @@ describe("mcp handlers", () => {
     const result = await handleListStaged({});
     expect(result.totalCount).toBe(0);
   });
+
+  it("filters clog_list_published by origin", async () => {
+    // Add a remote-origin row so we have one of each.
+    await insertConversation({
+      id: "def45678-1234-1234-1234-123456789012",
+      sourceId: "def45678-1234-1234-1234-123456789012",
+      source: "claude-code",
+      title: "From remote",
+      summary: "",
+      author: "bob",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: "2026-02-02T10:00:00.000Z",
+      discoveredAt: "2026-02-02T10:00:00.000Z",
+      modifiedAt: "2026-02-02T10:00:00.000Z",
+      state: "published",
+      publishedAt: "2026-02-02T10:00:00.000Z",
+      publishedMessageCount: 1,
+      publishVersion: 1,
+      sourcePath: "/tmp/remote.jsonl",
+      filePath: "/tmp/remote.jsonl",
+      sourceMtime: null,
+      indexedAt: null,
+      origin: "git@github.com:myorg/clog-team.git",
+    });
+
+    const all = await handleListPublished({});
+    expect(all.totalCount).toBe(2);
+
+    const local = await handleListPublished({ origin: "local" });
+    expect(local.totalCount).toBe(1);
+    expect(local.conversations[0]?.title).toBe("Debug auth flow");
+
+    const remote = await handleListPublished({ origin: "remote" });
+    expect(remote.totalCount).toBe(1);
+    expect(remote.conversations[0]?.title).toBe("From remote");
+  });
+
+  // ============================================================
+  // Additional list filters
+  // ============================================================
+
+  it("filters by tags (OR semantics)", async () => {
+    await insertOtherPublished("b1111111-1111-1111-1111-111111111111", {
+      title: "Has rate-limit",
+      tags: ["rate-limiting"],
+    });
+
+    const hits = await handleListPublished({ tags: ["auth"] });
+    expect(hits.totalCount).toBe(1);
+    expect(hits.conversations[0]?.title).toBe("Debug auth flow");
+
+    const multi = await handleListPublished({ tags: ["rate-limiting", "auth"] });
+    expect(multi.totalCount).toBe(2);
+  });
+
+  it("filters by project and author", async () => {
+    await insertOtherPublished("b2222222-2222-2222-2222-222222222222", {
+      title: "Other service",
+      author: "bob",
+      projectName: "other-service",
+    });
+
+    const byProject = await handleListPublished({ project: "api-service" });
+    expect(byProject.totalCount).toBe(1);
+    expect(byProject.conversations[0]?.projectName).toBe("api-service");
+
+    const byAuthor = await handleListPublished({ author: "bob" });
+    expect(byAuthor.totalCount).toBe(1);
+    expect(byAuthor.conversations[0]?.author).toBe("bob");
+  });
+
+  it("filters by grep against title and summary", async () => {
+    await insertOtherPublished("b3333333-3333-3333-3333-333333333333", {
+      title: "Unrelated chat",
+      summary: "JWT token refresh discussion",
+    });
+
+    const byTitle = await handleListPublished({ grep: "debug auth" });
+    expect(byTitle.conversations.map((c) => c.title)).toContain("Debug auth flow");
+
+    const bySummary = await handleListPublished({ grep: "jwt" });
+    expect(bySummary.conversations.map((c) => c.title)).toContain("Unrelated chat");
+  });
+
+  it("supports limit and offset pagination", async () => {
+    for (let i = 0; i < 5; i++) {
+      await insertOtherPublished(`b4${i}${i}${i}${i}${i}${i}${i}-4444-4444-4444-444444444444`, {
+        title: `Row ${i}`,
+      });
+    }
+
+    const first = await handleListPublished({ limit: 3, offset: 0 });
+    expect(first.conversations).toHaveLength(3);
+    expect(first.totalCount).toBe(6); // the original + 5 new
+
+    const second = await handleListPublished({ limit: 3, offset: 3 });
+    expect(second.conversations).toHaveLength(3);
+  });
+
+  it("lists staged conversations separately from published", async () => {
+    await insertOtherPublished("b5555555-5555-5555-5555-555555555555", {
+      title: "A staged one",
+      state: "staged",
+    });
+
+    const published = await handleListPublished({});
+    const staged = await handleListStaged({});
+
+    expect(published.totalCount).toBe(1);
+    expect(published.conversations[0]?.title).toBe("Debug auth flow");
+    expect(staged.totalCount).toBe(1);
+    expect(staged.conversations[0]?.title).toBe("A staged one");
+  });
+
+  // ============================================================
+  // clog_get edge cases
+  // ============================================================
+
+  it("clog_get throws on a discovered conversation", async () => {
+    await insertOtherPublished("b6666666-6666-6666-6666-666666666666", {
+      state: "discovered",
+    });
+    await expect(handleGet({ id: "b6666666" })).rejects.toThrow(
+      /staged or published/,
+    );
+  });
+
+  it("clog_get throws when the id is not found", async () => {
+    await expect(handleGet({ id: "9999eeee" })).rejects.toThrow(/No conversation matches/);
+  });
+
+  // ============================================================
+  // clog_update edge cases
+  // ============================================================
+
+  it("clog_update throws on a discovered conversation", async () => {
+    await insertOtherPublished("b7777777-7777-7777-7777-777777777777", {
+      state: "discovered",
+    });
+
+    await expect(
+      handleUpdate({ id: "b7777777", title: "New title" }),
+    ).rejects.toThrow(/staged or published/);
+  });
+
+  it("clog_update refuses a remote conversation (SPEC §11.1)", async () => {
+    await insertOtherPublished("bb000000-0000-0000-0000-000000000002", {
+      origin: "git@example.com:team/repo.git",
+    });
+
+    await expect(
+      handleUpdate({ id: "bb000000", title: "new title" }),
+    ).rejects.toThrow(/remote.*read-only/i);
+  });
+
+  it("clog_update removeTags removes matching tags and bumps modifiedAt", async () => {
+    await insertOtherPublished("b8888888-8888-8888-8888-888888888888", {
+      tags: ["bug", "urgent", "frontend"],
+    });
+
+    const result = await handleUpdate({
+      id: "b8888888",
+      removeTags: ["bug", "urgent"],
+    });
+    expect(result.conversation.tags).toEqual(["frontend"]);
+  });
+
+  // ============================================================
+  // clog_browse
+  // ============================================================
+
+  it("browses projects", async () => {
+    await insertOtherPublished("b9999999-9999-9999-9999-999999999999", {
+      projectName: "other-project",
+    });
+    const result = await handleBrowse({ by: "projects" });
+    expect(result.items.map((item) => item.name).sort()).toEqual([
+      "api-service",
+      "other-project",
+    ]);
+  });
+
+  // ============================================================
+  // clog_search
+  // ============================================================
+
+  it("clog_search throws when search is not configured", async () => {
+    // Default mock throws SearchNotConfiguredError (see vi.mock above).
+    await expect(handleSearch({ query: "auth" })).rejects.toThrow(
+      /Search is not configured/,
+    );
+  });
+
+  it("clog_search returns empty results with indexCoverage when no conversations are searchable", async () => {
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore([]),
+    });
+
+    // The seeded conversation has indexedAt set, but we'll add an unindexed one.
+    await insertOtherPublished("ba000000-0000-0000-0000-000000000001", {
+      title: "Not indexed",
+      indexedAt: null,
+    });
+
+    const result = await handleSearch({
+      query: "auth",
+      project: "no-such-project",
+    });
+    expect(result.results).toEqual([]);
+    // No searchable conversations match the project filter, so the invariant-check
+    // short-circuits before invoking the vector store.
+    expect(result.indexCoverage.indexed).toBe(0);
+  });
+
+  it("clog_search returns ranked hits scoped to searchable conversations", async () => {
+    const searchableId = "abc12345-1234-1234-1234-123456789012"; // seeded in beforeEach, indexedAt set
+    const hits: SearchHit[] = [
+      {
+        id: `${searchableId}:0`,
+        score: 0.9,
+        text: "How to debug JWT refresh",
+        metadata: { conversationId: searchableId },
+      },
+    ];
+
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore(hits),
+    });
+
+    const result = await handleSearch({ query: "auth" });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.id).toBe(searchableId);
+    expect(result.results[0]?.relevanceScore).toBe(0.9);
+    expect(result.results[0]?.snippet).toContain("debug JWT refresh");
+    expect(result.indexCoverage.indexed).toBe(1);
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("clog_search reports the scan-cap warning when the window is exhausted", async () => {
+    const searchableId = "abc12345-1234-1234-1234-123456789012";
+    // Return a full window of sub-threshold hits that never satisfy the limit.
+    const hits: SearchHit[] = Array.from({ length: 5000 }, (_, i) => ({
+      id: `${searchableId}:${i}`,
+      score: 0.05,
+      text: `noise ${i}`,
+      metadata: { conversationId: searchableId },
+    }));
+
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore(hits),
+    });
+
+    const result = await handleSearch({ query: "auth", limit: 10 });
+    expect(result.warning).toContain("maximum scan window");
+  });
 });
+
+async function insertOtherPublished(
+  id: string,
+  overrides: Partial<ConversationMeta> = {},
+): Promise<void> {
+  await insertConversation({
+    id,
+    sourceId: id,
+    source: "claude-code",
+    title: "Other conversation",
+    summary: "",
+    author: "alice",
+    projectName: "api-service",
+    projectPath: "/tmp/api-service",
+    tags: [],
+    slug: null,
+    createdAt: "2026-02-01T10:00:00.000Z",
+    discoveredAt: "2026-02-01T10:00:00.000Z",
+    modifiedAt: "2026-02-01T10:00:00.000Z",
+    state: "published",
+    publishedAt: "2026-02-01T10:00:00.000Z",
+    publishedMessageCount: 1,
+    publishVersion: 1,
+    sourcePath: "/tmp/other.jsonl",
+    filePath: "/tmp/other.jsonl",
+    sourceMtime: null,
+    indexedAt: "2026-02-01T10:00:00.000Z",
+    origin: null,
+    ...overrides,
+  });
+}
+
+function makeEmbedding(): EmbeddingProvider {
+  return {
+    name: "fake",
+    dimensions: 3,
+    embed: vi.fn(async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3])),
+  };
+}
+
+function makeVectorStore(hits: SearchHit[]): VectorStore {
+  return {
+    upsert: vi.fn(async () => undefined),
+    delete: vi.fn(async () => undefined),
+    search: vi.fn(async (_embedding, limit) => hits.slice(0, limit)),
+  };
+}

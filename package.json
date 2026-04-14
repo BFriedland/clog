@@ -12,6 +12,7 @@
     "build": "tsc && node scripts/fix-bin-permissions.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "dev": "tsx src/index.ts",
     "lint": "eslint src/ tests/"
   },

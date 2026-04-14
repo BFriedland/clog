@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -19,6 +19,11 @@ export function applyMigrations(db: Database): void {
   if (currentVersion < 2) {
     addColumnIfMissing(db, "conversations", "indexed_at", "TEXT");
     setSchemaVersion(db, 2);
+  }
+
+  if (currentVersion < 3) {
+    addColumnIfMissing(db, "conversations", "origin", "TEXT DEFAULT NULL");
+    setSchemaVersion(db, 3);
   }
 }
 
@@ -57,6 +62,7 @@ function createConversationsTable(db: Database): void {
       file_path TEXT,
       source_mtime TEXT,
       indexed_at TEXT,
+      origin TEXT DEFAULT NULL,
       UNIQUE(source, source_id)
     );
   `);

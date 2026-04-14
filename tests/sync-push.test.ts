@@ -1,0 +1,305 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { insertConversation } from "../src/db/index.js";
+import type { ConversationMeta } from "../src/models/conversation.js";
+import {
+  buildCommitMessage,
+  exportAuthorToCheckout,
+  type ChangeRecord,
+} from "../src/sync/push.js";
+import { getRemoteRoot, getRemoteSourceDir } from "../src/sync/paths.js";
+import {
+  getRawConversationPath,
+  getRawSourceDir,
+} from "../src/utils/paths.js";
+import { writeJsonl } from "./helpers/fixtures.js";
+
+describe("buildCommitMessage", () => {
+  it("renders a single-author commit with ≤10 changes including per-conversation lines", () => {
+    const changes: ChangeRecord[] = [
+      { kind: "added", id: "abc1234", title: "Fix auth", source: "claude-code", author: "alice" },
+      { kind: "added", id: "def5678", title: "Refactor DB", source: "claude-code", author: "alice" },
+      { kind: "updated", id: "aaa1111", title: "Update session", source: "claude-code", author: "alice" },
+      { kind: "retracted", id: "789fedc", title: "Debug leak", source: "claude-code", author: "alice" },
+    ];
+
+    const message = buildCommitMessage({ changes });
+
+    expect(message).toContain("clog: alice — 2 added, 1 updated, 1 retracted");
+    expect(message).toContain("  + abc1234 Fix auth");
+    expect(message).toContain("  + def5678 Refactor DB");
+    expect(message).toContain("  ~ aaa1111 Update session");
+    expect(message).toContain("  - 789fedc Debug leak");
+  });
+
+  it("renders a single-author commit with >10 changes as a summary only", () => {
+    const changes: ChangeRecord[] = Array.from({ length: 47 }, (_, i) => ({
+      kind: "added" as const,
+      id: `id${String(i).padStart(5, "0")}`,
+      title: `Conversation ${i}`,
+      source: "claude-code",
+      author: "alice",
+    }));
+
+    const message = buildCommitMessage({ changes });
+
+    expect(message).toBe("clog: alice — 47 added");
+    expect(message).not.toContain("+ ");
+  });
+
+  it("renders a multi-author commit with per-author lines only", () => {
+    const changes: ChangeRecord[] = [
+      ...Array.from({ length: 47 }, (_, i) => ({
+        kind: "added" as const,
+        id: `a${i}`,
+        title: `A ${i}`,
+        source: "claude-code",
+        author: "alice",
+      })),
+      { kind: "added", id: "b1", title: "B1", source: "claude-code", author: "bob" },
+      { kind: "added", id: "b2", title: "B2", source: "claude-code", author: "bob" },
+      { kind: "retracted", id: "b3", title: "B3", source: "claude-code", author: "bob" },
+    ];
+
+    const message = buildCommitMessage({ changes });
+
+    expect(message).toContain("clog: 2 authors — 49 added, 1 retracted");
+    expect(message).toContain("  alice: 47 added");
+    expect(message).toContain("  bob: 2 added, 1 retracted");
+    expect(message).not.toContain("+ ");
+  });
+});
+
+describe("exportAuthorToCheckout", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-sync-push-"));
+    process.env.CLOG_HOME = tempDir;
+  });
+
+  afterEach(async () => {
+    delete process.env.CLOG_HOME;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("writes .meta.json and .jsonl pairs and reports added changes on first export", async () => {
+    const conversation = await insertLocalPublished({
+      id: "a1111111-1111-1111-1111-111111111111",
+      title: "Fix auth",
+      author: "alice",
+    });
+
+    const stats = await exportAuthorToCheckout("alice");
+
+    expect(stats.changes).toHaveLength(1);
+    expect(stats.changes[0]?.kind).toBe("added");
+    expect(stats.changes[0]?.title).toBe("Fix auth");
+
+    const metaPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${conversation.id}.meta.json`,
+    );
+    const jsonlPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${conversation.id}.jsonl`,
+    );
+
+    const meta = JSON.parse(await fs.readFile(metaPath, "utf8"));
+    expect(meta.title).toBe("Fix auth");
+    expect(meta).not.toHaveProperty("projectPath");
+
+    await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+  });
+
+  it("reports zero changes on a second export when nothing changed", async () => {
+    await insertLocalPublished({
+      id: "a2222222-2222-2222-2222-222222222222",
+      title: "Stable",
+      author: "alice",
+    });
+
+    await exportAuthorToCheckout("alice");
+    const second = await exportAuthorToCheckout("alice");
+
+    expect(second.changes).toHaveLength(0);
+  });
+
+  it("retracts pairs whose DB row no longer exists under config.author", async () => {
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    const id = "a3333333-3333-3333-3333-333333333333";
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "Retracted conversation" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
+
+    const stats = await exportAuthorToCheckout("alice");
+
+    expect(stats.changes).toHaveLength(1);
+    expect(stats.changes[0]?.kind).toBe("retracted");
+    expect(stats.changes[0]?.title).toBe("Retracted conversation");
+
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not retract orphaned single files (lightest-necessary-touch)", async () => {
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    const id = "a4444444-4444-4444-4444-444444444444";
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "Orphan meta only" }, null, 2)}\n`,
+      "utf8",
+    );
+    // No .jsonl — incomplete pair. Must not be deleted.
+
+    const stats = await exportAuthorToCheckout("alice");
+
+    expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).resolves.toBeTruthy();
+  });
+
+  it("does not touch other authors' directories", async () => {
+    const bobDir = getRemoteSourceDir("bob", "claude-code");
+    await fs.mkdir(bobDir, { recursive: true });
+    const bobId = "b1111111-1111-1111-1111-111111111111";
+    await fs.writeFile(
+      path.join(bobDir, `${bobId}.meta.json`),
+      `${JSON.stringify({ title: "Bob's file" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(bobDir, `${bobId}.jsonl`), "{}\n", "utf8");
+
+    await exportAuthorToCheckout("alice");
+
+    await expect(
+      fs.stat(path.join(bobDir, `${bobId}.meta.json`)),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(bobDir, `${bobId}.jsonl`)),
+    ).resolves.toBeTruthy();
+  });
+
+  it("does not touch unknown source directories under config.author", async () => {
+    const unknownDir = path.join(getRemoteRoot(), "alice", "strange-source");
+    await fs.mkdir(unknownDir, { recursive: true });
+    const stub = path.join(unknownDir, "some-file.meta.json");
+    await fs.writeFile(stub, "{}", "utf8");
+
+    await exportAuthorToCheckout("alice");
+
+    await expect(fs.stat(stub)).resolves.toBeTruthy();
+  });
+
+  it("reports 'added' (not 'updated') when only one file of a pair previously existed", async () => {
+    const conversation = await insertLocalPublished({
+      id: "a9999999-9999-9999-9999-999999999999",
+      title: "Orphan meta pre-existed",
+      author: "alice",
+    });
+
+    // Pre-seed only the meta.json (orphan from a previous partial operation).
+    const sourceDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, `${conversation.id}.meta.json`),
+      `${JSON.stringify({ title: "stale" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const stats = await exportAuthorToCheckout("alice");
+
+    expect(stats.changes).toHaveLength(1);
+    expect(stats.changes[0]?.kind).toBe("added");
+  });
+
+  it("excludes remote-origin conversations from the export set", async () => {
+    // A remote-origin row should never be re-pushed.
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id: "a5555555-5555-5555-5555-555555555555",
+      sourceId: "a5555555-5555-5555-5555-555555555555",
+      source: "claude-code",
+      title: "From remote",
+      summary: "",
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "published",
+      publishedAt: timestamp,
+      publishedMessageCount: 2,
+      publishVersion: 1,
+      sourcePath: "/tmp/remote-checkout.jsonl",
+      filePath: "/tmp/remote-checkout.jsonl",
+      sourceMtime: null,
+      indexedAt: null,
+      origin: "git@github.com:myorg/clog-team.git",
+    });
+
+    const stats = await exportAuthorToCheckout("alice");
+
+    expect(stats.changes).toHaveLength(0);
+  });
+});
+
+async function insertLocalPublished(options: {
+  id: string;
+  title: string;
+  author: string;
+}): Promise<ConversationMeta> {
+  const rawPath = getRawConversationPath("claude-code", options.id);
+  await fs.mkdir(getRawSourceDir("claude-code"), { recursive: true });
+  await writeJsonl(rawPath, [
+    {
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: "/tmp/repo",
+      message: { role: "user", content: "Hello" },
+    },
+  ]);
+
+  const timestamp = "2026-02-01T10:00:00.000Z";
+  const conversation: ConversationMeta = {
+    id: options.id,
+    sourceId: options.id,
+    source: "claude-code",
+    title: options.title,
+    summary: "",
+    author: options.author,
+    projectName: "repo",
+    projectPath: "/tmp/repo",
+    tags: [],
+    slug: null,
+    createdAt: timestamp,
+    discoveredAt: timestamp,
+    modifiedAt: timestamp,
+    state: "published",
+    publishedAt: timestamp,
+    publishedMessageCount: 1,
+    publishVersion: 1,
+    sourcePath: rawPath,
+    filePath: rawPath,
+    sourceMtime: null,
+    indexedAt: null,
+    origin: null,
+  };
+
+  await insertConversation(conversation);
+  return conversation;
+}

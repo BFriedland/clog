@@ -4,7 +4,7 @@ import type { ConversationMeta } from "../models/conversation.js";
 import { nowIso } from "../utils/time.js";
 import { updateConversation } from "../db/index.js";
 import { maybeReindexUpdatedConversation } from "../search/coherence.js";
-import { resolveConversationOrFail } from "./common.js";
+import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 
 export function buildEditCommand(): Command {
   const command = new Command("edit")
@@ -24,6 +24,7 @@ export function buildEditCommand(): Command {
       }
 
       const conversation = await resolveConversationOrFail(id);
+      assertNotRemote(conversation, "clog edit");
       const updated = {
         ...conversation,
         title: options.title ?? conversation.title,

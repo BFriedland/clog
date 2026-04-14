@@ -2056,6 +2056,16 @@ The excluded file (not the DB or config) is the right home for this because:
 
 `clog unexclude` reverses the exclusion. For remote conversations, the next `clog sync pull` or `clog refresh` re-imports them.
 
+#### Commits Use the User's Existing Git Identity
+
+clog never writes `user.name` or `user.email` into `~/.clog/remote/.git/config`. Commits made by `clog sync push` are authored by whatever git resolves for that working tree, which under normal use is the user's global git identity (`git config --global user.name` / `user.email`).
+
+This is deliberate. clog's users are developers who already have git configured. Their organizational git identity is the right committer for a shared knowledge-base repo: it preserves SSO attribution, commit signing, and audit-trail correlation that an org may already rely on. Synthesizing a placeholder identity like `<author>@clog.local` would actively destroy that correlation for the life of the repo's history, and would conflate clog's *curation* identity (`config.author`, which can be a display name or a renamed value like `alice-work`) with git's *transport* identity.
+
+If git has no identity configured, `clog sync push` surfaces git's native error and adds a hint pointing at `git config --global`. clog does not auto-configure the checkout to work around the missing identity.
+
+On first clone or pull, clog performs an advisory check (`git -C ~/.clog/remote config user.email`). If the resolved value is empty, it prints the same hint up front rather than waiting for the first push to fail. This is a warning, not a write — clog never modifies git's identity configuration.
+
 #### No Automatic Retries
 
 No operations automatically retry. If a `git push` is rejected (simultaneous push from a teammate), clog stops and informs the user. They can re-run `clog sync push` manually. This applies to all sync operations.
@@ -2229,7 +2239,7 @@ Add a `remote` block to `config.json`:
 |-------|------|-------------|
 | `remote.url` | string or null | Git remote URL. `null` = no remote configured |
 | `remote.allowPublicRemote` | boolean | Override public repo safety check. Only settable by manual config edit, not via CLI |
-| `remote.visibilityConfirmed` | boolean | Persisted after first-push confirmation for non-GitHub remotes |
+| `remote.visibilityConfirmed` | boolean | Persisted after the user explicitly accepted the visibility risk at `clog remote add` time (see §11.6) |
 | `remote.lastSyncHead` | string or null | Git HEAD hash from last successful sync operation. Used for staleness detection |
 
 Sync metadata lives in config (not DB) so that the DB remains disposable — users can delete `clog.db` and regenerate it from source files without losing sync configuration.
@@ -2242,21 +2252,82 @@ Store the URL in `config.json`. Does **not** clone — `remote add` is a configu
 
 If a remote already exists, error: "Remote already configured. Use `clog remote remove` first."
 
-**Public repo safety check** — before storing the config:
+**Visibility safety check** — before storing the config:
 
-For GitHub remotes (detectable by hostname): parse the URL, call `gh api repos/{owner}/{repo} --jq .visibility` (if `gh` is available) or the GitHub REST API. If the repo is public, refuse:
+clog treats pushing conversations to a public repository as the single most dangerous operation in the sync layer. Every successful `clog remote add` must end in one of two states: either clog has positively confirmed the repository is public and refused, or the user has explicitly accepted the visibility risk for this repository at add time. There is no silent-proceed path.
+
+The check has two outcomes:
+
+| Outcome | Trigger | Action |
+|---------|---------|--------|
+| **Proven public** | Unauthenticated GitHub REST probe returns `200 OK` with `"private": false` in the JSON body | Refuse the add |
+| **Not proven public** | Anything else — `404`, `403`, network error, timeout, malformed JSON, non-GitHub host, any other response | Interactive confirmation required before the URL is stored |
+
+There is no "proven private" outcome and no silent-proceed outcome. GitHub's unauthenticated REST API deliberately returns `404` for private repositories — it never reveals that a private repo exists to an unauthenticated caller, because doing so would leak repository names via enumeration. An unauthenticated GET therefore cannot positively confirm that a repository is private; it can only positively confirm that one is public. clog does not attempt to authenticate the probe: authenticating would tie the check to whichever token the user happens to have configured (which may have different permissions than the repo's access model), and would introduce new failure modes unrelated to visibility.
+
+**GitHub host detection and URL conversion:**
+
+- `github.com` is matched by hostname. URLs like `git@github.com:org/repo.git` and `https://github.com/org/repo.git` map to `https://api.github.com/repos/org/repo`.
+- GitHub Enterprise hosts are matched heuristically (e.g., `github.*` hostnames). URLs like `git@github.mycorp.com:org/repo.git` and `https://github.mycorp.com/org/repo.git` map to `https://github.mycorp.com/api/v3/repos/org/repo`.
+- The `.git` suffix is stripped from the path. Trailing slashes are tolerated.
+
+clog issues an unauthenticated `GET` to the derived API URL with a short timeout (e.g., 5 seconds), no auth headers, and no credential helper involvement. The probe is a one-shot per `remote add` invocation; it does not retry. For non-GitHub hosts, the probe is skipped and the flow goes directly to the confirmation branch.
+
+**Proven-public refusal:**
+
+When the probe returns `200 OK` with `"private": false`, clog refuses without a prompt. The refusal uses warning emphasis — the word "Error" and the repository identifier are rendered in bold red when the terminal supports color:
 
 ```
 Error: Repository myorg/clog-team is public.
-Pushing conversations to a public repository would make them visible to anyone.
+Pushing conversations to a public repository would make them visible
+to anyone on the internet.
 If this is intentional, add "allowPublicRemote": true to your clog config.
 ```
 
-The `allowPublicRemote` flag must be manually edited into `config.json` — not settable via a CLI command. This makes public repos a deliberate, high-friction choice.
+The `allowPublicRemote` flag must be manually edited into `config.json` — not settable via a CLI command or the `--yes` flag. This keeps public repos a deliberate, high-friction choice that cannot be reached by a mistyped command or an overly permissive automation script.
 
-**GitHub HTTPS URL warning** — GitHub does not support password authentication over HTTPS. If the URL matches `https://github.com/...`, warn the user, suggest the equivalent SSH URL, and prompt to continue. Users with a personal access token or `gh auth login` configured can proceed; the warning ensures they're making an informed choice rather than hitting an opaque auth failure on first push.
+**Not-proven-public confirmation:**
 
-For non-GitHub remotes: the safety check happens on first push (see §11.7).
+When the probe returns anything other than a proven-public response, clog prints an interactive confirmation. The header line and the critical risk sentence use warning emphasis — the header in bold yellow, the risk sentence in bold red, the default answer `N` in bold — when the terminal supports color:
+
+```
+clog could not verify that git@github.com:myorg/clog-team.git is private.
+Reason: <dynamic reason>.
+
+If this repository is public, the conversations clog pushes to it will
+be visible to anyone on the internet. clog refuses to push to a repository
+it has positively identified as public, but it cannot guarantee privacy
+when the visibility check could not complete.
+
+Only continue if you are certain this repository is private.
+
+Continue? [y/N]
+```
+
+The `Reason:` line is filled in dynamically so the user understands which branch they hit:
+
+| Condition | Reason line |
+|-----------|-------------|
+| HTTP `404` | `repository not found or private (GitHub returns 404 for both)` |
+| HTTP `403` | `GitHub API rate limited (HTTP 403)` |
+| Other 4xx / 5xx | `unexpected GitHub API response (HTTP <status>)` |
+| Network error, DNS failure, timeout | `network error: <error message>` |
+| Malformed JSON body | `could not parse GitHub API response` |
+| Non-GitHub host | `non-GitHub host — clog cannot probe visibility over REST` |
+| Unexpected `200 OK` with `"private": true` | `GitHub returned a privacy claim clog did not expect; please verify manually` |
+
+The default answer is `N`. Hitting enter without typing anything aborts the add with `"Aborted."` and does not write any config. On `y`, clog writes `remote.url` and `remote.visibilityConfirmed: true` to config and prints `"Remote configured. Run 'clog sync pull' to clone."`.
+
+The `--yes` flag bypasses this confirmation (for scripts and tests). `--yes` does **not** bypass the proven-public refusal — even `--yes` cannot add a confirmed-public repo without also setting `allowPublicRemote` in `config.json`.
+
+**Why this model:**
+
+- One decision point at the moment the user is most engaged with the URL they just typed, rather than a deferred confirmation during a later `sync push` that is easy to click through
+- One refusal condition, one confirmation condition, zero silent-proceed paths — every successful add is either positively-verified-not-public or explicitly-user-accepted
+- The confirmation fires on the happy path (because unauthenticated 404 is the normal outcome for any real private repo), which means users come to expect the prompt and cannot have it sneak past them
+- The probe is deterministic and unit-testable by mocking `fetch`, with no dependency on a `gh` binary, a credential helper, or a logged-in shell
+
+**GitHub HTTPS URL warning** — GitHub does not support password authentication over HTTPS. If the URL matches `https://github.com/...`, warn the user, suggest the equivalent SSH URL, and prompt to continue. This warning is separate from the visibility confirmation and fires first; the visibility confirmation still runs afterward. Users with a personal access token or `gh auth login` configured can proceed; the warning ensures they're making an informed choice rather than hitting an opaque auth failure on first push.
 
 #### `clog remote show`
 
@@ -2330,7 +2401,7 @@ The command does not touch the git checkout, push, or config. On the next `clog 
 - Remote is configured. If not: error and stop.
 - `config.author` is non-empty. If not: `"Set your author name first: clog config set author <name>"`
 - Checkout exists (`~/.clog/remote/`). If not: `"You haven't pulled from the remote yet. Run 'clog sync pull' first."`
-- First push to a non-GitHub remote: require visibility confirmation (see below).
+- `remote.visibilityConfirmed` is `true` in config. If not (only reachable via hand-edited config): refuse with `"Remote visibility was never confirmed. Run 'clog remote remove' and 'clog remote add <url>' to re-run the visibility check."`
 
 **Pull phase** (incorporate teammates' changes):
 
@@ -2387,17 +2458,7 @@ Pushed to git@github.com:myorg/clog-team.git
 
 Use "retracted" (not "deleted" or "removed") to distinguish from `clog remote remove`.
 
-**First push — non-GitHub remote safety check:**
-
-On the first push to a non-GitHub remote (where visibility couldn't be checked during `remote add`):
-
-```
-You are about to push N conversations to git@example.com:team/clog.git.
-clog cannot verify whether this remote is private.
-Continue? [y/N]
-```
-
-Confirmation is persisted in config (`remote.visibilityConfirmed: true`) so it doesn't ask again.
+**Visibility confirmation is an add-time decision, not a push-time decision.** Every code path that reaches `sync push` has already seen `remote.visibilityConfirmed: true` in config, because `remote add` either refused the repository, aborted without writing config, or wrote the config with `visibilityConfirmed` set. `sync push` therefore performs no visibility check of its own and shows no visibility prompt. If `visibilityConfirmed` is somehow absent at push time (hand-edited config), `sync push` refuses with a message pointing at `clog remote remove` + `clog remote add` to re-run the add-time flow.
 
 **Why `git pull --rebase`:** In the simultaneous-push scenario, the histories have diverged. `--rebase` replays the local commit on top of the remote cleanly, since developers write to different directories. This means users never see merge commits from normal clog usage. Clog should never create a merge commit.
 

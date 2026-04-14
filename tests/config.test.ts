@@ -47,4 +47,28 @@ describe("config", () => {
     const loaded = await loadConfig();
     expect(loaded).toEqual(config);
   });
+
+  it("defaults the remote block to no-remote state", () => {
+    const config = getDefaultConfig("alice");
+    expect(config.remote).toEqual({
+      url: null,
+      allowPublicRemote: false,
+      visibilityConfirmed: false,
+      lastSyncHead: null,
+    });
+  });
+
+  it("round-trips a configured remote block", async () => {
+    const config = getDefaultConfig("alice");
+    config.remote = {
+      url: "git@github.com:myorg/clog-team.git",
+      allowPublicRemote: false,
+      visibilityConfirmed: true,
+      lastSyncHead: "a1b2c3d4e5f6",
+    };
+    await saveConfig(config);
+
+    const loaded = await loadConfig();
+    expect(loaded.remote).toEqual(config.remote);
+  });
 });

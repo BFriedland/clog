@@ -1,0 +1,1445 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import type { Command } from "commander";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/sync/staleness.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/sync/staleness.js")>(
+    "../src/sync/staleness.js",
+  );
+  return {
+    ...actual,
+    checkStaleness: vi.fn(async () => ({ kind: "no-remote" as const })),
+  };
+});
+
+vi.mock("../src/sync/visibility.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/sync/visibility.js")>(
+    "../src/sync/visibility.js",
+  );
+  return {
+    ...actual,
+    checkVisibility: vi.fn(async () => ({
+      kind: "unverified" as const,
+      reason: "test-default",
+    })),
+  };
+});
+
+const stalenessModule = await import("../src/sync/staleness.js");
+const mockedCheckStaleness = vi.mocked(stalenessModule.checkStaleness);
+
+const visibilityModule = await import("../src/sync/visibility.js");
+const mockedCheckVisibility = vi.mocked(visibilityModule.checkVisibility);
+
+import { buildConfigCommand } from "../src/cli/config.js";
+import { buildDiffCommand } from "../src/cli/diff.js";
+import { buildEditCommand } from "../src/cli/edit.js";
+import { buildListCommand } from "../src/cli/list.js";
+import { buildPathCommand } from "../src/cli/path.js";
+import { buildPublishCommand } from "../src/cli/publish.js";
+import { buildRefreshCommand } from "../src/cli/refresh.js";
+import { buildRemoteCommand } from "../src/cli/remote.js";
+import { buildRenameAuthorCommand } from "../src/cli/rename-author.js";
+import { buildResetCommand } from "../src/cli/reset.js";
+import { buildShowCommand } from "../src/cli/show.js";
+import { buildStatusCommand } from "../src/cli/status.js";
+import { buildTagCommand } from "../src/cli/tag.js";
+import { buildUnpublishCommand } from "../src/cli/unpublish.js";
+import { buildUntagCommand } from "../src/cli/untag.js";
+import { applyHeadTail } from "../src/cli/common.js";
+import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
+import { ensureClogHome } from "../src/config/init.js";
+import { getConversationById, insertConversation } from "../src/db/index.js";
+import type { ConversationMeta } from "../src/models/conversation.js";
+import { getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { writeJsonl } from "./helpers/fixtures.js";
+
+describe("cli", () => {
+  let tempDir: string;
+  let sourceDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-cli-"));
+    process.env.CLOG_HOME = tempDir;
+    sourceDir = path.join(tempDir, "claude-sources");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await ensureClogHome({ interactive: false });
+
+    const config = getDefaultConfig("testuser");
+    config.sources["claude-code"].paths = [sourceDir];
+    config.sources["codex-cli"].enabled = false;
+    await saveConfig(config);
+  });
+
+  afterEach(async () => {
+    delete process.env.CLOG_HOME;
+    await fs.rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  // ========================================
+  // edit
+  // ========================================
+
+  describe("edit (SPEC §5.4)", () => {
+    it("prints help when no flags are provided", async () => {
+      const conv = await seedStagedConversation("11111111-1111-1111-1111-111111111111");
+      const { stdout } = await runBuiltCommand(buildEditCommand, [conv.id]);
+      expect(stdout).toContain("Usage:");
+      expect(stdout).toContain("--title");
+      expect(stdout).toContain("--summary");
+      expect(stdout).toContain("--author");
+    });
+
+    it("updates title, summary, and author together", async () => {
+      const conv = await seedStagedConversation("12121212-1212-1212-1212-121212121212");
+      await runBuiltCommand(buildEditCommand, [
+        conv.id,
+        "--title",
+        "New title",
+        "--summary",
+        "New summary",
+        "--author",
+        "alice",
+      ]);
+      const reloaded = await getConversationById(conv.id);
+      expect(reloaded?.title).toBe("New title");
+      expect(reloaded?.summary).toBe("New summary");
+      expect(reloaded?.author).toBe("alice");
+    });
+
+    it("is a no-op when every supplied value already matches the current metadata", async () => {
+      const conv = await seedStagedConversation("13131313-1313-1313-1313-131313131313", {
+        title: "Same title",
+        summary: "Same summary",
+      });
+      const originalModifiedAt = conv.modifiedAt;
+
+      const { stdout } = await runBuiltCommand(buildEditCommand, [
+        conv.id,
+        "--title",
+        "Same title",
+        "--summary",
+        "Same summary",
+      ]);
+
+      expect(stdout).toContain("Nothing changed");
+      const reloaded = await getConversationById(conv.id);
+      expect(reloaded?.modifiedAt).toBe(originalModifiedAt);
+    });
+
+    it("throws when the conversation is not found", async () => {
+      await expect(
+        runBuiltCommand(buildEditCommand, ["9999aaaa-9999-9999-9999-999999999999", "--title", "x"]),
+      ).rejects.toThrow(/No conversation matches/);
+    });
+
+    it("refuses to edit a remote conversation (SPEC §11.1)", async () => {
+      const conv = await seedRemoteConversation("14141414-1414-1414-1414-141414141414");
+      await expect(
+        runBuiltCommand(buildEditCommand, [conv.id, "--title", "x"]),
+      ).rejects.toThrow(/remote/i);
+    });
+
+    it("leaves indexedAt untouched when search is not configured (SPEC §10.8.1)", async () => {
+      // "If search is not set up, the metadata update succeeds and Phase 2 remains inert."
+      const convId = "15151515-1515-1515-1515-151515151515";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeMinimalClaudeJsonl(sourcePath, "Initial");
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          filePath: rawPath,
+          state: "published",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+          indexedAt: "2026-02-01T10:00:00.000Z",
+        }),
+      );
+
+      await runBuiltCommand(buildEditCommand, [convId, "--title", "Different"]);
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.title).toBe("Different");
+      expect(reloaded?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+    });
+
+    it("leaves indexedAt untouched on a no-op edit of a published conversation", async () => {
+      const convId = "16161616-1616-1616-1616-161616161616";
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "published",
+          filePath: "/tmp/raw.jsonl",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+          indexedAt: "2026-02-01T10:00:00.000Z",
+          title: "Unchanged",
+        }),
+      );
+
+      await runBuiltCommand(buildEditCommand, [convId, "--title", "Unchanged"]);
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+    });
+  });
+
+  // ========================================
+  // tag / untag
+  // ========================================
+
+  describe("tag and untag (SPEC §5.4.1)", () => {
+    it("adds tags and normalizes them (trim, lowercase, dedupe)", async () => {
+      const conv = await seedStagedConversation("21212121-2121-2121-2121-212121212121");
+      await runBuiltCommand(buildTagCommand, [
+        conv.id,
+        "Debug",
+        "  FRONTEND ",
+        "debug",
+      ]);
+
+      const reloaded = await getConversationById(conv.id);
+      expect(new Set(reloaded?.tags)).toEqual(new Set(["debug", "frontend"]));
+    });
+
+    it("reports no-new-tags and does not bump modifiedAt when every tag is already present", async () => {
+      const conv = await seedStagedConversation("22222222-2222-2222-2222-222222222222", {
+        tags: ["auth"],
+      });
+      const original = conv.modifiedAt;
+
+      const { stdout } = await runBuiltCommand(buildTagCommand, [conv.id, "auth"]);
+      expect(stdout).toContain("No new tags were added");
+
+      const reloaded = await getConversationById(conv.id);
+      expect(reloaded?.modifiedAt).toBe(original);
+    });
+
+    it("untag removes existing tags", async () => {
+      const conv = await seedStagedConversation("23232323-2323-2323-2323-232323232323", {
+        tags: ["bug", "urgent", "frontend"],
+      });
+
+      await runBuiltCommand(buildUntagCommand, [conv.id, "bug", "urgent"]);
+
+      const reloaded = await getConversationById(conv.id);
+      expect(reloaded?.tags).toEqual(["frontend"]);
+    });
+
+    it("untag no-op when the tag is not present (SPEC §5.4.1)", async () => {
+      const conv = await seedStagedConversation("24242424-2424-2424-2424-242424242424", {
+        tags: ["keep-me"],
+      });
+      const original = conv.modifiedAt;
+
+      const { stdout } = await runBuiltCommand(buildUntagCommand, [conv.id, "nonexistent"]);
+      expect(stdout).toContain("No matching tags were found");
+
+      const reloaded = await getConversationById(conv.id);
+      expect(reloaded?.tags).toEqual(["keep-me"]);
+      expect(reloaded?.modifiedAt).toBe(original);
+    });
+
+    it("tag refuses a remote conversation (SPEC §11.1)", async () => {
+      const conv = await seedRemoteConversation("25252525-2525-2525-2525-252525252525");
+      await expect(runBuiltCommand(buildTagCommand, [conv.id, "x"])).rejects.toThrow(
+        /remote/i,
+      );
+    });
+
+    it("untag refuses a remote conversation (SPEC §11.1)", async () => {
+      const conv = await seedRemoteConversation("26262626-2626-2626-2626-262626262626", {
+        tags: ["already-there"],
+      });
+      await expect(
+        runBuiltCommand(buildUntagCommand, [conv.id, "already-there"]),
+      ).rejects.toThrow(/remote/i);
+    });
+  });
+
+  // ========================================
+  // reset
+  // ========================================
+
+  describe("reset (SPEC §5.2.1)", () => {
+    it("rejects a discovered conversation with a helpful message", async () => {
+      const conv = await seedConversation("31313131-3131-3131-3131-313131313131", {
+        state: "discovered",
+      });
+      await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
+        /not staged/i,
+      );
+    });
+
+    it("refuses a remote conversation (SPEC §5.2.1, §11.1)", async () => {
+      const conv = await seedRemoteConversation("32323232-3232-3232-3232-323232323232");
+      await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
+        /remote.*read-only/i,
+      );
+    });
+  });
+
+  // ========================================
+  // unpublish
+  // ========================================
+
+  describe("unpublish (SPEC §5.7)", () => {
+    it("moves a published conversation back to staged and clears indexedAt", async () => {
+      const convId = "41414141-4141-4141-4141-414141414141";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.writeFile(rawPath, "", "utf8");
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "published",
+          filePath: rawPath,
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+          indexedAt: "2026-02-01T10:00:00.000Z",
+        }),
+      );
+
+      await runBuiltCommand(buildUnpublishCommand, [convId]);
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.state).toBe("staged");
+      expect(reloaded?.indexedAt).toBeNull();
+      // publishedAt / publishedMessageCount / publishVersion are preserved as the checkpoint.
+      expect(reloaded?.publishedAt).toBe("2026-02-01T10:00:00.000Z");
+      expect(reloaded?.publishVersion).toBe(1);
+    });
+
+    it("throws when the conversation is not published", async () => {
+      const conv = await seedStagedConversation("42424242-4242-4242-4242-424242424242");
+      await expect(runBuiltCommand(buildUnpublishCommand, [conv.id])).rejects.toThrow(
+        /not published/i,
+      );
+    });
+
+    it("refuses a remote conversation (SPEC §11.1)", async () => {
+      const conv = await seedRemoteConversation("43434343-4343-4343-4343-434343434343", {
+        state: "published",
+        publishedAt: "2026-02-01T10:00:00.000Z",
+        publishVersion: 1,
+      });
+      await expect(runBuiltCommand(buildUnpublishCommand, [conv.id])).rejects.toThrow(
+        /remote/i,
+      );
+    });
+  });
+
+  // ========================================
+  // publish
+  // ========================================
+
+  describe("publish (SPEC §5.6)", () => {
+    it("prints a helpful message when called with no args and nothing is staged", async () => {
+      const { stdout } = await runBuiltCommand(buildPublishCommand, []);
+      expect(stdout).toContain("No staged conversations");
+    });
+
+    it("throws when a targeted ID is not found", async () => {
+      await expect(
+        runBuiltCommand(buildPublishCommand, ["9999bbbb-9999-9999-9999-999999999999"]),
+      ).rejects.toThrow(/No conversation matches/);
+    });
+
+    it("refuses a remote conversation (SPEC §5.6, §11.1)", async () => {
+      const conv = await seedRemoteConversation("52525252-5252-5252-5252-525252525252");
+      await expect(runBuiltCommand(buildPublishCommand, [conv.id])).rejects.toThrow(
+        /remote.*read-only/i,
+      );
+    });
+
+    it("records publishedMessageCount from the parsed transcript", async () => {
+      const convId = "51515151-5151-5151-5151-515151515151";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeJsonl(sourcePath, [
+        userLine("First prompt", "2026-02-01T10:00:00.000Z"),
+        assistantLine("First reply", "msg_01", "2026-02-01T10:00:01.000Z"),
+        userLine("Second prompt", "2026-02-01T10:00:02.000Z"),
+        assistantLine("Second reply", "msg_02", "2026-02-01T10:00:03.000Z"),
+      ]);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          filePath: rawPath,
+          state: "staged",
+        }),
+      );
+
+      await runBuiltCommand(buildPublishCommand, [convId]);
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.state).toBe("published");
+      expect(reloaded?.publishedMessageCount).toBe(4);
+    });
+  });
+
+  // ========================================
+  // rename-author
+  // ========================================
+
+  describe("rename-author (SPEC §5.12)", () => {
+    it("prints a friendly message when there are no matches for the old name", async () => {
+      const { stdout } = await runBuiltCommand(buildRenameAuthorCommand, ["ghost", "alice"]);
+      expect(stdout).toContain('No conversations found for author "ghost"');
+    });
+
+    it("aborts (non-interactively) rather than renaming without confirmation", async () => {
+      const convId = "61616161-6161-6161-6161-616161616161";
+      await insertConversation(makeConversation({ id: convId, sourceId: convId, author: "bob" }));
+
+      const { stdout } = await runBuiltCommand(buildRenameAuthorCommand, ["bob", "robert"]);
+      expect(stdout).toContain("Aborted");
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.author).toBe("bob");
+    });
+  });
+
+  // ========================================
+  // config
+  // ========================================
+
+  describe("config (SPEC §7)", () => {
+    it("get with a top-level key prints the value as JSON", async () => {
+      const { stdout } = await runBuiltCommand(() => buildConfigCommand(), [
+        "get",
+        "author",
+      ]);
+      expect(stdout.trim()).toBe('"testuser"');
+    });
+
+    it("get with a nested key uses dot notation", async () => {
+      const { stdout } = await runBuiltCommand(() => buildConfigCommand(), [
+        "get",
+        "sources.claude-code.enabled",
+      ]);
+      expect(stdout.trim()).toBe("true");
+    });
+
+    it("set parses JSON first and falls back to a plain string", async () => {
+      await runBuiltCommand(() => buildConfigCommand(), ["set", "author", "alice"]);
+      await runBuiltCommand(() => buildConfigCommand(), [
+        "set",
+        "defaultTags",
+        '["team-a","team-b"]',
+      ]);
+      await runBuiltCommand(() => buildConfigCommand(), [
+        "set",
+        "autoScan",
+        "true",
+      ]);
+
+      const config = await loadConfig();
+      expect(config.author).toBe("alice");
+      expect(config.defaultTags).toEqual(["team-a", "team-b"]);
+      expect(config.autoScan).toBe(true);
+    });
+
+    it("get with no key dumps the full config", async () => {
+      const { stdout } = await runBuiltCommand(() => buildConfigCommand(), ["get"]);
+      expect(stdout).toContain('"author": "testuser"');
+      expect(stdout).toContain('"sources"');
+    });
+
+    it("get returns undefined for a missing key without throwing", async () => {
+      const { stdout } = await runBuiltCommand(() => buildConfigCommand(), [
+        "get",
+        "no.such.key",
+      ]);
+      expect(stdout.trim()).toBe("undefined");
+    });
+  });
+
+  // ========================================
+  // show and path
+  // ========================================
+
+  describe("show and path (SPEC §5.7.1)", () => {
+    it("show --path prints the raw file path for a curated conversation", async () => {
+      const convId = "71717171-7171-7171-7171-717171717171";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.writeFile(rawPath, "", "utf8");
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildShowCommand, [convId, "--path"]);
+      expect(stdout.trim()).toBe(rawPath);
+    });
+
+    it("path prints the source path for a discovered conversation", async () => {
+      const convId = "72727272-7272-7272-7272-727272727272";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeMinimalClaudeJsonl(sourcePath, "Discovered");
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "discovered",
+          sourcePath,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildPathCommand, [convId]);
+      expect(stdout.trim()).toBe(sourcePath);
+    });
+
+    it("show renders the metadata header and at least one message", async () => {
+      const convId = "73737373-7373-7373-7373-737373737373";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeMinimalClaudeJsonl(sourcePath, "Greetings");
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          sourcePath,
+          filePath: rawPath,
+          title: "Hello header",
+          projectName: "webapp",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildShowCommand, [convId]);
+      expect(stdout).toContain("ID:");
+      expect(stdout).toContain("Source:  claude-code");
+      expect(stdout).toContain("Title:   Hello header");
+      expect(stdout).toContain("Project: webapp");
+      expect(stdout).toContain("[USER]");
+    });
+
+    it("show rejects a non-positive --head value with a clear error", async () => {
+      const conv = await seedStagedConversation("74747474-7474-7474-7474-747474747474");
+      await expect(
+        runBuiltCommand(buildShowCommand, [conv.id, "--head", "0"]),
+      ).rejects.toThrow(/positive integer/);
+    });
+  });
+
+  // ========================================
+  // applyHeadTail helper
+  // ========================================
+
+  // ========================================
+  // diff
+  // ========================================
+
+  describe("diff (SPEC §5.8)", () => {
+    it("default mode on a clean DB prints nothing", async () => {
+      const { stdout } = await runBuiltCommand(buildDiffCommand, []);
+      expect(stdout).toBe("");
+    });
+
+    it("rejects --head 0 with 'positive integer'", async () => {
+      const conv = await seedPublishedConversationWithRawMessages(
+        "81818181-8181-8181-8181-818181818181",
+        3,
+        1,
+      );
+      await expect(
+        runBuiltCommand(buildDiffCommand, [conv.id, "--head", "0"]),
+      ).rejects.toThrow(/positive integer/);
+    });
+
+    it("rejects a staged conversation in default mode with a pointer to --staged", async () => {
+      const conv = await seedStagedConversation("82828282-8282-8282-8282-828282828282");
+      await expect(
+        runBuiltCommand(buildDiffCommand, [conv.id]),
+      ).rejects.toThrow(/not published.*--staged/i);
+    });
+
+    it("rejects a published conversation in --staged mode with a pointer to default", async () => {
+      const conv = await seedPublishedConversationWithRawMessages(
+        "83838383-8383-8383-8383-838383838383",
+        2,
+        2,
+      );
+      await expect(
+        runBuiltCommand(buildDiffCommand, ["--staged", conv.id]),
+      ).rejects.toThrow(/not staged.*clog diff/i);
+    });
+
+    it("prints new-since-publish messages and a descriptive header line", async () => {
+      // Raw has 4 messages, published checkpoint is at 2 → 2 new messages to show.
+      const conv = await seedPublishedConversationWithRawMessages(
+        "84848484-8484-8484-8484-848484848484",
+        4,
+        2,
+      );
+      const { stdout } = await runBuiltCommand(buildDiffCommand, [conv.id]);
+      expect(stdout).toContain(conv.id.slice(0, 7));
+      expect(stdout).toContain("2 new messages");
+      // Assistant messages are text "Reply N"; the diff should include at least one.
+      expect(stdout).toMatch(/\[USER\]|\[ASSISTANT\]/);
+    });
+
+    it("errors when the raw file shrinks below the published checkpoint", async () => {
+      // Raw has 1 message, checkpoint says 4 → fewer parsed messages than stored checkpoint.
+      const conv = await seedPublishedConversationWithRawMessages(
+        "85858585-8585-8585-8585-858585858585",
+        1,
+        4,
+      );
+      await expect(
+        runBuiltCommand(buildDiffCommand, [conv.id]),
+      ).rejects.toThrow(/fewer parsed messages/);
+    });
+
+    it("--staged mode prints the full transcript of a staged conversation", async () => {
+      const conv = await seedStagedConversationWithMessages(
+        "86868686-8686-8686-8686-868686868686",
+        3,
+      );
+      const { stdout } = await runBuiltCommand(buildDiffCommand, ["--staged", conv.id]);
+      expect(stdout).toContain(conv.id.slice(0, 7));
+      expect(stdout).toContain("[USER]");
+    });
+
+    it("--head trims the diff output with a truncation note in the header", async () => {
+      // 5 new messages, only the first 2 should appear.
+      const conv = await seedPublishedConversationWithRawMessages(
+        "87878787-8787-8787-8787-878787878787",
+        5,
+        0,
+      );
+      const { stdout } = await runBuiltCommand(buildDiffCommand, [conv.id, "--head", "2"]);
+      expect(stdout).toContain("showing 2 of 5 new messages");
+    });
+  });
+
+  // ========================================
+  // list
+  // ========================================
+
+  describe("list (SPEC §5.3, §11.10)", () => {
+    it("prints the empty-default message when there is nothing curated", async () => {
+      const { stdout } = await runBuiltCommand(buildListCommand, []);
+      expect(stdout).toContain("No staged or published conversations");
+    });
+
+    it("shows staged and published by default", async () => {
+      await seedStagedConversation("a1111111-1111-1111-1111-111111111111", {
+        title: "Staged one",
+      });
+      await insertConversation(
+        makeConversation({
+          id: "a2222222-2222-2222-2222-222222222222",
+          sourceId: "a2222222-2222-2222-2222-222222222222",
+          title: "Published one",
+          state: "published",
+          filePath: "/tmp/fake.jsonl",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildListCommand, []);
+      expect(stdout).toContain("Staged one");
+      expect(stdout).toContain("Published one");
+    });
+
+    it("--state discovered filters to discovered rows only", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "a3333333-3333-3333-3333-333333333333",
+          sourceId: "a3333333-3333-3333-3333-333333333333",
+          title: "Discovered one",
+          state: "discovered",
+        }),
+      );
+      await seedStagedConversation("a4444444-4444-4444-4444-444444444444", {
+        title: "Staged one",
+      });
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--state", "discovered"]);
+      expect(stdout).toContain("Discovered one");
+      expect(stdout).not.toContain("Staged one");
+    });
+
+    it("--project filters case-insensitively", async () => {
+      await seedStagedConversation("a5555555-5555-5555-5555-555555555555", {
+        projectName: "api-service",
+      });
+      await seedStagedConversation("a6666666-6666-6666-6666-666666666666", {
+        projectName: "webapp",
+      });
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--project", "API-SERVICE"]);
+      expect(stdout).toContain("a555555");
+      expect(stdout).not.toContain("a666666");
+    });
+
+    it("--grep filters by text match on title", async () => {
+      await seedStagedConversation("a7777777-7777-7777-7777-777777777777", {
+        title: "Debug JWT refresh race",
+      });
+      await seedStagedConversation("a8888888-8888-8888-8888-888888888888", {
+        title: "Unrelated work",
+      });
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--grep", "jwt"]);
+      expect(stdout).toContain("Debug JWT refresh race");
+      expect(stdout).not.toContain("Unrelated work");
+    });
+
+    it("--origin rejects unknown values with a clear error", async () => {
+      await expect(
+        runBuiltCommand(buildListCommand, ["--origin", "somewhere"]),
+      ).rejects.toThrow(/--origin must be "local" or "remote"/);
+    });
+
+    it("--origin remote restricts to remote rows", async () => {
+      await seedStagedConversation("a9999999-9999-9999-9999-999999999999", {
+        title: "Local staged",
+      });
+      await insertConversation(
+        makeConversation({
+          id: "b1111111-1111-1111-1111-111111111111",
+          sourceId: "b1111111-1111-1111-1111-111111111111",
+          title: "Remote published",
+          author: "bob",
+          state: "published",
+          filePath: "/tmp/remote.jsonl",
+          origin: "git@example.com:team/repo.git",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--origin", "remote"]);
+      expect(stdout).toContain("Remote published");
+      expect(stdout).not.toContain("Local staged");
+    });
+
+    it("--columns rejects an unknown column name", async () => {
+      await expect(
+        runBuiltCommand(buildListCommand, ["--columns", "id,notreal"]),
+      ).rejects.toThrow(/Unknown column "notreal"/);
+    });
+
+    it("--columns all expands to every known column", async () => {
+      await seedStagedConversation("b2222222-2222-2222-2222-222222222222", {
+        title: "Headers on",
+      });
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--columns", "all"]);
+      expect(stdout).toMatch(/ID\s+DATE\s+STATE\s+SOURCE/);
+      expect(stdout).toContain("AUTHOR");
+      expect(stdout).toContain("PROJECT");
+      expect(stdout).toContain("TITLE");
+    });
+
+    it("prints 'No conversations found.' when a filter excludes everything", async () => {
+      await seedStagedConversation("b9999999-9999-9999-9999-999999999999", {
+        projectName: "webapp",
+      });
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--project", "no-such-project"]);
+      expect(stdout).toContain("No conversations found.");
+    });
+
+    it("falls back to origin-only default when config.author is empty", async () => {
+      const config = await loadConfig();
+      config.author = "";
+      await saveConfig(config);
+
+      await seedStagedConversation("ba000000-0000-0000-0000-000000000001", {
+        title: "Author-less local",
+        author: "anyone",
+      });
+
+      const { stdout } = await runBuiltCommand(buildListCommand, []);
+      // Local (origin IS NULL) rows are still shown even when config.author is empty.
+      expect(stdout).toContain("Author-less local");
+    });
+
+    it("--all rediscovers excluded conversations from the source adapter (SPEC §5.3)", async () => {
+      const convId = "bb000000-0000-0000-0000-000000000002";
+      const sourcePath = path.join(sourceDir, "-Users-alice-proj", `${convId}.jsonl`);
+      await writeJsonl(sourcePath, [
+        {
+          type: "user",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          cwd: "/Users/alice/proj",
+          message: { role: "user", content: "To be excluded" },
+        },
+      ]);
+
+      await fs.writeFile(getExcludedPath(), `${convId}@claude-code\n`, "utf8");
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
+      expect(stdout).toContain(convId.slice(0, 7));
+      expect(stdout).toContain("excluded");
+    });
+
+    it("--all renders the display table including staged and published rows", async () => {
+      await seedStagedConversation("b5555555-5555-5555-5555-555555555555", {
+        title: "Staged all",
+      });
+      await insertConversation(
+        makeConversation({
+          id: "b6666666-6666-6666-6666-666666666666",
+          sourceId: "b6666666-6666-6666-6666-666666666666",
+          title: "Discovered all",
+          state: "discovered",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
+      expect(stdout).toContain("Staged all");
+      expect(stdout).toContain("Discovered all");
+    });
+
+    it("prints a remote-staleness warning when checkStaleness reports stale", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      mockedCheckStaleness.mockResolvedValueOnce({
+        kind: "stale",
+        head: "ffff000000000000000000000000000000000000",
+        lastSyncHead: "aaaa000000000000000000000000000000000000",
+      });
+
+      await seedStagedConversation("b7777777-7777-7777-7777-777777777777");
+
+      const { stdout } = await runBuiltCommand(buildListCommand, []);
+      expect(stdout).toContain("remote checkout has changed outside of clog");
+      expect(stdout).toContain("clog refresh");
+    });
+
+    it("shows the team-conversation footer when a remote has hidden rows", async () => {
+      // config.author is 'testuser'; remote row by another author should be hidden from default view.
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      await seedStagedConversation("b3333333-3333-3333-3333-333333333333");
+      await insertConversation(
+        makeConversation({
+          id: "b4444444-4444-4444-4444-444444444444",
+          sourceId: "b4444444-4444-4444-4444-444444444444",
+          author: "bob",
+          state: "published",
+          filePath: "/tmp/remote.jsonl",
+          origin: "git@example.com:team/repo.git",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildListCommand, []);
+      expect(stdout).toContain("1 team conversation(s) available");
+      expect(stdout).toContain("clog list --all");
+    });
+  });
+
+  // ========================================
+  // status
+  // ========================================
+
+  describe("status (SPEC §5.2)", () => {
+    it("prints the clean-state message when there is nothing pending", async () => {
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("No conversations pending publication");
+    });
+
+    it("shows a staged conversation under 'Conversations to be published:'", async () => {
+      await seedStagedConversation("c1111111-1111-1111-1111-111111111111", {
+        title: "Staged change",
+      });
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Conversations to be published:");
+      expect(stdout).toContain("Staged change");
+      expect(stdout).toContain("added:");
+    });
+
+    it("shows a discovered conversation under 'Conversations not staged for publishing:'", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "c2222222-2222-2222-2222-222222222222",
+          sourceId: "c2222222-2222-2222-2222-222222222222",
+          title: "Pending discovery",
+          state: "discovered",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Conversations not staged for publishing:");
+      expect(stdout).toContain("Pending discovery");
+      expect(stdout).toContain("discovered:");
+    });
+
+    it("treats a published conversation whose raw copy is newer than publishedAt as modified", async () => {
+      const convId = "c3333333-3333-3333-3333-333333333333";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [userLine("Something"), assistantLine("Reply", "msg_01")]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Published with newer raw copy",
+          state: "published",
+          filePath: rawPath,
+          // publishedAt is older than the raw file's mtime.
+          publishedAt: "2020-01-01T00:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Changes to be published:");
+      expect(stdout).toContain("Published with newer raw copy");
+      expect(stdout).toContain("modified:");
+    });
+
+    it("--source adds the source column after the short id", async () => {
+      await seedStagedConversation("c4444444-4444-4444-4444-444444444444", {
+        title: "With source column",
+      });
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, ["--source"]);
+      expect(stdout).toContain("c444444");
+      expect(stdout).toMatch(/c444444\s+claude-code/);
+    });
+
+    it("prints a staleness warning in the remote section when checkStaleness reports stale", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      mockedCheckStaleness.mockResolvedValueOnce({
+        kind: "stale",
+        head: "ffff000000000000000000000000000000000000",
+        lastSyncHead: "aaaa000000000000000000000000000000000000",
+      });
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("remote checkout has changed outside of clog");
+    });
+
+    it("marks a published conversation as modified when parsed messages exceed the published checkpoint", async () => {
+      const convId = "c6666666-6666-6666-6666-666666666666";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("First"),
+        assistantLine("Reply 1", "msg_01"),
+        userLine("Second"),
+        assistantLine("Reply 2", "msg_02"),
+      ]);
+
+      // Pin the raw file's mtime to well before publishedAt so the mtime branch
+      // of isModifiedSincePublish doesn't short-circuit the parsed-count check.
+      const oldTime = new Date("2020-01-01T00:00:00.000Z");
+      await fs.utimes(rawPath, oldTime, oldTime);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Checkpoint lag",
+          state: "published",
+          filePath: rawPath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          // Parsed count will be 4; published checkpoint is 2 → 2 new messages.
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Changes to be published:");
+      expect(stdout).toContain("Checkpoint lag");
+    });
+
+    it("renders a remote section when a remote is configured", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      await insertConversation(
+        makeConversation({
+          id: "c5555555-5555-5555-5555-555555555555",
+          sourceId: "c5555555-5555-5555-5555-555555555555",
+          title: "Remote row",
+          author: "bob",
+          state: "published",
+          filePath: "/tmp/remote.jsonl",
+          origin: "git@example.com:team/repo.git",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+          indexedAt: null,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Remote: git@example.com:team/repo.git");
+      expect(stdout).toContain("1 conversation(s) imported from remote");
+      expect(stdout).toContain("1 conversation(s) not yet indexed");
+    });
+  });
+
+  // ========================================
+  // remote add/show/remove
+  // ========================================
+
+  describe("remote (SPEC §11.6)", () => {
+    beforeEach(() => {
+      mockedCheckVisibility.mockReset();
+      mockedCheckVisibility.mockResolvedValue({
+        kind: "unverified",
+        reason: "test-default",
+      });
+    });
+
+    it("add refuses when a remote is already configured", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      await expect(
+        runBuiltCommand(buildRemoteCommand, ["add", "git@example.com:other/repo.git", "--yes"]),
+      ).rejects.toThrow(/already configured/);
+    });
+
+    it("add rejects an empty URL", async () => {
+      await expect(
+        runBuiltCommand(buildRemoteCommand, ["add", "   ", "--yes"]),
+      ).rejects.toThrow(/cannot be empty/);
+    });
+
+    it("add stores the URL and marks visibilityConfirmed=true on an unverified probe with --yes", async () => {
+      mockedCheckVisibility.mockResolvedValueOnce({
+        kind: "unverified",
+        reason: "non-GitHub host — clog cannot probe visibility over REST",
+      });
+
+      const { stdout } = await runBuiltCommand(buildRemoteCommand, [
+        "add",
+        "git@example.com:team/repo.git",
+        "--yes",
+      ]);
+
+      expect(stdout).toContain("Remote configured");
+      const config = await loadConfig();
+      expect(config.remote.url).toBe("git@example.com:team/repo.git");
+      expect(config.remote.visibilityConfirmed).toBe(true);
+    });
+
+    it("add refuses a proven-public repo and includes the repo label in the error", async () => {
+      mockedCheckVisibility.mockResolvedValueOnce({ kind: "public" });
+
+      await expect(
+        runBuiltCommand(buildRemoteCommand, [
+          "add",
+          "git@github.com:myorg/clog-team.git",
+          "--yes",
+        ]),
+      ).rejects.toThrow(/Repository myorg\/clog-team is public/);
+
+      // Refused adds must not write the remote config.
+      const config = await loadConfig();
+      expect(config.remote.url).toBeNull();
+    });
+
+    it("add proceeds with a warning when the repo is public but allowPublicRemote is set", async () => {
+      const config = await loadConfig();
+      config.remote.allowPublicRemote = true;
+      await saveConfig(config);
+
+      mockedCheckVisibility.mockResolvedValueOnce({ kind: "public" });
+
+      const { stderr, stdout } = await runBuiltCommand(buildRemoteCommand, [
+        "add",
+        "git@github.com:myorg/clog-team.git",
+        "--yes",
+      ]);
+
+      expect(stderr).toContain("public");
+      expect(stdout).toContain("Remote configured");
+      const reloaded = await loadConfig();
+      expect(reloaded.remote.url).toBe("git@github.com:myorg/clog-team.git");
+    });
+
+    it("add prints an HTTPS-GitHub authentication warning before running the visibility probe", async () => {
+      mockedCheckVisibility.mockResolvedValueOnce({
+        kind: "unverified",
+        reason: "test",
+      });
+
+      const { stderr } = await runBuiltCommand(buildRemoteCommand, [
+        "add",
+        "https://github.com/myorg/clog-team.git",
+        "--yes",
+      ]);
+
+      expect(stderr).toContain("GitHub does not support password authentication over HTTPS");
+      expect(stderr).toContain("git@github.com:owner/repo.git");
+    });
+
+    it("show reports no remote when the config is unset", async () => {
+      const { stdout } = await runBuiltCommand(buildRemoteCommand, ["show"]);
+      expect(stdout).toContain("No remote configured");
+    });
+
+    it("show prints URL, last-sync HEAD, and local/remote counts when a remote is configured", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      config.remote.lastSyncHead = "abc1234";
+      await saveConfig(config);
+
+      await insertConversation(
+        makeConversation({
+          id: "d1111111-1111-1111-1111-111111111111",
+          sourceId: "d1111111-1111-1111-1111-111111111111",
+          state: "published",
+          filePath: "/tmp/local.jsonl",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "d2222222-2222-2222-2222-222222222222",
+          sourceId: "d2222222-2222-2222-2222-222222222222",
+          state: "published",
+          filePath: "/tmp/remote.jsonl",
+          origin: "git@example.com:team/repo.git",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildRemoteCommand, ["show"]);
+      expect(stdout).toContain("Remote URL: git@example.com:team/repo.git");
+      expect(stdout).toContain("Last sync HEAD: abc1234");
+      expect(stdout).toContain("Local published conversations: 1");
+      expect(stdout).toContain("Remote conversations imported: 1");
+    });
+
+    it("remove refuses when no remote is configured", async () => {
+      await expect(
+        runBuiltCommand(buildRemoteCommand, ["remove", "--yes"]),
+      ).rejects.toThrow(/No remote configured/);
+    });
+
+    it("remove deletes remote-origin rows, clears config, and preserves local rows", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      const localId = "d3333333-3333-3333-3333-333333333333";
+      const remoteId = "d4444444-4444-4444-4444-444444444444";
+
+      await insertConversation(
+        makeConversation({
+          id: localId,
+          sourceId: localId,
+          state: "published",
+          filePath: "/tmp/local.jsonl",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: remoteId,
+          sourceId: remoteId,
+          state: "published",
+          filePath: "/tmp/remote.jsonl",
+          origin: "git@example.com:team/repo.git",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildRemoteCommand, ["remove", "--yes"]);
+      expect(stdout).toContain("Remote removed");
+      expect(stdout).toContain("Deleted 1 conversation(s)");
+
+      const local = await getConversationById(localId);
+      const remote = await getConversationById(remoteId);
+      expect(local).not.toBeNull();
+      expect(remote).toBeNull();
+
+      const reloaded = await loadConfig();
+      expect(reloaded.remote.url).toBeNull();
+    });
+  });
+
+  // ========================================
+  // refresh
+  // ========================================
+
+  describe("refresh (SPEC §11)", () => {
+    it("prints 'No remote configured' when the config is unset", async () => {
+      const { stdout } = await runBuiltCommand(buildRefreshCommand, []);
+      expect(stdout).toContain("No remote configured");
+    });
+
+    it("prints 'No checkout found' when a remote is configured but the checkout is missing", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      const { stdout } = await runBuiltCommand(buildRefreshCommand, []);
+      expect(stdout).toContain("No checkout found");
+      expect(stdout).toContain("clog sync pull");
+    });
+  });
+
+  describe("applyHeadTail (SPEC §5.7.1)", () => {
+    const items = [1, 2, 3, 4, 5];
+
+    it("returns the first N items when head is supplied", () => {
+      expect(applyHeadTail(items, { head: 3 })).toEqual([1, 2, 3]);
+    });
+
+    it("returns the last N items when tail is supplied", () => {
+      expect(applyHeadTail(items, { tail: 2 })).toEqual([4, 5]);
+    });
+
+    it("returns the full array when neither option is supplied", () => {
+      expect(applyHeadTail(items, {})).toEqual(items);
+    });
+
+    it("throws when both head and tail are supplied together", () => {
+      expect(() => applyHeadTail(items, { head: 2, tail: 2 })).toThrow(/Cannot combine/);
+    });
+
+    it("clamps tail at 0 to an empty slice", () => {
+      expect(applyHeadTail(items, { tail: 0 })).toEqual([]);
+    });
+  });
+});
+
+// ========================================
+// helpers
+// ========================================
+
+async function runBuiltCommand(
+  builder: () => Command,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+
+  const stdoutSpy = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation(((chunk: unknown): boolean => {
+      stdoutChunks.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
+      );
+      return true;
+    }) as typeof process.stdout.write);
+
+  const stderrSpy = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(((chunk: unknown): boolean => {
+      stderrChunks.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
+      );
+      return true;
+    }) as typeof process.stderr.write);
+
+  try {
+    const cmd = builder();
+    cmd.exitOverride();
+    await cmd.parseAsync(args, { from: "user" });
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  }
+
+  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
+}
+
+function makeConversation(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
+  const now = "2026-02-01T10:00:00.000Z";
+  const id = overrides.id ?? "aaaaaaaa-1111-2222-3333-444444444444";
+  return {
+    id,
+    sourceId: id,
+    source: "claude-code",
+    title: "Test conversation",
+    summary: "",
+    author: "testuser",
+    projectName: "webapp",
+    projectPath: "/Users/testuser/projects/webapp",
+    tags: [],
+    slug: null,
+    createdAt: now,
+    discoveredAt: now,
+    modifiedAt: now,
+    state: "discovered",
+    publishedAt: null,
+    publishedMessageCount: null,
+    publishVersion: 0,
+    sourcePath: "/tmp/ignored.jsonl",
+    filePath: null,
+    sourceMtime: now,
+    indexedAt: null,
+    origin: null,
+    ...overrides,
+  };
+}
+
+async function seedConversation(
+  id: string,
+  overrides: Partial<ConversationMeta> = {},
+): Promise<ConversationMeta> {
+  const conversation = makeConversation({ id, sourceId: id, ...overrides });
+  await insertConversation(conversation);
+  return conversation;
+}
+
+async function seedStagedConversation(
+  id: string,
+  overrides: Partial<ConversationMeta> = {},
+): Promise<ConversationMeta> {
+  const rawPath = getRawConversationPath("claude-code", id);
+  await fs.mkdir(path.dirname(rawPath), { recursive: true });
+  await fs.writeFile(rawPath, "", "utf8");
+
+  return seedConversation(id, {
+    state: "staged",
+    filePath: rawPath,
+    ...overrides,
+  });
+}
+
+async function seedRemoteConversation(
+  id: string,
+  overrides: Partial<ConversationMeta> = {},
+): Promise<ConversationMeta> {
+  return seedConversation(id, {
+    state: "published",
+    filePath: "/tmp/fake-remote.jsonl",
+    origin: "git@example.com:team/repo.git",
+    publishedAt: "2026-02-01T10:00:00.000Z",
+    publishVersion: 1,
+    ...overrides,
+  });
+}
+
+async function seedPublishedConversationWithRawMessages(
+  id: string,
+  messageCount: number,
+  publishedMessageCount: number,
+): Promise<ConversationMeta> {
+  const rawPath = getRawConversationPath("claude-code", id);
+  await fs.mkdir(path.dirname(rawPath), { recursive: true });
+
+  const lines: Record<string, unknown>[] = [];
+  for (let i = 0; i < messageCount; i++) {
+    lines.push(userLine(`Message ${i + 1}`, `2026-02-01T10:${String(i).padStart(2, "0")}:00.000Z`));
+  }
+  await writeJsonl(rawPath, lines);
+
+  return seedConversation(id, {
+    state: "published",
+    filePath: rawPath,
+    sourcePath: "/tmp/nonexistent-source.jsonl",
+    publishedAt: "2026-02-01T10:00:00.000Z",
+    publishVersion: 1,
+    publishedMessageCount,
+  });
+}
+
+async function seedStagedConversationWithMessages(
+  id: string,
+  messageCount: number,
+): Promise<ConversationMeta> {
+  const rawPath = getRawConversationPath("claude-code", id);
+  await fs.mkdir(path.dirname(rawPath), { recursive: true });
+
+  const lines: Record<string, unknown>[] = [];
+  for (let i = 0; i < messageCount; i++) {
+    lines.push(userLine(`Staged ${i + 1}`, `2026-02-01T10:${String(i).padStart(2, "0")}:00.000Z`));
+  }
+  await writeJsonl(rawPath, lines);
+
+  return seedConversation(id, {
+    state: "staged",
+    filePath: rawPath,
+    sourcePath: "/tmp/nonexistent-source.jsonl",
+  });
+}
+
+async function writeMinimalClaudeJsonl(filePath: string, userText: string): Promise<void> {
+  await writeJsonl(filePath, [
+    userLine(userText),
+    assistantLine("Response", "msg_01"),
+  ]);
+}
+
+function userLine(
+  content: string,
+  timestamp = "2026-02-01T10:00:00.000Z",
+): Record<string, unknown> {
+  return {
+    type: "user",
+    message: { role: "user", content },
+    timestamp,
+  };
+}
+
+function assistantLine(
+  text: string,
+  msgId: string,
+  timestamp = "2026-02-01T10:00:01.000Z",
+): Record<string, unknown> {
+  return {
+    type: "assistant",
+    message: {
+      id: msgId,
+      model: "claude-opus-4-6",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text }],
+      stop_reason: "end_turn",
+    },
+    timestamp,
+  };
+}

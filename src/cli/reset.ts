@@ -1,7 +1,11 @@
 import { Command } from "commander";
 
 import { updateConversation } from "../db/index.js";
-import { removeRawCopyIfPresent, resolveManyConversationsOrFail } from "./common.js";
+import {
+  assertNoneRemote,
+  removeRawCopyIfPresent,
+  resolveManyConversationsOrFail,
+} from "./common.js";
 
 export function buildResetCommand(): Command {
   return new Command("reset")
@@ -9,6 +13,7 @@ export function buildResetCommand(): Command {
     .argument("<ids...>")
     .action(async (ids: string[]) => {
       const conversations = await resolveManyConversationsOrFail(ids);
+      assertNoneRemote(conversations, "clog reset");
 
       for (const conversation of conversations) {
         if (conversation.state === "discovered") {

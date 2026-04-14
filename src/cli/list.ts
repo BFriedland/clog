@@ -1,8 +1,10 @@
+import chalk from "chalk";
 import { Command } from "commander";
 
 import { getEnabledAdapters } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
 import { listConversations } from "../db/index.js";
+import { checkStaleness } from "../sync/staleness.js";
 import {
   conversationMetadataMatchesGrep,
   filterConversationsByGrep,
@@ -28,6 +30,7 @@ export function buildListCommand(): Command {
     .option("-t, --tag <tag>")
     .option("-g, --grep <text>")
     .option("-c, --columns <cols>")
+    .option("--origin <origin>", "local or remote")
     .option("--all")
     .action(async (options) => {
       const config = await loadConfig();
@@ -35,14 +38,35 @@ export function buildListCommand(): Command {
       renderWarnings(scanResult.warnings);
       const columns = parseColumnsOption(options.columns);
       const hasFilters = Boolean(
-        options.state || options.project || options.author || options.tag || options.grep || columns,
+        options.state ||
+          options.project ||
+          options.author ||
+          options.tag ||
+          options.grep ||
+          options.origin ||
+          columns,
       );
 
+      const originFilter = parseOriginFilter(options.origin);
+
+      // Default filter (no --all, no explicit --origin, no explicit --author):
+      // curated-by-default — show local curated + this author's remote curated.
+      const curatedDefault =
+        !options.all && !options.origin && !options.author && config.author.trim().length > 0
+          ? { author: config.author.trim() }
+          : null;
+
       let conversations = await listConversations({
-        states: options.state ? [options.state] : options.all ? undefined : ["staged", "published"],
+        states: options.state
+          ? [options.state]
+          : options.all
+            ? undefined
+            : ["staged", "published"],
         projectName: options.project,
         author: options.author,
         tag: options.tag,
+        origin: originFilter,
+        curatedDefault,
       });
 
       if (options.grep) {
@@ -57,28 +81,51 @@ export function buildListCommand(): Command {
           stateLabelMode: true,
           columns,
         });
-        return;
+
+        // Team conversation hint: if a remote is configured and there are
+        // remote rows NOT included in the current view, surface the count.
+        if (config.remote.url && !options.origin) {
+          const allRemote = await listConversations({ origin: "remote" });
+          const shownIds = new Set(conversations.map((c) => c.id));
+          const hidden = allRemote.filter((c) => !shownIds.has(c.id)).length;
+          if (hidden > 0) {
+            process.stdout.write(
+              `\n${hidden} team conversation(s) available (use \`clog list --all\` to include)\n`,
+            );
+          }
+        }
+      } else {
+        const excludedRows = await discoverExcludedDisplayRows(config, options);
+        const displayRows: DisplayRow[] = [
+          ...conversations.map((conversation) => ({
+            id: conversation.id,
+            createdAt: conversation.createdAt,
+            state: conversation.state,
+            source: conversation.source,
+            projectName: conversation.projectName,
+            author: conversation.author,
+            title: conversation.title,
+          })),
+          ...excludedRows,
+        ].sort(compareDisplayRows);
+
+        renderDisplayTable(displayRows, {
+          emptyMessage: "No conversations found.",
+          stateLabelMode: true,
+          columns,
+        });
       }
 
-      const excludedRows = await discoverExcludedDisplayRows(config, options);
-      const displayRows: DisplayRow[] = [
-        ...conversations.map((conversation) => ({
-          id: conversation.id,
-          createdAt: conversation.createdAt,
-          state: conversation.state,
-          source: conversation.source,
-          projectName: conversation.projectName,
-          author: conversation.author,
-          title: conversation.title,
-        })),
-        ...excludedRows,
-      ].sort(compareDisplayRows);
-
-      renderDisplayTable(displayRows, {
-        emptyMessage: "No conversations found.",
-        stateLabelMode: true,
-        columns,
-      });
+      if (config.remote.url) {
+        const staleness = await checkStaleness();
+        if (staleness.kind === "stale") {
+          process.stdout.write(
+            `\n${chalk.yellow(
+              "Warning: remote checkout has changed outside of clog. Run `clog refresh` to reconcile.",
+            )}\n`,
+          );
+        }
+      }
     });
 
   return command;
@@ -92,9 +139,14 @@ async function discoverExcludedDisplayRows(
     author?: string;
     tag?: string;
     grep?: string;
+    origin?: string;
   },
 ): Promise<DisplayRow[]> {
   if (options.state) {
+    return [];
+  }
+
+  if (options.origin === "remote") {
     return [];
   }
 
@@ -197,6 +249,14 @@ function compareDisplayRows(left: DisplayRow, right: DisplayRow): number {
   }
 
   return left.id.localeCompare(right.id);
+}
+
+function parseOriginFilter(value?: string): "local" | "remote" | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "local") return "local";
+  if (normalized === "remote") return "remote";
+  throw new ClogError(`--origin must be "local" or "remote", got "${value}".`);
 }
 
 function parseColumnsOption(value?: string): DisplayColumnKey[] | undefined {

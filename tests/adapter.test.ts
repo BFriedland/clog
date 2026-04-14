@@ -485,6 +485,333 @@ describe("adapters", () => {
     ]);
   });
 
+  // ============================================================
+  // Additional Claude discovery edge cases (SPEC §4.2.6)
+  // ============================================================
+
+  it("Claude discovery truncates a very long first user message title to 100 + '...'", async () => {
+    const longBody = "A".repeat(250);
+    const filePath = path.join(
+      tempDir,
+      "claude",
+      "-Users-alice-api-service",
+      "c8000000-0000-0000-0000-000000000001.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/api-service",
+        message: { role: "user", content: longBody },
+      },
+    ]);
+
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "claude")];
+    const adapter = new ClaudeCodeAdapter(config);
+
+    const discovered = await collect(adapter.discover());
+    const title = discovered[0]?.metadata.title ?? "";
+    // Spec: the title field is truncated to 100 characters (§4.2.6 step 4a).
+    // The adapter appends "..." as the truncation indicator.
+    expect(title).toBe(`${"A".repeat(100)}...`);
+    expect(title.length).toBe(103);
+  });
+
+  it("Claude discovery skips a leading file-history-snapshot line and still derives a title", async () => {
+    const filePath = path.join(
+      tempDir,
+      "claude",
+      "-Users-alice-api-service",
+      "c8000000-0000-0000-0000-000000000002.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "file-history-snapshot",
+        messageId: "fhs-1",
+        snapshot: { messageId: "fhs-1", trackedFileBackups: {}, timestamp: "2026-02-01T10:00:00.000Z" },
+      },
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/api-service",
+        message: { role: "user", content: "Investigate the flaky test" },
+      },
+    ]);
+
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "claude")];
+    const adapter = new ClaudeCodeAdapter(config);
+
+    const discovered = await collect(adapter.discover());
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.metadata.title).toBe("Investigate the flaky test");
+    expect(discovered[0]?.metadata.projectPath).toBe("/Users/alice/api-service");
+  });
+
+  // ============================================================
+  // Additional Claude parsing edge cases (SPEC §4.2.7)
+  // ============================================================
+
+  it("Claude parsing renders a tool_result with is_error=true as 'ToolName: error'", async () => {
+    const filePath = path.join(tempDir, "claude-tool-error.jsonl");
+
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        message: { role: "user", content: "Try to run the build" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-02-01T10:00:01.000Z",
+        message: {
+          id: "msg_1",
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "tool_err", name: "Bash", input: { command: "npm run build" } },
+          ],
+        },
+      },
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:02.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool_err",
+              content: "TypeError: Cannot read property 'x' of undefined",
+              is_error: true,
+            },
+          ],
+        },
+      },
+    ]);
+
+    const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+    const messages = await adapter.parseMessages(filePath);
+
+    const toolResult = messages.find((message) => message.role === "tool_result");
+    expect(toolResult).toBeDefined();
+    expect(toolResult?.content).toBe("Bash: error");
+    expect(toolResult?.toolName).toBe("Bash");
+  });
+
+  it("Claude parsing falls back to 'tool: ok' when a tool_result references an unknown tool_use_id", async () => {
+    const filePath = path.join(tempDir, "claude-orphan-tool-result.jsonl");
+
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "never-seen-this-tool",
+              content: "Some output",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+    const messages = await adapter.parseMessages(filePath);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "tool_result",
+      content: "tool: ok",
+      toolName: "tool",
+    });
+  });
+
+  it("Claude parsing returns an empty message list when only file-history-snapshot lines are present", async () => {
+    const filePath = path.join(tempDir, "claude-empty.jsonl");
+
+    await writeJsonl(filePath, [
+      {
+        type: "file-history-snapshot",
+        messageId: "fhs-1",
+        snapshot: { messageId: "fhs-1", trackedFileBackups: {}, timestamp: "2026-02-01T10:00:00.000Z" },
+      },
+      {
+        type: "file-history-snapshot",
+        messageId: "fhs-2",
+        snapshot: { messageId: "fhs-2", trackedFileBackups: {}, timestamp: "2026-02-01T10:00:01.000Z" },
+      },
+    ]);
+
+    const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+    const messages = await adapter.parseMessages(filePath);
+    expect(messages).toEqual([]);
+  });
+
+  // ============================================================
+  // Additional Codex discovery edge cases (SPEC §4.3.2)
+  // ============================================================
+
+  it("Codex discovery uses the filename-derived source id when session_meta is missing", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-123e4567-e89b-12d3-a456-426614174000.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "turn_context",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: { cwd: "/Users/alice/api-service" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: { type: "user_message", message: "Check the logs" },
+      },
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+
+    const adapter = new CodexCliAdapter(config);
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(warnings).toEqual([]);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.sourceId).toBe("123e4567-e89b-12d3-a456-426614174000");
+    expect(discovered[0]?.metadata.title).toBe("Check the logs");
+  });
+
+  it("Codex discovery skips non-rollout JSONL files under the sessions directory", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+
+    // Valid rollout.
+    await writeJsonl(
+      path.join(sessionsDir, "rollout-2026-02-01T10-00-00-22222222-2222-2222-2222-222222222222.jsonl"),
+      [
+        {
+          type: "session_meta",
+          payload: {
+            id: "22222222-2222-2222-2222-222222222222",
+            timestamp: "2026-02-01T10:00:00.000Z",
+            cwd: "/Users/alice/api-service",
+          },
+        },
+        {
+          type: "event_msg",
+          payload: { type: "user_message", message: "Real conversation" },
+        },
+      ],
+    );
+
+    // Non-rollout JSONL under the same directory (log-like file).
+    await writeJsonl(path.join(sessionsDir, "debug-trace.jsonl"), [
+      { type: "debug", message: "internal" },
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+
+    const adapter = new CodexCliAdapter(config);
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.sourceId).toBe("22222222-2222-2222-2222-222222222222");
+    // No malformed warning for the non-rollout file.
+    expect(warnings.filter((warning) => warning.code === "malformed_jsonl")).toEqual([]);
+  });
+
+  // ============================================================
+  // Additional Codex parsing edge cases (SPEC §4.3.4)
+  // ============================================================
+
+  it("Codex parsing renders a failed exec_command as '<tool>: exit N'", async () => {
+    const filePath = path.join(tempDir, "codex-exec-exit.jsonl");
+
+    await writeJsonl(filePath, [
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:01.000Z",
+        payload: {
+          type: "function_call",
+          call_id: "call_fail",
+          name: "exec_command",
+          arguments: '{"cmd":"npm run build"}',
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-02-01T10:00:02.000Z",
+        payload: {
+          type: "exec_command_end",
+          call_id: "call_fail",
+          exit_code: 2,
+          formatted_output: "error: build failed",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:03.000Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call_fail",
+          output: "Command failed.",
+        },
+      },
+    ]);
+
+    const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+    const messages = await adapter.parseMessages(filePath);
+
+    const toolResult = messages.find((message) => message.role === "tool_result");
+    expect(toolResult?.content).toBe("exec_command: exit 2");
+    expect(toolResult?.toolName).toBe("exec_command");
+  });
+
+  it("Codex parsing drops response_item.message records with role='developer' (SPEC §4.3.3)", async () => {
+    const filePath = path.join(tempDir, "codex-developer-drop.jsonl");
+
+    await writeJsonl(filePath, [
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "Agent-only configuration block" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:01.000Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Please help" }],
+        },
+      },
+    ]);
+
+    const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+    const messages = await adapter.parseMessages(filePath);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ role: "user", content: "Please help" });
+  });
+
   it("Codex discovery fails closed when project path is missing", async () => {
     const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
     const filePath = path.join(

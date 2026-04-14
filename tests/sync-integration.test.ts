@@ -1,0 +1,346 @@
+import { execSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { getDefaultConfig, saveConfig } from "../src/config/index.js";
+import {
+  getConversationById,
+  insertConversation,
+  listConversations,
+} from "../src/db/index.js";
+import { runSyncPull, runSyncPush } from "../src/cli/sync.js";
+import type { ConversationMeta } from "../src/models/conversation.js";
+import { getRemoteRoot } from "../src/sync/paths.js";
+import {
+  getRawConversationPath,
+  getRawSourceDir,
+} from "../src/utils/paths.js";
+import { writeJsonl } from "./helpers/fixtures.js";
+
+const hasGit = checkGit();
+
+const describeIfGit = hasGit ? describe : describe.skip;
+
+describeIfGit("sync integration (requires git)", () => {
+  let tempDir: string;
+  let bareRepo: string;
+  let externalCheckout: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-sync-int-"));
+    process.env.CLOG_HOME = path.join(tempDir, "clog-home");
+    await fs.mkdir(process.env.CLOG_HOME, { recursive: true });
+
+    bareRepo = path.join(tempDir, "bare.git");
+    externalCheckout = path.join(tempDir, "external-checkout");
+
+    execSync(`git init -b main --bare "${bareRepo}"`, { stdio: "ignore" });
+
+    // Seed the bare repo with an initial empty commit so pull works.
+    execSync(`git clone "${bareRepo}" "${externalCheckout}"`, { stdio: "ignore" });
+    runInCheckout(externalCheckout, `git checkout -B main`);
+    await fs.writeFile(path.join(externalCheckout, "README.md"), "clog team\n");
+    runInCheckout(externalCheckout, `git add README.md`);
+    runInCheckout(externalCheckout, `git -c user.email=t@t.t -c user.name=t commit -m init`);
+    runInCheckout(externalCheckout, `git push -u origin main`);
+
+    // Configure an author + point remote at the bare repo.
+    const config = getDefaultConfig("alice");
+    config.remote = {
+      url: bareRepo,
+      allowPublicRemote: false,
+      visibilityConfirmed: true,
+      lastSyncHead: null,
+    };
+    await saveConfig(config);
+  });
+
+  afterEach(async () => {
+    delete process.env.CLOG_HOME;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("clones the remote on first pull", async () => {
+    await runSyncPull();
+    await expect(
+      fs.stat(path.join(getRemoteRoot(), ".git")),
+    ).resolves.toBeTruthy();
+  });
+
+  it("pushes a local conversation and pulls it back on another machine", async () => {
+    await runSyncPull();
+
+    await insertLocalPublished({
+      id: "a1111111-1111-1111-1111-111111111111",
+      title: "Fix auth",
+      author: "alice",
+    });
+
+    // Configure git identity just for the checkout so commit works
+    // without requiring a system-wide git config in CI.
+    runInCheckout(
+      getRemoteRoot(),
+      `git config user.email integration@test.local && git config user.name integration`,
+    );
+
+    await runSyncPush();
+
+    // Pull in the external checkout and verify the file is there.
+    runInCheckout(externalCheckout, `git pull --rebase`);
+    await expect(
+      fs.stat(
+        path.join(
+          externalCheckout,
+          "alice",
+          "claude-code",
+          "a1111111-1111-1111-1111-111111111111.meta.json",
+        ),
+      ),
+    ).resolves.toBeTruthy();
+  });
+
+  it("pulls a conversation published by a teammate", async () => {
+    // Teammate publishes via the external checkout directly.
+    const bobDir = path.join(externalCheckout, "bob", "claude-code");
+    await fs.mkdir(bobDir, { recursive: true });
+    const id = "a2222222-2222-2222-2222-222222222222";
+    await fs.writeFile(
+      path.join(bobDir, `${id}.meta.json`),
+      `${JSON.stringify(
+        {
+          id,
+          title: "Bob's fix",
+          summary: "",
+          tags: [],
+          author: "bob",
+          projectName: null,
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          source: "claude-code",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeJsonl(path.join(bobDir, `${id}.jsonl`), [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/tmp/repo",
+        message: { role: "user", content: "Hi" },
+      },
+    ]);
+
+    runInCheckout(externalCheckout, `git add -A`);
+    runInCheckout(
+      externalCheckout,
+      `git -c user.email=b@b.b -c user.name=bob commit -m "bob's publish"`,
+    );
+    runInCheckout(externalCheckout, `git push origin main`);
+
+    await runSyncPull();
+
+    const row = await getConversationById(id);
+    expect(row).not.toBeNull();
+    expect(row?.title).toBe("Bob's fix");
+    expect(row?.origin).toBe(bareRepo);
+    expect(row?.author).toBe("bob");
+  });
+
+  it("retracts a conversation when the local DB no longer has it", async () => {
+    await runSyncPull();
+
+    const id = "a3333333-3333-3333-3333-333333333333";
+    await insertLocalPublished({ id, title: "To be retracted", author: "alice" });
+
+    runInCheckout(
+      getRemoteRoot(),
+      `git config user.email integration@test.local && git config user.name integration`,
+    );
+
+    await runSyncPush();
+
+    // Now unpublish (delete the local row) and push again — retraction expected.
+    const { deleteConversation } = await import("../src/db/index.js");
+    await deleteConversation(id);
+
+    await runSyncPush();
+
+    runInCheckout(externalCheckout, `git pull --rebase`);
+    await expect(
+      fs.stat(
+        path.join(
+          externalCheckout,
+          "alice",
+          "claude-code",
+          `${id}.meta.json`,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses to push when visibilityConfirmed is false", async () => {
+    const config = getDefaultConfig("alice");
+    config.remote = {
+      url: bareRepo,
+      allowPublicRemote: false,
+      visibilityConfirmed: false,
+      lastSyncHead: null,
+    };
+    await saveConfig(config);
+
+    await expect(runSyncPush()).rejects.toThrow(/visibility was never confirmed/);
+  });
+
+  it("push reports 'Nothing to push' when the checkout matches the DB", async () => {
+    await runSyncPull();
+
+    runInCheckout(
+      getRemoteRoot(),
+      `git config user.email integration@test.local && git config user.name integration`,
+    );
+
+    const output = await captureStdout(async () => {
+      await runSyncPush();
+    });
+
+    expect(output).toContain("Nothing to push");
+  });
+
+  it("does not import excluded conversations on pull", async () => {
+    const id = "a4444444-4444-4444-4444-444444444444";
+    const bobDir = path.join(externalCheckout, "bob", "claude-code");
+    await fs.mkdir(bobDir, { recursive: true });
+    await fs.writeFile(
+      path.join(bobDir, `${id}.meta.json`),
+      `${JSON.stringify(
+        {
+          id,
+          title: "Excluded",
+          summary: "",
+          tags: [],
+          author: "bob",
+          projectName: null,
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          source: "claude-code",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeJsonl(path.join(bobDir, `${id}.jsonl`), [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/tmp/repo",
+        message: { role: "user", content: "Hi" },
+      },
+    ]);
+
+    runInCheckout(externalCheckout, `git add -A`);
+    runInCheckout(
+      externalCheckout,
+      `git -c user.email=b@b.b -c user.name=bob commit -m "publish"`,
+    );
+    runInCheckout(externalCheckout, `git push origin main`);
+
+    await fs.writeFile(
+      path.join(process.env.CLOG_HOME!, "excluded"),
+      `${id}@claude-code\n`,
+      "utf8",
+    );
+
+    await runSyncPull();
+
+    const rows = await listConversations({ origin: "remote" });
+    expect(rows).toHaveLength(0);
+  });
+});
+
+function checkGit(): boolean {
+  try {
+    execSync("git --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runInCheckout(cwd: string, command: string): void {
+  execSync(command, { cwd, stdio: "ignore" });
+}
+
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  (process.stdout.write as unknown) = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    chunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    const cb = rest[rest.length - 1];
+    if (typeof cb === "function") (cb as () => void)();
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    await fn();
+  } finally {
+    (process.stdout.write as unknown) = originalWrite;
+  }
+
+  return chunks.join("");
+}
+
+async function insertLocalPublished(options: {
+  id: string;
+  title: string;
+  author: string;
+}): Promise<ConversationMeta> {
+  const rawPath = getRawConversationPath("claude-code", options.id);
+  await fs.mkdir(getRawSourceDir("claude-code"), { recursive: true });
+  await writeJsonl(rawPath, [
+    {
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: "/tmp/repo",
+      message: { role: "user", content: "Hello" },
+    },
+  ]);
+
+  const timestamp = "2026-02-01T10:00:00.000Z";
+  const conversation: ConversationMeta = {
+    id: options.id,
+    sourceId: options.id,
+    source: "claude-code",
+    title: options.title,
+    summary: "",
+    author: options.author,
+    projectName: "repo",
+    projectPath: "/tmp/repo",
+    tags: [],
+    slug: null,
+    createdAt: timestamp,
+    discoveredAt: timestamp,
+    modifiedAt: timestamp,
+    state: "published",
+    publishedAt: timestamp,
+    publishedMessageCount: 1,
+    publishVersion: 1,
+    sourcePath: rawPath,
+    filePath: rawPath,
+    sourceMtime: null,
+    indexedAt: null,
+    origin: null,
+  };
+
+  await insertConversation(conversation);
+  return conversation;
+}

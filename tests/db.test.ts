@@ -6,11 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   browseValues,
+  clearPublishedIndexedAt,
   deleteConversation,
   getConversationById,
+  getConversationBySourceIdentityInDb,
   insertConversation,
   listConversations,
+  listConversationsNeedingIndex,
   resolveConversationId,
+  setConversationIndexedAt,
   updateConversation,
   withDb,
 } from "../src/db/index.js";
@@ -153,6 +157,280 @@ describe("db", () => {
 
     await expect(getConversationById(conversation.id)).resolves.toBeNull();
   });
+
+  it("round-trips origin and filters by local/remote/URL", async () => {
+    const local = makeConversation({ state: "published" });
+    const remote1 = makeConversation({
+      id: "e1234567-1234-1234-1234-123456789012",
+      sourceId: "e1234567-1234-1234-1234-123456789012",
+      state: "published",
+      author: "bob",
+      origin: "git@github.com:myorg/clog-team.git",
+    });
+    const remote2 = makeConversation({
+      id: "f1234567-1234-1234-1234-123456789012",
+      sourceId: "f1234567-1234-1234-1234-123456789012",
+      state: "published",
+      author: "carol",
+      origin: "git@example.com:other/repo.git",
+    });
+
+    await insertConversation(local);
+    await insertConversation(remote1);
+    await insertConversation(remote2);
+
+    const loaded = await getConversationById(remote1.id);
+    expect(loaded?.origin).toBe("git@github.com:myorg/clog-team.git");
+
+    await expect(listConversations({ origin: "local" })).resolves.toHaveLength(1);
+    await expect(listConversations({ origin: "remote" })).resolves.toHaveLength(2);
+    await expect(
+      listConversations({ origin: { url: "git@github.com:myorg/clog-team.git" } }),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("applies curatedDefault filter (author OR origin IS NULL)", async () => {
+    await insertConversation(makeConversation({ state: "published" }));
+    await insertConversation(
+      makeConversation({
+        id: "e1234567-1234-1234-1234-123456789012",
+        sourceId: "e1234567-1234-1234-1234-123456789012",
+        state: "published",
+        author: "alice",
+        origin: "git@example.com:repo.git",
+      }),
+    );
+    await insertConversation(
+      makeConversation({
+        id: "f1234567-1234-1234-1234-123456789012",
+        sourceId: "f1234567-1234-1234-1234-123456789012",
+        state: "published",
+        author: "bob",
+        origin: "git@example.com:repo.git",
+      }),
+    );
+
+    const curated = await listConversations({
+      states: ["published"],
+      curatedDefault: { author: "alice" },
+    });
+    expect(curated).toHaveLength(2);
+    expect(curated.every((c) => c.author === "alice" || c.origin === null)).toBe(true);
+  });
+
+  // ============================================================
+  // Schema migration and constraint enforcement
+  // ============================================================
+
+  it("applyMigrations is idempotent across successive withDb calls (SPEC §3.4.1)", async () => {
+    await withDb(() => undefined);
+    await withDb(() => undefined);
+    await insertConversation(makeConversation());
+    await expect(getConversationById("a1234567-1234-1234-1234-123456789012")).resolves.toBeTruthy();
+  });
+
+  it("rejects inserting a duplicate conversation id (SPEC §3.1)", async () => {
+    await insertConversation(makeConversation());
+    await expect(insertConversation(makeConversation())).rejects.toThrow();
+  });
+
+  // ============================================================
+  // listConversations filters (the ones not covered above)
+  // ============================================================
+
+  it("lists conversations across multiple states at once", async () => {
+    await insertConversation(makeConversation({ state: "discovered" }));
+    await insertConversation(
+      makeConversation({
+        id: "a2345678-1234-1234-1234-123456789012",
+        sourceId: "a2345678-1234-1234-1234-123456789012",
+        state: "staged",
+      }),
+    );
+    await insertConversation(
+      makeConversation({
+        id: "a3456789-1234-1234-1234-123456789012",
+        sourceId: "a3456789-1234-1234-1234-123456789012",
+        state: "published",
+      }),
+    );
+
+    const curated = await listConversations({ states: ["staged", "published"] });
+    expect(curated).toHaveLength(2);
+    expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["staged", "published"]));
+  });
+
+  it("filters by indexed (null vs non-null indexed_at)", async () => {
+    await insertConversation(
+      makeConversation({
+        state: "published",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+      }),
+    );
+    await insertConversation(
+      makeConversation({
+        id: "b1111111-1234-1234-1234-123456789012",
+        sourceId: "b1111111-1234-1234-1234-123456789012",
+        state: "published",
+        indexedAt: null,
+      }),
+    );
+
+    const indexed = await listConversations({ states: ["published"], indexed: true });
+    expect(indexed).toHaveLength(1);
+    expect(indexed[0]?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+
+    const unindexed = await listConversations({ states: ["published"], indexed: false });
+    expect(unindexed).toHaveLength(1);
+    expect(unindexed[0]?.indexedAt).toBeNull();
+  });
+
+  it("curatedDefault: null applies no additional author/origin filter", async () => {
+    await insertConversation(makeConversation({ state: "published", author: "alice" }));
+    await insertConversation(
+      makeConversation({
+        id: "c1111111-1234-1234-1234-123456789012",
+        sourceId: "c1111111-1234-1234-1234-123456789012",
+        state: "published",
+        author: "bob",
+        origin: "git@example.com:repo.git",
+      }),
+    );
+
+    const all = await listConversations({ states: ["published"], curatedDefault: null });
+    expect(all).toHaveLength(2);
+  });
+
+  // ============================================================
+  // resolveConversationId edge cases (SPEC §3.3)
+  // ============================================================
+
+  it("resolveConversationId rejects prefixes shorter than 4 characters", async () => {
+    await insertConversation(makeConversation());
+    await expect(resolveConversationId("abc")).rejects.toThrow(/at least 4 characters/);
+  });
+
+  it("resolveConversationId resolves a full UUID match", async () => {
+    const conversation = makeConversation();
+    await insertConversation(conversation);
+    await expect(resolveConversationId(conversation.id)).resolves.toEqual({
+      id: conversation.id,
+      source: "claude-code",
+    });
+  });
+
+  it("resolveConversationId reports 'No conversation matches' when nothing matches", async () => {
+    await insertConversation(makeConversation());
+    await expect(resolveConversationId("9999")).rejects.toThrow(/No conversation matches/);
+  });
+
+  it("resolveConversationId rejects invalid source-qualified formats like 'prefix@' and '@source'", async () => {
+    await insertConversation(makeConversation());
+    await expect(resolveConversationId("abcd@")).rejects.toThrow(/Invalid source-qualified/);
+    await expect(resolveConversationId("@claude-code")).rejects.toThrow(/Invalid source-qualified/);
+  });
+
+  it("resolveConversationId reports no-match when the source is unknown", async () => {
+    await insertConversation(makeConversation());
+    await expect(resolveConversationId("a123@made-up-source")).rejects.toThrow(
+      /No conversation matches/,
+    );
+  });
+
+  // ============================================================
+  // getConversationBySourceIdentityInDb (used by scan and sync)
+  // ============================================================
+
+  it("getConversationBySourceIdentityInDb looks up by (source, sourceId)", async () => {
+    const conversation = makeConversation();
+    await insertConversation(conversation);
+
+    const loaded = await withDb((db) =>
+      getConversationBySourceIdentityInDb(db, conversation.source, conversation.sourceId),
+    );
+    expect(loaded?.id).toBe(conversation.id);
+  });
+
+  it("getConversationBySourceIdentityInDb returns null when nothing matches", async () => {
+    const loaded = await withDb((db) =>
+      getConversationBySourceIdentityInDb(db, "claude-code", "not-a-real-id"),
+    );
+    expect(loaded).toBeNull();
+  });
+
+  // ============================================================
+  // indexed_at helpers (Phase 2 staleness surface — SPEC §10.7)
+  // ============================================================
+
+  it("setConversationIndexedAt sets and clears indexed_at without touching other fields", async () => {
+    const conversation = makeConversation({
+      state: "published",
+      indexedAt: null,
+    });
+    await insertConversation(conversation);
+
+    await setConversationIndexedAt(conversation.id, "2026-02-01T12:00:00.000Z");
+    let reloaded = await getConversationById(conversation.id);
+    expect(reloaded?.indexedAt).toBe("2026-02-01T12:00:00.000Z");
+    expect(reloaded?.title).toBe(conversation.title);
+
+    await setConversationIndexedAt(conversation.id, null);
+    reloaded = await getConversationById(conversation.id);
+    expect(reloaded?.indexedAt).toBeNull();
+  });
+
+  it("listConversationsNeedingIndex returns only published conversations with null indexed_at", async () => {
+    // Published + null → needs index
+    await insertConversation(
+      makeConversation({ state: "published", indexedAt: null }),
+    );
+    // Published + already indexed → excluded
+    await insertConversation(
+      makeConversation({
+        id: "d1111111-1234-1234-1234-123456789012",
+        sourceId: "d1111111-1234-1234-1234-123456789012",
+        state: "published",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+      }),
+    );
+    // Staged + null → excluded (only published is searchable)
+    await insertConversation(
+      makeConversation({
+        id: "d2222222-1234-1234-1234-123456789012",
+        sourceId: "d2222222-1234-1234-1234-123456789012",
+        state: "staged",
+        indexedAt: null,
+      }),
+    );
+
+    const needing = await listConversationsNeedingIndex();
+    expect(needing).toHaveLength(1);
+    expect(needing[0]?.id).toBe("a1234567-1234-1234-1234-123456789012");
+  });
+
+  it("clearPublishedIndexedAt bulk-clears only published rows", async () => {
+    await insertConversation(
+      makeConversation({
+        state: "published",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+      }),
+    );
+    await insertConversation(
+      makeConversation({
+        id: "d3333333-1234-1234-1234-123456789012",
+        sourceId: "d3333333-1234-1234-1234-123456789012",
+        state: "staged",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+      }),
+    );
+
+    await clearPublishedIndexedAt();
+
+    const published = await getConversationById("a1234567-1234-1234-1234-123456789012");
+    const staged = await getConversationById("d3333333-1234-1234-1234-123456789012");
+    expect(published?.indexedAt).toBeNull();
+    expect(staged?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+  });
 });
 
 function makeConversation(
@@ -189,5 +467,6 @@ function baseConversation() {
     filePath: null,
     sourceMtime: null,
     indexedAt: null,
+    origin: null,
   };
 }

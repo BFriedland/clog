@@ -12,8 +12,11 @@ import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
 import { preAction, runWithCliErrorHandling } from "./cli/prelude.js";
 import { buildPublishCommand } from "./cli/publish.js";
+import { buildRefreshCommand } from "./cli/refresh.js";
+import { buildRemoteCommand } from "./cli/remote.js";
 import { buildRenameAuthorCommand } from "./cli/rename-author.js";
 import { buildResetCommand } from "./cli/reset.js";
+import { buildSyncCommand } from "./cli/sync.js";
 import { buildShowCommand } from "./cli/show.js";
 import { buildStatusCommand } from "./cli/status.js";
 import { buildTagCommand } from "./cli/tag.js";
@@ -63,6 +66,9 @@ async function main(): Promise<void> {
   program.addCommand(buildUnexcludeCommand());
   program.addCommand(buildConfigCommand());
   program.addCommand(buildRenameAuthorCommand());
+  program.addCommand(buildRemoteCommand());
+  program.addCommand(buildSyncCommand());
+  program.addCommand(buildRefreshCommand());
   program
     .command("index")
     .description("Index published conversations for semantic search")

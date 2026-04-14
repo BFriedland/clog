@@ -15,6 +15,7 @@ const listInputSchema = z.object({
   project: z.string().optional(),
   author: z.string().optional(),
   grep: z.string().optional(),
+  origin: z.enum(["local", "remote"]).optional(),
   limit: z.number().int().positive().max(100).default(20),
   offset: z.number().int().nonnegative().default(0),
 });
@@ -41,6 +42,7 @@ const searchInputSchema = z.object({
   tags: z.array(z.string()).optional(),
   project: z.string().optional(),
   author: z.string().optional(),
+  origin: z.enum(["local", "remote"]).optional(),
   limit: z.number().int().positive().max(50).default(10),
 });
 
@@ -92,6 +94,12 @@ export async function handleUpdate(input: unknown) {
 
   if (conversation.state === "discovered") {
     throw new Error("clog_update only works on staged or published conversations.");
+  }
+
+  if (conversation.origin != null) {
+    throw new Error(
+      `clog_update cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only.`,
+    );
   }
 
   const addTags = normalizeTags(parsed.addTags ?? []);
@@ -155,6 +163,7 @@ export async function handleSearch(input: unknown) {
     states: ["published"],
     projectName: parsed.project,
     author: parsed.author,
+    origin: parsed.origin,
   });
 
   if (parsed.tags && parsed.tags.length > 0) {
@@ -233,6 +242,7 @@ async function listConversationsForState(
     states: [state],
     projectName: input.project,
     author: input.author,
+    origin: input.origin,
   });
 
   if (input.tags && input.tags.length > 0) {

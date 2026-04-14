@@ -54,6 +54,28 @@ export async function resolveManyConversationsOrFail(
   return Promise.all(inputIds.map((id) => resolveConversationOrFail(id)));
 }
 
+export function assertNotRemote(
+  conversation: ConversationMeta,
+  command: string,
+): void {
+  if (conversation.origin == null) {
+    return;
+  }
+
+  throw new ClogError(
+    `${command} cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only. Edit it on the publishing author's machine.`,
+  );
+}
+
+export function assertNoneRemote(
+  conversations: ConversationMeta[],
+  command: string,
+): void {
+  for (const conversation of conversations) {
+    assertNotRemote(conversation, command);
+  }
+}
+
 export function resolveContentPath(conversation: ConversationMeta): string {
   if (conversation.state === "discovered") {
     return conversation.sourcePath;

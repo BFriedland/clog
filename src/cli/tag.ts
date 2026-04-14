@@ -2,7 +2,7 @@ import { Command } from "commander";
 
 import { nowIso } from "../utils/time.js";
 import { updateConversation } from "../db/index.js";
-import { resolveConversationOrFail } from "./common.js";
+import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 
 export function buildTagCommand(): Command {
   return new Command("tag")
@@ -11,6 +11,7 @@ export function buildTagCommand(): Command {
     .argument("<tags...>")
     .action(async (id: string, tags: string[]) => {
       const conversation = await resolveConversationOrFail(id);
+      assertNotRemote(conversation, "clog tag");
       const nextTags = [...new Set([...conversation.tags, ...normalizeTags(tags)])];
 
       if (nextTags.length === conversation.tags.length) {

@@ -245,6 +245,28 @@ Rules:
 - semantic search should reuse the same DB searchability checks as the CLI rather
   than trusting raw vector-store hits
 
+### `src/sync`
+
+Owns the optional team-sharing subsystem introduced in Phase 3.
+
+- `git.ts` is a thin wrapper around the system `git` binary. Every subprocess call to git in the codebase flows through this file — no other module shells out to git directly.
+- `meta.ts` owns the `.meta.json` Zod schema, serialization, deserialization, and the conversion between `ConversationMeta` and the on-wire remote metadata format. It strips local-only fields (`projectPath`, `origin`, `publishedMessageCount`) on write and populates derived fields on read.
+- `visibility.ts` owns GitHub URL parsing, unauthenticated REST visibility probing, and the `VisibilityResult` discriminated union (`"public"` vs `"unverified"`). There is no `gh` dependency and no authenticated probe; see SPEC §11.6 for the two-outcome rationale.
+- `paths.ts` owns path helpers for the remote checkout tree (`~/.clog/remote/<author>/<source>/…`).
+- `pull.ts` owns reconciliation: it walks the checkout, validates pairs, and reconciles the DB for the currently configured remote URL only. It is the exclusive home of remote-import policy.
+- `push.ts` owns export and commit-message generation. Retractions are scoped to `config.author`'s directory with lightest-necessary-touch semantics.
+- `staleness.ts` owns the `HEAD` vs `lastSyncHead` comparison used by `status` and `list`.
+- `remote-config.ts` owns read/write helpers for the structured `config.remote` block so CLI handlers don't reach into raw config objects.
+
+Rules:
+
+- shelling out to git happens only inside `src/sync/git.ts`
+- remote-specific file format parsing lives inside `src/sync/meta.ts`, not in adapters or DB
+- remote reconciliation policy (insert/update/delete/warn-skip) lives inside `src/sync/pull.ts`
+- nothing outside `src/sync/` and the Phase 3 CLI handlers (`remote.ts`, `sync.ts`, `refresh.ts`) should import from this module
+- clog never writes `user.name` or `user.email` into `~/.clog/remote/.git/config`; the commit identity is whatever git's own resolution chain produces for that working tree
+- the visibility probe has two outcomes only: proven public (refuse) and anything else (confirm at add-time). A 200 + `"private": true` is treated as unverified because an unauthenticated GitHub API cannot positively confirm private visibility.
+
 ### `src/utils`
 
 Owns small, generic helpers with no workflow policy.
@@ -324,6 +346,8 @@ Phase 1 state transitions are:
 - `staged`
 - `published`
 
+Phase 3 adds `origin` as an orthogonal dimension: `NULL` for locally-originated conversations, and a remote URL string for conversations imported from a shared remote. `origin` is not a state — a remote conversation is always `state = "published"` and cannot transition. It is stored alongside the state on each row.
+
 Important implementation rules:
 
 - scan may update operational locator fields on curated conversations without rewriting curated metadata
@@ -331,6 +355,9 @@ Important implementation rules:
 - `publish` advances publish checkpoint fields
 - `reset` clears active publish fields when moving back to `discovered`
 - `unpublish` preserves the last-publish checkpoint while moving back to `staged`
+- `edit`, `tag`, `untag`, and `unpublish` refuse rows where `origin IS NOT NULL` via `assertNotRemote` / `assertNoneRemote` in `src/cli/common.ts`
+- `exclude` works on both local and remote rows: it deletes the DB row and adds the source-qualified ID to `~/.clog/excluded`, which is the single blocklist consulted by both the local scan pipeline and remote reconciliation
+- `src/sync/pull.ts` is the only module that may insert, update, or delete rows with `origin IS NOT NULL`; reconciliation is scoped to the currently configured remote URL and never touches rows from a different origin
 
 These rules should remain centered in shared helpers and DB updates, not spread through output code.
 
@@ -344,6 +371,8 @@ When adding new work, prefer these placements:
 - new behavior shared by multiple commands: `src/cli/common.ts`
 - new command-only output detail: the specific command file
 - new MCP tool: `src/mcp/handlers.ts` plus `src/mcp/server.ts`
+- new sync behavior: add it inside `src/sync/`; only `remote.ts`, `sync.ts`, `refresh.ts`, and the small handful of Phase 1/2 files with remote-read-only guards should import from `src/sync/`
+- new git subprocess call: add the wrapper inside `src/sync/git.ts`; never shell out from anywhere else
 
 Questions to ask before adding code:
 

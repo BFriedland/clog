@@ -2,7 +2,7 @@ import { Command } from "commander";
 
 import { updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
-import { resolveManyConversationsOrFail } from "./common.js";
+import { assertNoneRemote, resolveManyConversationsOrFail } from "./common.js";
 
 export function buildUnpublishCommand(): Command {
   return new Command("unpublish")
@@ -10,6 +10,7 @@ export function buildUnpublishCommand(): Command {
     .argument("<ids...>")
     .action(async (ids: string[]) => {
       const conversations = await resolveManyConversationsOrFail(ids);
+      assertNoneRemote(conversations, "clog unpublish");
 
       for (const conversation of conversations) {
         if (conversation.state !== "published") {

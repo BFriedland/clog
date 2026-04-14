@@ -49,6 +49,7 @@ export const conversationMetaSchema = z.object({
   filePath: z.string().nullable(),
   sourceMtime: z.string().nullable(),
   indexedAt: z.string().nullable(),
+  origin: z.string().nullable(),
 });
 
 export type ConversationMeta = z.infer<typeof conversationMetaSchema>;
