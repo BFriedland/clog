@@ -889,7 +889,7 @@ describe("cli", () => {
       expect(stdout).toContain("added:");
     });
 
-    it("shows a discovered conversation under 'Conversations not staged for publishing:'", async () => {
+    it("shows a discovered conversation under 'Untracked conversations:'", async () => {
       await insertConversation(
         makeConversation({
           id: "c2222222-2222-2222-2222-222222222222",
@@ -900,25 +900,29 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Conversations not staged for publishing:");
+      expect(stdout).toContain("Untracked conversations:");
       expect(stdout).toContain("Pending discovery");
       expect(stdout).toContain("discovered:");
     });
 
-    it("treats a published conversation whose raw copy is newer than publishedAt as modified", async () => {
+    it("treats a published conversation whose raw copy is ahead of the published checkpoint as ready to publish", async () => {
       const convId = "c3333333-3333-3333-3333-333333333333";
       const rawPath = getRawConversationPath("claude-code", convId);
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
-      await writeJsonl(rawPath, [userLine("Something"), assistantLine("Reply", "msg_01")]);
+      await writeJsonl(rawPath, [
+        userLine("Something"),
+        assistantLine("Reply", "msg_01"),
+        userLine("And more"),
+        assistantLine("Reply 2", "msg_02"),
+      ]);
 
       await insertConversation(
         makeConversation({
           id: convId,
           sourceId: convId,
-          title: "Published with newer raw copy",
+          title: "Published with refreshed raw copy",
           state: "published",
           filePath: rawPath,
-          // publishedAt is older than the raw file's mtime.
           publishedAt: "2020-01-01T00:00:00.000Z",
           publishedMessageCount: 2,
           publishVersion: 1,
@@ -926,8 +930,8 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Changes to be published:");
-      expect(stdout).toContain("Published with newer raw copy");
+      expect(stdout).toContain("Conversations to be published:");
+      expect(stdout).toContain("Published with refreshed raw copy");
       expect(stdout).toContain("modified:");
     });
 
@@ -956,7 +960,7 @@ describe("cli", () => {
       expect(stdout).toContain("remote checkout has changed outside of clog");
     });
 
-    it("marks a published conversation as modified when parsed messages exceed the published checkpoint", async () => {
+    it("marks a published conversation as ready when parsed messages exceed the published checkpoint", async () => {
       const convId = "c6666666-6666-6666-6666-666666666666";
       const rawPath = getRawConversationPath("claude-code", convId);
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
@@ -967,10 +971,6 @@ describe("cli", () => {
         assistantLine("Reply 2", "msg_02"),
       ]);
 
-      // Pin the raw file's mtime to well before publishedAt so the mtime branch
-      // of isModifiedSincePublish doesn't short-circuit the parsed-count check.
-      const oldTime = new Date("2020-01-01T00:00:00.000Z");
-      await fs.utimes(rawPath, oldTime, oldTime);
 
       await insertConversation(
         makeConversation({
@@ -989,7 +989,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Changes to be published:");
+      expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Checkpoint lag");
     });
 

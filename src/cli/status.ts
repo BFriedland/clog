@@ -6,14 +6,8 @@ import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
-import {
-  getFileMtimeIso,
-  getPublishCandidate,
-  parseConversationMessages,
-  parseConversationMessagesFromPath,
-  renderWarnings,
-} from "./common.js";
-import { colorizeStateLabel, dimText } from "./colors.js";
+import { classifyPublishedDelta, renderWarnings } from "./common.js";
+import { colorizeStatusLabel, dimText } from "./colors.js";
 
 export function buildStatusCommand(): Command {
   return new Command("status")
@@ -26,12 +20,16 @@ export function buildStatusCommand(): Command {
       const staged = await listConversations({ states: ["staged"], origin: "local" });
       const published = await listConversations({ states: ["published"], origin: "local" });
       const discovered = await listConversations({ states: ["discovered"], origin: "local" });
-      const modifiedPublished: ConversationMeta[] = [];
+      const readyPublished: ConversationMeta[] = [];
+      const sourceAheadPublished: ConversationMeta[] = [];
       const cleanPublished: ConversationMeta[] = [];
 
       for (const conversation of published) {
-        if (await isModifiedSincePublish(conversation)) {
-          modifiedPublished.push(conversation);
+        const kind = await classifyPublishedDelta(conversation);
+        if (kind === "ready") {
+          readyPublished.push(conversation);
+        } else if (kind === "source_ahead") {
+          sourceAheadPublished.push(conversation);
         } else {
           cleanPublished.push(conversation);
         }
@@ -39,21 +37,30 @@ export function buildStatusCommand(): Command {
 
       const sections: Array<() => void> = [];
 
-      if (staged.length > 0) {
+      if (staged.length > 0 || readyPublished.length > 0) {
         sections.push(() => {
           process.stdout.write("Conversations to be published:\n");
           process.stdout.write(`${dimText('  (use "clog reset <id>" to unstage)')}\n`);
-          renderStatusLikeRows(staged, "added", { includeSource: options.source === true });
+          if (staged.length > 0) {
+            renderStatusLikeRows(staged, "added", "staged", {
+              includeSource: options.source === true,
+            });
+          }
+          if (readyPublished.length > 0) {
+            renderStatusLikeRows(readyPublished, "modified", "staged", {
+              includeSource: options.source === true,
+            });
+          }
         });
       }
 
-      if (modifiedPublished.length > 0) {
+      if (sourceAheadPublished.length > 0) {
         sections.push(() => {
-          process.stdout.write("Changes to be published:\n");
+          process.stdout.write("Changes not staged for publishing:\n");
           process.stdout.write(
             `${dimText('  (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)')}\n`,
           );
-          renderStatusLikeRows(modifiedPublished, "modified", {
+          renderStatusLikeRows(sourceAheadPublished, "modified", "unstaged", {
             includeSource: options.source === true,
           });
         });
@@ -61,11 +68,11 @@ export function buildStatusCommand(): Command {
 
       if (discovered.length > 0) {
         sections.push(() => {
-          process.stdout.write("Conversations not staged for publishing:\n");
+          process.stdout.write("Untracked conversations:\n");
           process.stdout.write(
             `${dimText('  (use "clog add <id>" to stage for publishing)')}\n`,
           );
-          renderStatusLikeRows(discovered, "discovered", {
+          renderStatusLikeRows(discovered, "discovered", "unstaged", {
             includeSource: options.source === true,
           });
         });
@@ -136,12 +143,13 @@ async function renderRemoteSection(
 function renderStatusLikeRows(
   conversations: ConversationMeta[],
   label: "added" | "modified" | "discovered",
+  stagingState: "staged" | "unstaged",
   options: { includeSource: boolean },
 ): void {
   const projectWidth = getStatusProjectWidth(conversations);
 
   for (const conversation of conversations) {
-    const prefix = colorizeStateLabel(`${label}:`.padEnd(12), conversation);
+    const prefix = colorizeStatusLabel(`${label}:`.padEnd(12), stagingState);
     const id = `${conversation.id.slice(0, 7)}`.padEnd(9);
     const source = options.includeSource ? `${conversation.source}`.padEnd(13) : "";
     const date = formatDate(conversation.createdAt).padEnd(12);
@@ -194,39 +202,4 @@ function getStatusProjectWidth(conversations: ConversationMeta[]): number {
   }, 0);
 
   return Math.max("PROJECT".length, widestProject) + 1;
-}
-
-async function isModifiedSincePublish(conversation: ConversationMeta): Promise<boolean> {
-  if (!conversation.publishedAt) {
-    return true;
-  }
-
-  if (conversation.modifiedAt > conversation.publishedAt) {
-    return true;
-  }
-
-  if (conversation.filePath) {
-    const rawMtime = await getFileMtimeIso(conversation.filePath);
-    if (rawMtime && rawMtime > conversation.publishedAt) {
-      return true;
-    }
-  }
-
-  const config = await loadConfig();
-  const candidate = await getPublishCandidate(conversation);
-
-  if (candidate.path !== conversation.filePath) {
-    return true;
-  }
-
-  if (conversation.publishedMessageCount == null) {
-    return true;
-  }
-
-  const messages =
-    candidate.path === conversation.filePath
-      ? await parseConversationMessages(config, conversation)
-      : await parseConversationMessagesFromPath(config, conversation.source, candidate.path);
-
-  return messages.length > conversation.publishedMessageCount;
 }

@@ -17,6 +17,13 @@ export function colorizeStateLabel(
   return label;
 }
 
+export function colorizeStatusLabel(
+  label: string,
+  stagingState: "staged" | "unstaged",
+): string {
+  return stagingState === "staged" ? chalk.green(label) : chalk.red(label);
+}
+
 export function dimText(value: string): string {
   return chalk.dim(value);
 }

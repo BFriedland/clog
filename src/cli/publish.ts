@@ -7,6 +7,7 @@ import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
+  classifyPublishedDelta,
   defaultPublishFilePath,
   ensureRawCopy,
   getPublishCandidate,
@@ -24,7 +25,7 @@ export function buildPublishCommand(): Command {
       const conversations =
         ids.length > 0
           ? await resolveManyConversationsOrFail(ids)
-          : await listConversations({ states: ["staged"] });
+          : await collectBarePublishTargets();
 
       if (conversations.length === 0) {
         process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
@@ -99,4 +100,16 @@ function resolveFilePathOrFallback(
   fallback: string,
 ): string {
   return conversation.filePath ?? fallback;
+}
+
+async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
+  const staged = await listConversations({ states: ["staged"], origin: "local" });
+  const published = await listConversations({ states: ["published"], origin: "local" });
+  const readyPublished: ConversationMeta[] = [];
+  for (const conversation of published) {
+    if ((await classifyPublishedDelta(conversation)) === "ready") {
+      readyPublished.push(conversation);
+    }
+  }
+  return [...staged, ...readyPublished];
 }

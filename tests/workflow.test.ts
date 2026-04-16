@@ -218,6 +218,38 @@ describe("workflow", () => {
     expect(rawContent).toBe(sourceContent);
   });
 
+  it("bare publish republishes a ready published conversation after clog add (SPEC §5.4)", async () => {
+    const convId = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Initial prompt");
+
+    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
+
+    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildPublishCommand, [convId]);
+
+    const firstPublish = await getConversationById(convId);
+    const firstPublishedAt = firstPublish?.publishedAt;
+    expect(firstPublish?.publishVersion).toBe(1);
+    expect(firstPublish?.publishedMessageCount).toBe(2);
+
+    await writeJsonl(sourcePath, [
+      userMessageLine("Initial prompt"),
+      assistantTextLine("Let me look", "msg_01"),
+      userMessageLine("Follow-up", "2026-02-01T10:05:00.000Z"),
+      assistantTextLine("Here you go", "msg_02", "2026-02-01T10:05:01.000Z"),
+    ]);
+
+    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildPublishCommand, []);
+
+    const republished = await getConversationById(convId);
+    expect(republished?.state).toBe("published");
+    expect(republished?.publishVersion).toBe(2);
+    expect(republished?.publishedMessageCount).toBe(4);
+    expect(republished?.publishedAt).not.toBe(firstPublishedAt);
+  });
+
   it("add on an unchanged published raw copy is a content no-op (SPEC §5.5)", async () => {
     const convId = "22222222-3333-4444-5555-666666666666";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);

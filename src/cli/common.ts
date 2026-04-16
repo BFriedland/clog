@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
+import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import {
   getConversationById,
@@ -496,6 +497,47 @@ function getTerminalWidth(): number {
   return 100;
 }
 
+export type PublishedDelta = "clean" | "ready" | "source_ahead";
+
+export async function classifyPublishedDelta(
+  conversation: ConversationMeta,
+): Promise<PublishedDelta> {
+  if (conversation.state !== "published") {
+    return "clean";
+  }
+
+  if (!conversation.filePath) {
+    return "source_ahead";
+  }
+
+  const rawExists = await pathExists(conversation.filePath);
+  if (!rawExists) {
+    return "source_ahead";
+  }
+
+  if (await pathExists(conversation.sourcePath)) {
+    const sourceDiffers = !(await compareFileContents(
+      conversation.sourcePath,
+      conversation.filePath,
+    ));
+    if (sourceDiffers) {
+      return "source_ahead";
+    }
+  }
+
+  if (!conversation.publishedAt) {
+    return "ready";
+  }
+
+  if (conversation.publishedMessageCount == null) {
+    return "ready";
+  }
+
+  const config = await loadConfig();
+  const messages = await parseConversationMessages(config, conversation);
+  return messages.length > conversation.publishedMessageCount ? "ready" : "clean";
+}
+
 export async function getPublishCandidate(conversation: ConversationMeta): Promise<{
   path: string;
   shouldRefreshRawCopy: boolean;
@@ -571,15 +613,6 @@ export async function getPublishCandidate(conversation: ConversationMeta): Promi
     path: conversation.filePath,
     shouldRefreshRawCopy: false,
   };
-}
-
-export async function getFileMtimeIso(filePath: string): Promise<string | null> {
-  try {
-    const stat = await fs.stat(filePath);
-    return stat.mtime.toISOString();
-  } catch {
-    return null;
-  }
 }
 
 function wrapMissingContentError(

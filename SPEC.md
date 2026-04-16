@@ -866,11 +866,11 @@ Conversations to be published:
   (use "clog reset <id>" to unstage)
     added:         a1b2c3d  2026-02-18  api-service Debug auth token refresh logic
 
-Changes to be published:
+Changes not staged for publishing:
   (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)
     modified:      b2c3d4e  2026-02-15  api-service Set up CI pipeline
 
-Conversations not staged for publishing:
+Untracked conversations:
   (use "clog add <id>" to stage for publishing)
     discovered:    d4e5f6a  2026-02-18  api-service Add rate limiting middleware
     discovered:    g7h8i9b  2026-02-17  frontend Fix SSR hydration mismatch
@@ -911,11 +911,11 @@ $ clog show a1b2c3
 
 ### 5.2 The `status` Command
 
-`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local conversations that need attention:
+`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local conversations that need attention, grouped like `git status`:
 
-- staged conversations ready to publish
-- published conversations modified since the last publish
-- discovered conversations not yet staged
+- **Conversations to be published:** staged conversations and published conversations whose refreshed raw copy is ahead of the last published checkpoint. `clog publish` (no arguments) publishes everything in this group.
+- **Changes not staged for publishing:** published conversations whose source file has grown (or otherwise differs from) the curated raw copy. `clog add <id>` refreshes the raw copy and moves the row into the "to be published" group; `clog publish <id>` pushes the source change through directly.
+- **Untracked conversations:** discovered conversations not yet staged.
 
 When there is nothing pending publication, `clog status` prints the existing clean-state message instead of empty sections.
 
@@ -924,7 +924,7 @@ When there is nothing pending publication, `clog status` prints the existing cle
 Example shape with `--source`:
 
 ```text
-Conversations not staged for publishing:
+Untracked conversations:
   (use "clog add <id>" to stage for publishing)
     discovered:    d4e5f6a  claude-code  2026-02-18  api-service Add rate limiting middleware
 ```
@@ -1033,7 +1033,7 @@ $ clog path a1b2c3
 # User opens and edits the file with their preferred editor
 ```
 
-The raw JSONL copy is the curated content. Once a conversation has been added, no-argument `clog publish` publishes exactly the staged raw copy. For a published conversation whose source has grown, `clog add <id>` behaves like `git add`: it refreshes the curated raw copy from the source while leaving `state = "published"`, so a later `clog publish <id>` republishes the refreshed content. Explicit `clog publish <id>` can also publish source changes directly; see §5.6.
+The raw JSONL copy is the curated content. Once a conversation has been added, no-argument `clog publish` publishes exactly the staged raw copy. For a published conversation whose source has grown, `clog add <id>` behaves like `git add`: it refreshes the curated raw copy from the source while leaving `state = "published"`. After the refresh, the raw copy contains more messages than the last published checkpoint, so `clog status` reports the conversation under "Conversations to be published:" (green `modified:`) and no-argument `clog publish` picks it up alongside regular staged conversations. Explicit `clog publish <id>` can also publish source changes directly without a separate add; see §5.6.
 
 ### 5.4.1 The `tag` and `untag` Commands
 
@@ -1275,10 +1275,10 @@ Status and list coloring use this same model. `publishedAt` remains display/hist
 
 CLI output uses coloring to communicate state at a glance:
 
-- **Green** — staged (added) conversations, ready to publish
-- **Red** — discovered conversations not yet staged, and published conversations modified since last publish
+- **Green** — conversations ready to publish: staged (added) conversations, and published conversations whose refreshed raw copy is ahead of the last published checkpoint
+- **Red** — untracked (discovered) conversations, and published conversations whose source file has grown but has not yet been refreshed into the curated raw copy
 - **Dim** — excluded local source conversations rediscovered for `clog list --all`
-- Default (no color) — published conversations
+- Default (no color) — published conversations with nothing pending
 
 This applies to `clog status`, `clog list`, and any other command that displays conversation state.
 
@@ -2868,7 +2868,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Workflow tests** (`workflow.test.ts`):
 
 - Multi-step flows: add → publish, edit → re-publish, exclude → unexclude
-- Published refresh flows: source grows after publish → `clog add <id>` refreshes the raw copy while preserving `state = "published"`; source grows after publish → explicit `clog publish <id>` refreshes and republishes without a separate add
+- Published refresh flows: source grows after publish → `clog add <id>` refreshes the raw copy while preserving `state = "published"`, and a subsequent bare `clog publish` republishes the refreshed content; source grows after publish → explicit `clog publish <id>` refreshes and republishes without a separate add
 - Excluded-file handling: `id@source` parsing, `#` comments, duplicate deduplication, invalid-line failures for mutation commands, and unexclude ambiguity errors with copy-pasteable candidates
 - State transitions through `withDb`
 

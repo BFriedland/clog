@@ -94,8 +94,8 @@ describe("e2e", () => {
 
     expect(stdout).toContain("No conversations pending publication.");
     expect(stdout).not.toContain("Conversations to be published:");
-    expect(stdout).not.toContain("Changes to be published:");
-    expect(stdout).not.toContain("Conversations not staged for publishing:");
+    expect(stdout).not.toContain("Changes not staged for publishing:");
+    expect(stdout).not.toContain("Untracked conversations:");
   });
 
   it("list performs implicit scanning for discovered conversations", async () => {
@@ -653,7 +653,7 @@ describe("e2e", () => {
     });
   });
 
-  it("status reports published source changes as changes to be published", async () => {
+  it("status reports published source changes as changes not staged for publishing", async () => {
     const id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
@@ -678,7 +678,7 @@ describe("e2e", () => {
     ]);
 
     const { stdout } = await run(["status"]);
-    expect(stdout).toContain("Changes to be published:");
+    expect(stdout).toContain("Changes not staged for publishing:");
     expect(stdout).toContain(
       'use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly',
     );
