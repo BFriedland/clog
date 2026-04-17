@@ -8,6 +8,7 @@ import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   buildCommitMessage,
+  collectRemoteOriginIds,
   exportAuthorToCheckout,
   type ChangeRecord,
 } from "../src/sync/push.js";
@@ -17,6 +18,8 @@ import {
   getRawSourceDir,
 } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+
+const TEST_REMOTE_URL = "git@github.com:myorg/clog-team.git";
 
 describe("buildCommitMessage", () => {
   it("renders a single-author commit with ≤10 changes including per-conversation lines", () => {
@@ -94,7 +97,7 @@ describe("exportAuthorToCheckout", () => {
       author: "alice",
     });
 
-    const stats = await exportAuthorToCheckout("alice");
+    const stats = await exportAuthorToCheckout("alice", new Set());
 
     expect(stats.changes).toHaveLength(1);
     expect(stats.changes[0]?.kind).toBe("added");
@@ -123,8 +126,8 @@ describe("exportAuthorToCheckout", () => {
       author: "alice",
     });
 
-    await exportAuthorToCheckout("alice");
-    const second = await exportAuthorToCheckout("alice");
+    await exportAuthorToCheckout("alice", new Set());
+    const second = await exportAuthorToCheckout("alice", new Set());
 
     expect(second.changes).toHaveLength(0);
   });
@@ -140,7 +143,7 @@ describe("exportAuthorToCheckout", () => {
     );
     await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
 
-    const stats = await exportAuthorToCheckout("alice");
+    const stats = await exportAuthorToCheckout("alice", new Set());
 
     expect(stats.changes).toHaveLength(1);
     expect(stats.changes[0]?.kind).toBe("retracted");
@@ -162,7 +165,7 @@ describe("exportAuthorToCheckout", () => {
     );
     // No .jsonl — incomplete pair. Must not be deleted.
 
-    const stats = await exportAuthorToCheckout("alice");
+    const stats = await exportAuthorToCheckout("alice", new Set());
 
     expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
     await expect(
@@ -181,7 +184,7 @@ describe("exportAuthorToCheckout", () => {
     );
     await fs.writeFile(path.join(bobDir, `${bobId}.jsonl`), "{}\n", "utf8");
 
-    await exportAuthorToCheckout("alice");
+    await exportAuthorToCheckout("alice", new Set());
 
     await expect(
       fs.stat(path.join(bobDir, `${bobId}.meta.json`)),
@@ -197,7 +200,7 @@ describe("exportAuthorToCheckout", () => {
     const stub = path.join(unknownDir, "some-file.meta.json");
     await fs.writeFile(stub, "{}", "utf8");
 
-    await exportAuthorToCheckout("alice");
+    await exportAuthorToCheckout("alice", new Set());
 
     await expect(fs.stat(stub)).resolves.toBeTruthy();
   });
@@ -218,7 +221,7 @@ describe("exportAuthorToCheckout", () => {
       "utf8",
     );
 
-    const stats = await exportAuthorToCheckout("alice");
+    const stats = await exportAuthorToCheckout("alice", new Set());
 
     expect(stats.changes).toHaveLength(1);
     expect(stats.changes[0]?.kind).toBe("added");
@@ -249,12 +252,124 @@ describe("exportAuthorToCheckout", () => {
       filePath: "/tmp/remote-checkout.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: "git@github.com:myorg/clog-team.git",
+      origin: TEST_REMOTE_URL,
     });
 
-    const stats = await exportAuthorToCheckout("alice");
+    const stats = await exportAuthorToCheckout("alice", new Set());
 
     expect(stats.changes).toHaveLength(0);
+  });
+
+  it("does not retract checkout files that correspond to remote-origin DB rows", async () => {
+    // Simulates the multi-machine scenario: alice pushed from machine A,
+    // then pulls on machine B (importing with origin=remoteUrl). Pushing
+    // from machine B must NOT retract machine A's conversations.
+    const id = "a6666666-6666-6666-6666-666666666666";
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "From machine A" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
+
+    // The pulled DB row has origin=remoteUrl.
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      title: "From machine A",
+      summary: "",
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "published",
+      publishedAt: timestamp,
+      publishedMessageCount: 1,
+      publishVersion: 1,
+      sourcePath: path.join(authorDir, `${id}.jsonl`),
+      filePath: path.join(authorDir, `${id}.jsonl`),
+      sourceMtime: null,
+      indexedAt: null,
+      origin: TEST_REMOTE_URL,
+    });
+
+    const remoteIds = await collectRemoteOriginIds("alice", TEST_REMOTE_URL);
+    const stats = await exportAuthorToCheckout("alice", remoteIds);
+
+    // No retraction — the remote-origin row protects the checkout files.
+    expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.jsonl`)),
+    ).resolves.toBeTruthy();
+  });
+
+  it("retracts checkout files for remote-origin DB rows that are absent from the pre-reconcile snapshot", async () => {
+    // Simulates the intentional-retraction case: user removed the
+    // conversation locally before sync push, so it was absent from the
+    // pre-reconcile snapshot. Even if reconcile re-imports it (giving it
+    // a current DB row with origin=remoteUrl), the export phase must still
+    // retract it. This locks in the design choice of using a snapshot
+    // rather than current DB state.
+    const id = "a7777777-7777-7777-7777-777777777777";
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "Re-imported by reconcile" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
+
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      title: "Re-imported by reconcile",
+      summary: "",
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "published",
+      publishedAt: timestamp,
+      publishedMessageCount: 1,
+      publishVersion: 1,
+      sourcePath: path.join(authorDir, `${id}.jsonl`),
+      filePath: path.join(authorDir, `${id}.jsonl`),
+      sourceMtime: null,
+      indexedAt: null,
+      origin: TEST_REMOTE_URL,
+    });
+
+    // Empty snapshot = the conversation was not present before reconcile,
+    // even though it is in the DB now.
+    const stats = await exportAuthorToCheckout("alice", new Set());
+
+    expect(stats.changes).toHaveLength(1);
+    expect(stats.changes[0]?.kind).toBe("retracted");
+    expect(stats.changes[0]?.title).toBe("Re-imported by reconcile");
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.jsonl`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

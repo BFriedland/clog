@@ -2408,12 +2408,18 @@ The command does not touch the git checkout, push, or config. On the next `clog 
 1. `git pull --rebase` in checkout. If rebase conflict: abort rebase, stop, inform user: `"Unexpected conflict during rebase. Inspect with: git -C ~/.clog/remote status"`
 2. Reconcile DB from checkout — same logic as §11.8. This imports any new or updated conversations from teammates.
 
+**Pre-reconcile snapshot** (multi-machine safety):
+
+Before the pull phase, snapshot the set of `(source, id)` tuples for published conversations where `author = config.author` and `origin = <remote URL>`. These are conversations imported from the remote (possibly pushed from another machine) that the user has not explicitly deleted. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — the pre-reconcile snapshot excludes those so retractions still proceed.
+
+This complements the import-side guards in §11.8 (excluded-file check and local-precedence rule), which prevent most re-imports but not all. If reconcile does re-create a row that wasn't in the snapshot, the export phase still retracts the checkout files.
+
 **Export phase** (write local state to checkout):
 
 3. For each locally-originated published conversation (`origin IS NULL AND state = 'published'`) where `author = config.author`:
    - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName` but not local-only `projectPath`
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
-4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to any published conversation for `config.author` and that source in the DB (regardless of origin): delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory. This preserves conversations pushed from other machines (same author, different device) that were imported during the pull phase with `origin = remote URL`.
+4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a locally-published conversation or a pre-reconcile remote-origin conversation: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
 
 The export/retraction phase should use the lightest necessary touch:
 

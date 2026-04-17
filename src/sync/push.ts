@@ -32,8 +32,23 @@ export interface ExportStats {
   changes: ChangeRecord[];
 }
 
+export async function collectRemoteOriginIds(
+  author: string,
+  remoteUrl: string,
+): Promise<Set<string>> {
+  return withDb((db) => {
+    const remote = listConversationsInDb(db, {
+      states: ["published"],
+      author,
+      origin: { url: remoteUrl },
+    });
+    return new Set(remote.map((c) => `${c.source}\0${c.id}`));
+  });
+}
+
 export async function exportAuthorToCheckout(
   author: string,
+  preReconcileRemoteOriginIds: Set<string>,
 ): Promise<ExportStats> {
   const stats: ExportStats = { changes: [] };
 
@@ -113,6 +128,10 @@ export async function exportAuthorToCheckout(
 
     for (const id of idsInCheckout) {
       if (expected.has(id)) {
+        continue;
+      }
+
+      if (preReconcileRemoteOriginIds.has(`${source}\0${id}`)) {
         continue;
       }
 

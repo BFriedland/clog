@@ -24,6 +24,7 @@ import { getRemoteGitDir, getRemoteRoot } from "../sync/paths.js";
 import { reconcileRemote, type PullStats } from "../sync/pull.js";
 import {
   buildCommitMessage,
+  collectRemoteOriginIds,
   exportAuthorToCheckout,
   type ChangeRecord,
   type ExportStats,
@@ -151,6 +152,13 @@ export async function runSyncPush(): Promise<void> {
 
   await advisoryGitIdentityCheck();
 
+  // Snapshot remote-origin IDs for this author before reconcile.
+  // Conversations present here were pulled from the remote and not deleted
+  // locally — they must not be retracted from the checkout during export.
+  // Conversations that reconcileRemote re-imports during the pull phase below
+  // are NOT in this snapshot, so intentional retractions still proceed.
+  const preReconcileRemoteIds = await collectRemoteOriginIds(config.author, remoteUrl);
+
   // Pull phase: incorporate teammates' changes first.
   try {
     await gitPullRebase(getRemoteRoot());
@@ -168,7 +176,7 @@ export async function runSyncPush(): Promise<void> {
   renderWarnings(pullStats.warnings);
 
   // Export phase: write local state to checkout.
-  const exportStats = await exportAuthorToCheckout(config.author);
+  const exportStats = await exportAuthorToCheckout(config.author, preReconcileRemoteIds);
 
   // Commit and push.
   await gitAddAll(getRemoteRoot());
