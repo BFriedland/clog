@@ -32,6 +32,14 @@ describe("e2e", () => {
     expect(stdout.trim()).toBe('"alice"');
   });
 
+  it("plunge exits before init without auto-creating clog home", async () => {
+    await expect(run(["plunge"])).rejects.toMatchObject({
+      stdout: "No existing clog state to inspect.\n",
+    });
+
+    await expect(fs.stat(clogHome)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("search guides the user to setup when search is not configured", async () => {
     await expect(run(["search", "jwt refresh"])).rejects.toMatchObject({
       stderr: expect.stringContaining('Search is not configured. Run "clog search --init".'),

@@ -10,6 +10,7 @@ import { buildExcludeCommand } from "./cli/exclude.js";
 import { runIndexCommand } from "./cli/index-cmd.js";
 import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
+import { buildPlungeCommand } from "./cli/plunge.js";
 import { preAction, runWithCliErrorHandling } from "./cli/prelude.js";
 import { buildPublishCommand } from "./cli/publish.js";
 import { buildRefreshCommand } from "./cli/refresh.js";
@@ -36,7 +37,11 @@ async function main(): Promise<void> {
     .description(
       "Discover, curate, and share AI coding agent conversations as a searchable knowledge base",
     )
-    .hook("preAction", async () => {
+    .hook("preAction", async (_thisCommand, actionCommand) => {
+      if (actionCommand.name() === "plunge") {
+        return;
+      }
+
       await preAction({ interactive: Boolean(process.stdin.isTTY) });
     });
 
@@ -61,6 +66,7 @@ async function main(): Promise<void> {
   program.addCommand(buildUnpublishCommand());
   program.addCommand(buildShowCommand());
   program.addCommand(buildPathCommand());
+  program.addCommand(buildPlungeCommand());
   program.addCommand(buildDiffCommand());
   program.addCommand(buildExcludeCommand());
   program.addCommand(buildUnexcludeCommand());

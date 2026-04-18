@@ -40,6 +40,16 @@ describe("db", () => {
     await expect(fs.stat(dbPath)).resolves.toBeTruthy();
   });
 
+  it("removes a legacy file-shaped db lock path before acquiring the lock", async () => {
+    const legacyLockPath = path.join(tempDir, "clog.db.lock");
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(legacyLockPath, "", "utf8");
+
+    await withDb(() => undefined);
+
+    await expect(fs.stat(legacyLockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("inserts and reads a conversation", async () => {
     const conversation = makeConversation();
     await insertConversation(conversation);

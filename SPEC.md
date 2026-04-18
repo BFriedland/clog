@@ -836,6 +836,7 @@ clog show <id> --path      Print the file path (raw copy if staged/published, so
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
+clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog rename-author <old> <new>  Rename author across local conversations
 
@@ -1214,6 +1215,119 @@ Header metadata values are presentation-normalized. In particular, the `Title:` 
 When source is shown in CLI or MCP metadata, use the canonical raw source key such as `claude-code` or `codex-cli`, not a separate human-friendly display label.
 
 `clog show` and `clog path` resolve content paths by origin and source. Local curated conversations read from `~/.clog/raw/<source>/<id>.jsonl`; discovered conversations read from `sourcePath`; remote conversations read from `~/.clog/remote/<author>/<source>/<id>.jsonl`. `clog diff` is local-only; see §5.8.
+
+### 5.7.2 The `plunge` Command
+
+`clog plunge` is a whole-install, read-only diagnostic command for local clog state.
+
+```bash
+clog plunge
+clog plunge --json
+clog plunge --verbose
+```
+
+Its purpose is to answer a narrow question: "is this clog install obviously broken or inconsistent?" It does not repair anything automatically. It does not compact storage. It does not attempt to audit every subsystem clog may ever gain.
+
+Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects an existing clog install. It must not auto-create `~/.clog`, `config.json`, `excluded`, `clogignore`, or any other clog-managed files as part of preflight initialization. If the clog home does not exist yet, the command exits with a short explanatory note instead of initializing state.
+
+`clog plunge` audits a bounded subset of clog-managed local state only:
+
+- SQLite integrity and schema version
+- basic DB row invariants that should never be violated
+- curated raw-file presence and parseability for local staged/published rows
+- publish checkpoint sanity for local published rows
+- `excluded`
+- `clogignore`
+- `config.json`
+
+It intentionally does not audit search/vector coherence, remote checkout coherence, sync reconciliation state, storage compaction opportunities, orphan raw-file cleanup, or source-location health. Those are separate concerns.
+
+For `plunge`, `local` means `origin IS NULL`.
+
+Findings use three severities:
+
+- `fatal` — the command cannot rely on the audited foundation
+- `corruption` — a clog invariant is violated
+- `info` — informational only
+
+The command currently checks:
+
+1. SQLite `integrity_check`
+2. schema version
+3. recognized local `source` values
+4. built-in-source `id == source_id`
+5. valid row `state`
+6. parseable `tags_json`
+7. expected raw-file path/presence for local staged/published rows
+8. successful raw-file parsing through the selected adapter
+9. published parser-sequence checkpoint drift (`published_message_count`)
+10. reset-cleared curation fields on discovered rows
+11. required publish metadata on published rows
+12. parseable timestamps and `published_at <= modified_at`
+13. valid `excluded` entries
+14. excluded IDs not still present among local DB rows
+15. recognized `clogignore` grammar
+16. `config.json` parse/schema validity
+17. empty `config.author`
+18. configured source/include/exclude paths that do not exist
+
+Notes:
+
+- If a row uses an unrecognized `source`, `plunge` reports that and does not emit additional adapter-dependent findings for that row.
+- Checkpoint drift where the current parsed message count is below `published_message_count` is informational, not corruption. This can happen when parser projection evolves without raw-file damage. The recovery path is to inspect the conversation and republish it so the stored checkpoint reflects the current parser output.
+
+Human-readable output is grouped in stable subsystem order:
+
+1. Database
+2. Raw files
+3. Publish checkpoints
+4. Excluded file
+5. clogignore
+6. Config
+
+Conversation-scoped findings are rendered in a multi-line form:
+
+```text
+- [severity] shortid: Title:
+    Message text.
+    Recovery: ...
+```
+
+With `--verbose`, conversation-scoped findings also include:
+
+```text
+    Conversation ID: ...
+    Source: ...
+    Project: ...
+    Author: ...
+    Origin: ...
+```
+
+`--json` emits a single object with:
+
+- `clogHome`
+- `ranAt`
+- `exitCode`
+- `summary` with `fatal`, `corruption`, and `info` counts
+- ordered `findings`
+
+Each JSON finding includes:
+
+- `check`
+- `subsystem`
+- `severity`
+- `message`
+- optional `recovery`
+- optional `conversation` with full `id` and `source`
+- optional `paths`
+
+Exit codes:
+
+- `0` — no `fatal` or `corruption` findings
+- `1` — one or more `fatal` or `corruption` findings
+- `2` — usage error, DB lock could not be acquired, or clog home is missing/inaccessible
+
+Like other DB-touching paths, `clog plunge` acquires the DB lock for the duration of the run. It is diagnostically read-only, but DB locking still requires the temporary lockfile lifecycle under `CLOG_HOME`.
 
 ### 5.8 The `diff` Command
 

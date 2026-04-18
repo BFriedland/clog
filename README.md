@@ -73,6 +73,7 @@ All IDs accept short prefixes of at least 4 characters, like git. They also acce
 | `clog diff [id...]` | Show new messages since last publish (`--staged`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
+| `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 ### Semantic Search
 

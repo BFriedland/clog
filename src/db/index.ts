@@ -16,6 +16,12 @@ import { applyMigrations } from "./schema.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
 
+export interface DbAccessOptions {
+  applyMigrations?: boolean;
+  flush?: boolean;
+  requireExistingHome?: boolean;
+}
+
 export type OriginFilter = "local" | "remote" | { url: string };
 
 export interface ListConversationFilters {
@@ -35,14 +41,36 @@ export interface ResolvedConversationId {
 
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 
-export async function withDb<T>(callback: DbCallback<T>): Promise<T> {
+export async function withDb<T>(
+  callback: DbCallback<T>,
+  options: DbAccessOptions = {},
+): Promise<T> {
   const dbPath = getClogDbPath();
   const lockPath = getDbLockPath();
+  const {
+    applyMigrations: shouldApplyMigrations = true,
+    flush: shouldFlush = true,
+    requireExistingHome = false,
+  } = options;
+
+  if (requireExistingHome) {
+    const clogHome = path.dirname(dbPath);
+    try {
+      await fs.access(clogHome);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new ClogError(`clog home is missing: ${clogHome}`);
+      }
+
+      throw new ClogError(`clog home is inaccessible: ${clogHome}`);
+    }
+  }
 
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  await touchFile(lockPath);
+  await removeLegacyLockFile(lockPath);
 
-  const release = await lockfile.lock(lockPath, {
+  const release = await lockfile.lock(dbPath, {
+    lockfilePath: lockPath,
     stale: 10_000,
     retries: {
       retries: 10,
@@ -56,9 +84,13 @@ export async function withDb<T>(callback: DbCallback<T>): Promise<T> {
   const db = await loadDatabase(SQL, dbPath);
 
   try {
-    applyMigrations(db);
+    if (shouldApplyMigrations) {
+      applyMigrations(db);
+    }
     const result = await callback(db);
-    await flushDatabase(db, dbPath);
+    if (shouldFlush) {
+      await flushDatabase(db, dbPath);
+    }
     return result;
   } finally {
     db.close();
@@ -543,8 +575,32 @@ async function flushDatabase(db: Database, dbPath: string): Promise<void> {
   await fs.writeFile(dbPath, Buffer.from(data));
 }
 
-async function touchFile(filePath: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const handle = await fs.open(filePath, "a");
-  await handle.close();
+async function removeLegacyLockFile(lockPath: string): Promise<void> {
+  try {
+    const stat = await fs.lstat(lockPath);
+    if (stat.isDirectory()) {
+      return;
+    }
+
+    // Older clog builds created this path as a plain file; proper-lockfile
+    // needs to manage it as a directory lock.
+    await fs.unlink(lockPath);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error as NodeJS.ErrnoException).path === lockPath &&
+      ((error as NodeJS.ErrnoException).code === "EPERM" ||
+        (error as NodeJS.ErrnoException).code === "EACCES")
+    ) {
+      throw new ClogError(
+        `Cannot replace legacy DB lock file at ${lockPath}. Fix its permissions or remove it manually.`,
+      );
+    }
+
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+
+    throw error;
+  }
 }
