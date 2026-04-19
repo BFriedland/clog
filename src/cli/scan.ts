@@ -27,6 +27,10 @@ interface ScanCandidate {
 
 export interface ScanResult {
   warnings: ClogWarning[];
+  undiscoverable: Array<{
+    source: string;
+    path: string;
+  }>;
   counts: {
     discovered: number;
     updated: number;
@@ -34,11 +38,16 @@ export interface ScanResult {
     excluded: number;
     filtered: number;
     ignored: number;
+    undiscoverable: number;
   };
 }
 
 export async function scanLocalSources(config: Config): Promise<ScanResult> {
   const warnings: ClogWarning[] = [];
+  const undiscoverable: Array<{
+    source: string;
+    path: string;
+  }> = [];
   const counts = {
     discovered: 0,
     updated: 0,
@@ -46,6 +55,7 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     excluded: 0,
     filtered: 0,
     ignored: 0,
+    undiscoverable: 0,
   };
 
   const [{ entries: excludedEntries, warnings: excludedWarnings }, clogIgnoreRules] =
@@ -54,6 +64,7 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
 
   const adapters = getEnabledAdapters(config);
   const candidates: ScanCandidate[] = [];
+  const encounteredKeys = new Set<string>();
   const scannedRoots = new Map<string, string[]>();
 
   for (const adapter of adapters) {
@@ -62,6 +73,8 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     for await (const discovered of adapter.discover({
       onWarning: (warning) => warnings.push(warning),
     })) {
+      encounteredKeys.add(`${adapter.name}:${discovered.sourceId}`);
+
       const excluded = isExcluded(excludedEntries, discovered.sourceId, adapter.name);
       if (excluded) {
         counts.excluded += 1;
@@ -69,12 +82,10 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
       }
 
       if (!discovered.metadata.projectPath) {
-        warnings.push({
-          code: "path_filter_without_project",
-          message: "Skipping conversation because project path could not be determined.",
+        counts.undiscoverable += 1;
+        undiscoverable.push({
           source: adapter.name,
           path: discovered.sourcePath,
-          guidance: "Discovery fails closed when project path metadata is unavailable.",
         });
         continue;
       }
@@ -163,6 +174,7 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
         continue;
       }
 
+      const key = `${conversation.source}:${conversation.sourceId}`;
       const roots = scannedRoots.get(conversation.source) ?? [];
       if (roots.length === 0) {
         continue;
@@ -170,8 +182,13 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
 
       if (
         !roots.some((root) => pathMatchesBoundary(conversation.sourcePath, root)) ||
-        seenKeys.has(`${conversation.source}:${conversation.sourceId}`)
+        seenKeys.has(key)
       ) {
+        continue;
+      }
+
+      if (encounteredKeys.has(key)) {
+        deleteConversationInDb(db, conversation.id);
         continue;
       }
 
@@ -180,7 +197,7 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     }
   });
 
-  return { warnings, counts };
+  return { warnings, undiscoverable, counts };
 }
 
 function buildDiscoveredConversation(

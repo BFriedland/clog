@@ -15,6 +15,7 @@ import { ClogError } from "../utils/errors.js";
 import { getRawConversationPath, getRawSourceDir } from "../utils/paths.js";
 import { getAdapter } from "../adapters/registry.js";
 import { colorizeStateLabel, colorizeUserMessage } from "./colors.js";
+import type { ScanResult } from "./scan.js";
 
 export interface DisplayRow {
   id: string;
@@ -211,6 +212,23 @@ export function renderWarnings(warnings: ClogWarning[]): void {
     const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
     process.stderr.write(`warning: ${warning.message}${suffix}\n`);
   }
+}
+
+export function getScanWarningsForCommand(
+  scanResult: ScanResult,
+  options: { suppressUndiscoverable?: boolean } = {},
+): ClogWarning[] {
+  const warnings = [...scanResult.warnings];
+
+  if (!options.suppressUndiscoverable && scanResult.counts.undiscoverable > 0) {
+    warnings.push({
+      code: "path_filter_without_project",
+      message: `Skipped ${scanResult.counts.undiscoverable} conversation(s): project path missing: these conversation files have no cwd metadata.`,
+      guidance: 'Run "clog status --undiscoverable" for details.',
+    });
+  }
+
+  return warnings;
 }
 
 export function applyHeadTail<T>(

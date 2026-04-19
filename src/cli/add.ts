@@ -8,6 +8,7 @@ import { nowIso } from "../utils/time.js";
 import {
   ensureRawCopy,
   compareFileContents,
+  getScanWarningsForCommand,
   pathExists,
   renderWarnings,
   resolveManyConversationsOrFail,
@@ -30,7 +31,7 @@ export function buildAddCommand(): Command {
           conversations = await resolveManyConversationsOrFail(ids);
         } catch {
           const scanResult = await scanLocalSources(config);
-          renderWarnings(scanResult.warnings);
+          renderWarnings(getScanWarningsForCommand(scanResult));
           try {
             conversations = await resolveManyConversationsOrFail(ids);
           } catch (err) {
@@ -46,7 +47,7 @@ export function buildAddCommand(): Command {
 
       if (options.all || options.project) {
         const scanResult = await scanLocalSources(config);
-        renderWarnings(scanResult.warnings);
+        renderWarnings(getScanWarningsForCommand(scanResult));
         conversations = await import("../db/index.js").then(({ listConversations }) =>
           listConversations({
             states: ["discovered"],

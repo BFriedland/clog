@@ -724,7 +724,7 @@ The empty Codex `summary` and `null` Codex `slug` values are intentional in Phas
 
 Discovery filtering operates on the detected `projectPath`, not the `~/.codex/sessions/...` storage path.
 
-If `projectPath` cannot be determined, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery, and including projectless conversations would make later filter changes change what private data had already entered the DB.
+If `projectPath` cannot be determined, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery, and including projectless conversations would make later filter changes change what private data had already entered the DB.
 
 For Codex title extraction, a canonical user message is wrapper-only when its trimmed extracted text consists entirely of one or more known context wrapper blocks and contains no other human prose. In Phase 1, the known wrapper block names are `environment_context` and `user_shell_command`. This allowlist is intentionally narrow because the exact set of Codex wrapper tags may evolve; unknown XML-like tags are not treated as wrapper-only automatically.
 
@@ -921,6 +921,8 @@ $ clog show a1b2c3
 When there is nothing pending publication, `clog status` prints the existing clean-state message instead of empty sections.
 
 `clog status` accepts an optional `--source` flag. When present, each status row includes a `SOURCE` column immediately after the short `ID` column. The value is the canonical source key such as `claude-code` or `codex-cli`. When `--source` is absent, `clog status` preserves its default row layout.
+
+`clog status` accepts an optional `--undiscoverable` flag. When present, an additional section is appended listing conversations that were skipped because their project path metadata was unavailable. The section includes the explanatory line `project path missing: these conversation files have no cwd metadata`, then shows each source adapter and source file path. When `--undiscoverable` is absent and the undiscoverable count is non-zero, the filter summary line includes the count and a hint, e.g. `(2 undiscoverable; run "clog status --undiscoverable" for details)`. This is analogous to `git status --ignored`. `clog status` suppresses the per-file `path_filter_without_project` stderr warnings in favor of the summary count; other scan-driven commands continue to emit a single aggregated warning.
 
 Example shape with `--source`:
 
@@ -1144,7 +1146,7 @@ For a published local conversation, `clog add <id>` refreshes the curated raw co
 
 The config file supports `sources.<name>.includePaths` and `sources.<name>.excludePaths` for each built-in source. If `includePaths` is set, only conversations whose `projectPath` values match those directories by the path-boundary rule in §7.1 are discovered. If `excludePaths` is set, matching `projectPath` values are skipped. Both can be used together. This is the primary mechanism for keeping personal conversations out of the knowledge base.
 
-If a source cannot determine a conversation's `projectPath`, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery.
+If a source cannot determine a conversation's `projectPath`, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery. The scan reports an `undiscoverable` count alongside the other filter counts. When the count is non-zero, `clog status` includes it in the dimmed filter summary line with a hint directing the user to `clog status --undiscoverable` for details.
 
 ### 5.6 The `publish` Command
 
@@ -1452,7 +1454,7 @@ before:2025-06-01
 
 Lines starting with `#` are comments. Blank lines are ignored. Globs use standard `*` matching on normalized, `~`-expanded paths. For `project:` rules without glob metacharacters, path matching uses the same path-boundary rule as `includePaths` and `excludePaths` in §7.1.
 
-If a conversation's `projectPath` cannot be determined, discovery fails closed for that conversation before evaluating `clogignore`: skip it and emit a `path_filter_without_project` warning. Project-path filtering is the primary privacy boundary for local discovery; clog must not include conversations whose project path cannot be checked.
+If a conversation's `projectPath` cannot be determined, discovery fails closed for that conversation before evaluating `clogignore`: skip it and emit a `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. Project-path filtering is the primary privacy boundary for local discovery; clog must not include conversations whose project path cannot be checked.
 
 **Not included in MVP:** `title:` pattern matching. Title-based filtering sounds useful but is fragile — it matches against the first human message before it's been parsed, truncated, or cleaned, and silent mismatches would be hard to debug. Defer until there's a demonstrated need.
 
@@ -1461,18 +1463,21 @@ If a conversation's `projectPath` cannot be determined, discovery fails closed f
 1. Scan source location and compute `sourceId@source` for each file
 2. Check `excluded` file — if listed, skip (counted as "excluded")
 3. Extract minimal discovery metadata needed for filtering: `projectPath`, `projectName`, `createdAt`, and any other adapter metadata that can be read without full transcript parsing
-4. Check `config.json` `includePaths` / `excludePaths` against `projectPath` — if filtered out, skip (counted as "filtered")
-5. Check `clogignore` patterns against the minimal metadata — if any rule matches, skip (counted as "ignored")
-6. Check database — if already tracked, skip or update (check mtime for changes)
-7. Insert the metadata into the DB as `discovered`
+4. If `projectPath` is null, skip (counted as "undiscoverable"; see §5.5)
+5. Check `config.json` `includePaths` / `excludePaths` against `projectPath` — if filtered out, skip (counted as "filtered")
+6. Check `clogignore` patterns against the minimal metadata — if any rule matches, skip (counted as "ignored")
+7. Check database — if already tracked, skip or update (check mtime for changes)
+8. Insert the metadata into the DB as `discovered`
 
 **Scan output must report filtering.** Developers need to trust that their personal conversations aren't leaking in. `clog status` shows a filter summary line at the bottom when any conversations were filtered:
 
 ```
-(23 excluded, 8 filtered by config, 4 ignored by clogignore)
+(23 excluded, 8 filtered by config, 4 ignored by clogignore, 2 undiscoverable; run "clog status --undiscoverable" for details)
 ```
 
-The line is dimmed and only appears if at least one count is non-zero.
+The line is dimmed and only appears if at least one count is non-zero. The undiscoverable hint portion (including the semicolon and `run "clog status --undiscoverable" for details`) only appears when the undiscoverable count is non-zero.
+
+The filter counts are reason-based and disjoint. If a source file still exists under a watched root but is now excluded, ignored, filtered, or undiscoverable, `clog` removes any stale discovered row without also incrementing `pruned`. `pruned` is reserved for discovered rows whose source file no longer appears in the scanned source roots.
 
 `excluded` and `clogignore` are strictly local — they are never synced to a remote (see §11).
 
@@ -2920,7 +2925,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Codex path normalization: configured Codex home scans `<home>/sessions/**/*.jsonl`; configured sessions directory scans `<sessionsDir>/**/*.jsonl`; missing derived sessions directory warns and skips
 - Codex discovery parsing: `session_meta` ID, filename fallback, title precedence, cwd/projectPath fallback, derived projectName, empty summary, null slug
 - Codex full parsing: canonical user/assistant messages, user-message deduplication, tool correlation by `call_id`, `exec_command_end` fallback, telemetry omission, parser-derived ordering
-- Malformed Codex files: missing session ID plus invalid filename, filename/content ID mismatch warning, missing projectPath / cwd fails closed with `path_filter_without_project` warning regardless of configured path filters
+- Malformed Codex files: missing session ID plus invalid filename, filename/content ID mismatch warning, missing projectPath / cwd fails closed with `path_filter_without_project` warning (`project path missing: these conversation files have no cwd metadata`) regardless of configured path filters
 
 **CLI tests** (`cli.test.ts`):
 

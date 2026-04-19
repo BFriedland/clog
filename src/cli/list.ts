@@ -8,6 +8,7 @@ import { checkStaleness } from "../sync/staleness.js";
 import {
   conversationMetadataMatchesGrep,
   filterConversationsByGrep,
+  getScanWarningsForCommand,
   renderConversationTable,
   renderDisplayTable,
   renderWarnings,
@@ -35,7 +36,7 @@ export function buildListCommand(): Command {
     .action(async (options) => {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
-      renderWarnings(scanResult.warnings);
+      renderWarnings(getScanWarningsForCommand(scanResult));
       const columns = parseColumnsOption(options.columns);
       const hasFilters = Boolean(
         options.state ||

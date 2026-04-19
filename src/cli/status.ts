@@ -6,17 +6,18 @@ import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
-import { classifyPublishedDelta, renderWarnings } from "./common.js";
+import { classifyPublishedDelta, getScanWarningsForCommand, renderWarnings } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
 export function buildStatusCommand(): Command {
   return new Command("status")
     .description("Show staged, modified, and discovered conversations")
     .option("--source", "show the source column after the short ID")
-    .action(async (options: { source?: boolean }) => {
+    .option("--undiscoverable", "list conversations skipped due to missing project path")
+    .action(async (options: { source?: boolean; undiscoverable?: boolean }) => {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
-      renderWarnings(scanResult.warnings);
+      renderWarnings(getScanWarningsForCommand(scanResult, { suppressUndiscoverable: true }));
       const staged = await listConversations({ states: ["staged"], origin: "local" });
       const published = await listConversations({ states: ["published"], origin: "local" });
       const discovered = await listConversations({ states: ["discovered"], origin: "local" });
@@ -99,10 +100,31 @@ export function buildStatusCommand(): Command {
       }
 
       const { counts } = scanResult;
-      if (counts.excluded || counts.filtered || counts.ignored || counts.pruned) {
+      if (counts.excluded || counts.filtered || counts.ignored || counts.pruned || counts.undiscoverable) {
+        const parts = `${counts.excluded} excluded, ${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned`;
+        const undiscoverableCount = counts.undiscoverable
+          ? `, ${counts.undiscoverable} undiscoverable`
+          : "";
+        const undiscoverableHint = counts.undiscoverable && !options.undiscoverable
+          ? `; run "clog status --undiscoverable" for details`
+          : "";
         process.stdout.write(
-          `\n${dimText(`(${counts.excluded} excluded, ${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned)`)}\n`,
+          `\n${dimText(`(${parts}${undiscoverableCount}${undiscoverableHint})`)}\n`,
         );
+      }
+
+      if (options.undiscoverable) {
+        if (scanResult.undiscoverable.length > 0) {
+          process.stdout.write("\nUndiscoverable conversations:\n");
+          process.stdout.write(
+            `${dimText("  (project path missing: these conversation files have no cwd metadata)")}\n`,
+          );
+          for (const entry of scanResult.undiscoverable) {
+            process.stdout.write(`    ${entry.source}  ${entry.path}\n`);
+          }
+        } else {
+          process.stdout.write("\nNo undiscoverable conversations found.\n");
+        }
       }
 
       await renderRemoteSection(config);

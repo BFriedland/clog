@@ -237,9 +237,154 @@ describe("scan", () => {
     const result = await scanLocalSources(config);
 
     expect(result.counts.discovered).toBe(0);
-    expect(
-      result.warnings.some((warning) => warning.code === "path_filter_without_project"),
-    ).toBe(true);
+    expect(result.counts.undiscoverable).toBe(1);
+    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
+      false,
+    );
+    expect(result.undiscoverable).toEqual([
+      {
+        source: "claude-code",
+        path: filePath,
+      },
+    ]);
+    await expect(getConversationById(id)).resolves.toBeNull();
+  });
+
+  it("fails closed on a Codex file whose cwd metadata is missing (SPEC §5.5)", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = false;
+    config.sources["codex-cli"].paths = [codexRoot];
+
+    const id = "ffff6666-6666-6666-6666-666666666666";
+    await writeJsonl(
+      path.join(
+        codexRoot,
+        "sessions",
+        "2026",
+        "02",
+        "01",
+        `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+      ),
+      [
+        {
+          type: "session_meta",
+          payload: {
+            id,
+            timestamp: "2026-02-01T09:59:59.000Z",
+          },
+        },
+      ],
+    );
+
+    const result = await scanLocalSources(config);
+
+    expect(result.counts.discovered).toBe(0);
+    expect(result.counts.undiscoverable).toBe(1);
+    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
+      false,
+    );
+    expect(result.undiscoverable).toEqual([
+      {
+        source: "codex-cli",
+        path: path.join(
+          codexRoot,
+          "sessions",
+          "2026",
+          "02",
+          "01",
+          `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+        ),
+      },
+    ]);
+    await expect(getConversationById(id)).resolves.toBeNull();
+  });
+
+  it("counts a previously discovered conversation that loses cwd as undiscoverable, not pruned", async () => {
+    const claudeRoot = path.join(tempDir, "claude");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["codex-cli"].enabled = false;
+
+    const id = "99999999-9999-9999-9999-999999999999";
+    const filePath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/project",
+        message: { role: "user", content: "Project known" },
+      },
+    ]);
+
+    const firstScan = await scanLocalSources(config);
+    expect(firstScan.counts.discovered).toBe(1);
+    await expect(getConversationById(id)).resolves.not.toBeNull();
+
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        message: { role: "user", content: "Project unknown now" },
+      },
+    ]);
+
+    const secondScan = await scanLocalSources(config);
+
+    expect(secondScan.counts.undiscoverable).toBe(1);
+    expect(secondScan.counts.pruned).toBe(0);
+    expect(secondScan.undiscoverable).toEqual([
+      {
+        source: "claude-code",
+        path: filePath,
+      },
+    ]);
+    await expect(getConversationById(id)).resolves.toBeNull();
+  });
+
+  it("treats excluded Codex conversations as excluded before undiscoverable", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = false;
+    config.sources["codex-cli"].paths = [codexRoot];
+    await saveConfig(config);
+
+    const id = "abab7777-7777-7777-7777-777777777777";
+    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+    await fs.writeFile(
+      path.join(process.env.CLOG_HOME!, "excluded"),
+      `${id}@codex-cli\n`,
+      "utf8",
+    );
+
+    await writeJsonl(
+      path.join(
+        codexRoot,
+        "sessions",
+        "2026",
+        "02",
+        "01",
+        `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+      ),
+      [
+        {
+          type: "session_meta",
+          payload: {
+            id,
+            timestamp: "2026-02-01T09:59:59.000Z",
+          },
+        },
+      ],
+    );
+
+    const result = await scanLocalSources(config);
+
+    expect(result.counts.excluded).toBe(1);
+    expect(result.counts.undiscoverable).toBe(0);
+    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
+      false,
+    );
+    expect(result.undiscoverable).toEqual([]);
     await expect(getConversationById(id)).resolves.toBeNull();
   });
 

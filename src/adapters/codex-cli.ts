@@ -367,17 +367,6 @@ export class CodexCliAdapter implements SourceAdapter {
       return null;
     }
 
-    if (!projectPath) {
-      onWarning?.({
-        code: "path_filter_without_project",
-        message: "Skipping Codex conversation because project path could not be determined.",
-        source: this.name,
-        path: filePath,
-        guidance: "Codex discovery fails closed when cwd metadata is missing.",
-      });
-      return null;
-    }
-
     const title = truncateTitle(titleFromEvent ?? titleFromCanonical ?? "(untitled)");
 
     return {
@@ -386,7 +375,7 @@ export class CodexCliAdapter implements SourceAdapter {
       metadata: {
         title,
         summary: "",
-        projectName: path.basename(projectPath),
+        projectName: projectPath ? path.basename(projectPath) : null,
         projectPath,
         slug: null,
         createdAt: createdAt ?? firstTopLevelTimestamp ?? fileStat.mtime.toISOString(),

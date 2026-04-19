@@ -812,7 +812,7 @@ describe("adapters", () => {
     expect(messages[0]).toMatchObject({ role: "user", content: "Please help" });
   });
 
-  it("Codex discovery fails closed when project path is missing", async () => {
+  it("Codex discovery yields metadata with null project path when cwd is missing", async () => {
     const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
     const filePath = path.join(
       sessionsDir,
@@ -836,8 +836,15 @@ describe("adapters", () => {
     const adapter = new CodexCliAdapter(config);
     const discovered = await collect(adapter.discover({ onWarning: (warning) => warnings.push(warning) }));
 
-    expect(discovered).toEqual([]);
-    expect(warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(true);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      sourceId: "550e8400-e29b-41d4-a716-446655440000",
+      metadata: {
+        projectName: null,
+        projectPath: null,
+      },
+    });
+    expect(warnings).toEqual([]);
   });
 });
 

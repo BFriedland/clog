@@ -706,6 +706,114 @@ describe("e2e", () => {
     expect(stderr).toContain('guidance=Expected "sourceId@source".');
   });
 
+  it("status --undiscoverable shows details without repeating the hint", async () => {
+    const id = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+    await writeJsonl(
+      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
+      [
+        {
+          type: "user",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          message: {
+            role: "user",
+            content: "Project path missing",
+          },
+        },
+      ],
+    );
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    const summary = await run(["status"]);
+    expect(summary.stdout).toContain('run "clog status --undiscoverable" for details');
+
+    const detailed = await run(["status", "--undiscoverable"]);
+    expect(detailed.stdout).toContain("Undiscoverable conversations:");
+    expect(detailed.stdout).toContain("claude-code");
+    expect(detailed.stdout).not.toContain('run "clog status --undiscoverable" for details');
+  });
+
+  it("status reports Codex undiscoverable conversations in the summary and details", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const id = "efefefef-1111-2222-3333-444444444444";
+    await writeJsonl(
+      path.join(
+        codexRoot,
+        "sessions",
+        "2026",
+        "02",
+        "01",
+        `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+      ),
+      [
+        {
+          type: "session_meta",
+          payload: {
+            id,
+            timestamp: "2026-02-01T10:00:00.000Z",
+          },
+        },
+      ],
+    );
+
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
+
+    const summary = await run(["status"]);
+    expect(summary.stdout).toContain("1 undiscoverable");
+    expect(summary.stdout).toContain('run "clog status --undiscoverable" for details');
+    expect(summary.stderr).not.toContain("project path missing");
+
+    const detailed = await run(["status", "--undiscoverable"]);
+    expect(detailed.stdout).toContain("1 undiscoverable");
+    expect(detailed.stdout).toContain("Undiscoverable conversations:");
+    expect(detailed.stdout).toContain("codex-cli");
+    expect(detailed.stdout).not.toContain('run "clog status --undiscoverable" for details');
+  });
+
+  it("list aggregates undiscoverable warnings into a single stderr line", async () => {
+    const firstId = "cdcdcdcd-1111-2222-3333-444444444444";
+    const secondId = "efefefef-5555-6666-7777-888888888888";
+    await writeJsonl(
+      path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
+      [
+        {
+          type: "user",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          message: {
+            role: "user",
+            content: "Missing cwd one",
+          },
+        },
+      ],
+    );
+    await writeJsonl(
+      path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
+      [
+        {
+          type: "user",
+          timestamp: "2026-02-01T10:01:00.000Z",
+          message: {
+            role: "user",
+            content: "Missing cwd two",
+          },
+        },
+      ],
+    );
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    const { stderr } = await run(["list"]);
+    expect(stderr).toContain(
+      "warning: Skipped 2 conversation(s): project path missing: these conversation files have no cwd metadata.",
+    );
+    expect(stderr).toContain('guidance=Run "clog status --undiscoverable" for details.');
+    expect(stderr).not.toContain(`${firstId}.jsonl`);
+    expect(stderr).not.toContain(`${secondId}.jsonl`);
+  });
+
   it("list truncates title columns to fit narrow terminal widths", async () => {
     const id = "cccccccc-cccc-cccc-cccc-cccccccccccc";
     await writeClaudeConversation(

@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
-import { renderWarnings } from "../cli/common.js";
+import { getScanWarningsForCommand, renderWarnings } from "../cli/common.js";
 import { scanLocalSources } from "../cli/scan.js";
 import {
   handleBrowse,
@@ -20,7 +20,7 @@ export async function startMcpServer(): Promise<void> {
   const config = await loadConfig();
   if (config.autoScan) {
     const scanResult = await scanLocalSources(config);
-    renderWarnings(scanResult.warnings);
+    renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
   const server = new McpServer({
