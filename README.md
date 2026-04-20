@@ -6,9 +6,7 @@
 
 Turn your AI coding agent conversations into a searchable, shareable knowledge base.
 
-clog discovers Claude Code and Codex CLI conversations on your machine, lets you curate them locally, publishes them for agent access via MCP, and optionally adds semantic search and git-based team sharing on top.
-
-clog projects a canonical transcript rather than replaying every raw source record verbatim. It excludes confirmed hidden model scaffolding, but preserves user-visible transcript content even when the source encodes it with wrapper tags.
+clog scans your machine for Claude Code and Codex CLI conversations, lets you curate the good ones, and publishes them to a local library that your coding agents can access via MCP. Add semantic search if you want it, or share with your team through any git remote.
 
 ## Install
 
@@ -30,11 +28,11 @@ clog status --source
 clog add a1b2c3
 clog add --all
 
-# Curate conversations' metadata
+# Give them useful titles and tags
 clog edit a1b2c3 --title "Debug JWT refresh race condition"
 clog tag a1b2c3 auth debugging
 
-# Publish to the curated local library
+# Publish to your local library
 clog publish
 
 # Browse and inspect
@@ -101,7 +99,13 @@ All IDs accept short prefixes of at least 4 characters, like git. They also acce
 
 ## MCP Server
 
-The MCP server exposes clog to coding agents as typed tools with structured responses.
+Once you've added some conversations, you can give your coding agents direct access to them via MCP.
+
+With Claude Code:
+
+```bash
+claude mcp add clog -- npx clog-mcp
+```
 
 With Codex CLI:
 
@@ -109,50 +113,44 @@ With Codex CLI:
 codex mcp add clog -- node /path/to/clog/dist/mcp/server.js
 ```
 
-With Claude:
-
-```bash
-claude mcp add clog -- npx clog-mcp
-```
-
-If `clog-mcp` is not available through `npx` in your environment, point the MCP command at your local build instead:
+If `clog-mcp` isn't available through `npx` in your environment, point the MCP command at your local build instead:
 
 ```bash
 claude mcp add clog -- node /path/to/clog/dist/mcp/server.js
 ```
 
-Available tools:
+This gives agents the following tools:
 
-- `clog_list_published` — list published conversations with filters (`origin` filter for local vs team)
-- `clog_list_staged` — list staged conversations for curation
-- `clog_get` — load a staged or published conversation's messages
-- `clog_update` — edit title, summary, or tags on a staged or published conversation
-- `clog_browse` — list tags, projects, or authors across published conversations
-- `clog_search` — semantic search across published conversations (`origin` filter, requires `clog search --init`)
-
-Only published conversations are exposed through `clog_list_published`, `clog_browse`, and `clog_search`. `clog_list_staged`, `clog_get`, and `clog_update` also operate on staged conversations to support agent-assisted curation.
+| Tool | What it does |
+|------|-------------|
+| `clog_list_published` | List published conversations (filterable by origin, project, etc.) |
+| `clog_list_staged` | List staged conversations for agent-assisted curation |
+| `clog_get` | Load a conversation's messages |
+| `clog_update` | Edit title, summary, or tags |
+| `clog_browse` | List tags, projects, or authors |
+| `clog_search` | Semantic search (requires `clog search --init`) |
 
 ## Semantic Search
 
-Semantic search is optional. It requires a one-time setup and two extra packages:
+Search is optional — it takes a one-time setup and two extra packages.
 
 ```bash
-# Install search dependencies
 npm install vectra @huggingface/transformers
-
-# Interactive setup — choose embedding provider and vector store
 clog search --init
+```
 
-# Search
+Then just search:
+
+```bash
 clog search "JWT refresh token race condition"
 clog search "database migration" --project myapp --limit 5
 ```
 
-Published conversations are auto-indexed on `clog publish` when search is configured. Editing a published conversation's title or summary re-indexes it. Use `clog index --rebuild` to re-index everything from scratch.
+Once configured, conversations are auto-indexed whenever you `clog publish`. Editing a conversation's title or summary re-indexes it. Use `clog index --rebuild` to re-index everything from scratch.
 
 ## Team Sharing
 
-Share your published conversations with teammates using any private git remote (GitHub, GitLab, bare repo, etc.). Git handles auth, transport, and access control — no custom server needed.
+Share your published conversations with teammates using any private git remote (GitHub, GitLab, bare repo, etc.). Git handles auth, transport, and access control.
 
 ```bash
 # Point clog at a shared private repo
@@ -165,29 +163,29 @@ clog sync pull
 clog sync push
 ```
 
-**How it works:** clog manages a git checkout under `~/.clog/remote/`. `clog sync push` exports your published conversations and pushes. `clog sync pull` imports teammates' conversations into your local DB. Each author writes to their own directory to avoid conflicts.
+**How it works:** clog manages a git checkout under `~/.clog/remote/`. Each author writes to their own directory to avoid conflicts. `sync push` exports and pushes your published conversations; `sync pull` imports your teammates'.
 
-**What to know:**
+**Good to know:**
 
-- `clog list` shows your local + same-author remote conversations by default. `--all` includes teammates'; `--author bob` filters.
-- Remote conversations are **read-only** — edit, tag, untag, unpublish, reset, and publish refuse them, locally and over MCP.
-- Unpublishing a locally-synced conversation retracts it from the remote on next push.
-- `clog exclude` works on remote conversations to hide ones you don't want to see.
-- `clog refresh` reconciles the local DB from the git checkout without fetching — useful if you ran `git pull` manually in `~/.clog/remote/`.
+- `clog list` shows your conversations by default. `--all` includes teammates'; `--author bob` filters to one person.
+- Remote conversations are read-only — you can view but not edit them.
+- Unpublishing a synced conversation retracts it from the remote on next push.
+- `clog exclude` hides any local or remote conversations you don't want to see.
+- `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
 
 ## Config File
 
-Config lives at `~/.clog/config.json`. Common setup:
+Config lives at `~/.clog/config.json`:
 
 ```bash
-# Set your author name, which would otherwise default to your OS username upon first use
+# Set your author name (defaults to your OS username)
 clog config set author alice
 
-# Configure local discovery paths
+# Configure where clog looks for conversations
 clog config set sources.claude-code.paths '["~/.claude/projects/"]'
 clog config set sources.codex-cli.paths '["~/.codex/sessions/"]'
 
-# Keep personal projects out of discovery
+# Only discover conversations from work projects
 clog config set sources.claude-code.includePaths '["~/work/"]'
 clog config set sources.claude-code.excludePaths '["~/personal/"]'
 ```
@@ -202,7 +200,7 @@ project:~/personal/*
 before:2025-01-01
 ```
 
-The `search` and `remote` config blocks are managed by `clog search --init` and `clog remote add` respectively.
+The `search` and `remote` config blocks are managed by `clog search --init` and `clog remote add`.
 
 ## Environment Variables
 
