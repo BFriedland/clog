@@ -10,6 +10,7 @@ import { buildEditCommand } from "../src/cli/edit.js";
 import { buildExcludeCommand } from "../src/cli/exclude.js";
 import { buildPublishCommand } from "../src/cli/publish.js";
 import { buildResetCommand } from "../src/cli/reset.js";
+import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnexcludeCommand } from "../src/cli/unexclude.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
@@ -248,6 +249,37 @@ describe("workflow", () => {
     expect(republished?.publishVersion).toBe(2);
     expect(republished?.publishedMessageCount).toBe(4);
     expect(republished?.publishedAt).not.toBe(firstPublishedAt);
+  });
+
+  it("status and bare publish agree on metadata-only republish readiness", async () => {
+    const convId = "abababab-1234-5678-9abc-def012345678";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Initial prompt");
+
+    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
+
+    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildPublishCommand, [convId]);
+
+    const firstPublish = await getConversationById(convId);
+    const firstPublishedAt = firstPublish?.publishedAt;
+    expect(firstPublish?.publishVersion).toBe(1);
+
+    await runBuiltCommand(buildEditCommand, [convId, "--title", "Metadata-only republish"]);
+
+    const status = await runBuiltCommand(buildStatusCommand, []);
+    expect(status.stdout).toContain("Conversations to be published:");
+    expect(status.stdout).toContain("Metadata-only republish");
+    expect(status.stdout).toContain("modified:");
+
+    await runBuiltCommand(buildPublishCommand, []);
+
+    const republished = await getConversationById(convId);
+    expect(republished?.state).toBe("published");
+    expect(republished?.title).toBe("Metadata-only republish");
+    expect(republished?.publishVersion).toBe(2);
+    expect(republished?.publishedAt).not.toBe(firstPublishedAt);
+    expect(republished?.modifiedAt).toBe(republished?.publishedAt);
   });
 
   it("add on an unchanged published raw copy is a content no-op (SPEC §5.5)", async () => {

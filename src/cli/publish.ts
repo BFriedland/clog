@@ -7,10 +7,10 @@ import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
-  classifyPublishedDelta,
   defaultPublishFilePath,
   ensureRawCopy,
   getPublishCandidate,
+  isPublishedReadyForRepublish,
   parseConversationMessages,
   parseConversationMessagesFromPath,
   resolveManyConversationsOrFail,
@@ -107,7 +107,7 @@ async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
   const published = await listConversations({ states: ["published"], origin: "local" });
   const readyPublished: ConversationMeta[] = [];
   for (const conversation of published) {
-    if ((await classifyPublishedDelta(conversation)) === "ready") {
+    if (await isPublishedReadyForRepublish(conversation)) {
       readyPublished.push(conversation);
     }
   }

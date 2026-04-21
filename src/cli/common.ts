@@ -556,6 +556,38 @@ export async function classifyPublishedDelta(
   return messages.length > conversation.publishedMessageCount ? "ready" : "clean";
 }
 
+export function isPublishedMetadataAhead(
+  conversation: ConversationMeta,
+): boolean {
+  if (conversation.state !== "published" || !conversation.publishedAt) {
+    return false;
+  }
+
+  const modifiedAt = Date.parse(conversation.modifiedAt);
+  const publishedAt = Date.parse(conversation.publishedAt);
+  if (Number.isNaN(modifiedAt) || Number.isNaN(publishedAt)) {
+    return false;
+  }
+
+  return modifiedAt > publishedAt;
+}
+
+export async function isPublishedReadyForRepublish(
+  conversation: ConversationMeta,
+): Promise<boolean> {
+  return isPublishedReadyForRepublishWithDelta(
+    conversation,
+    await classifyPublishedDelta(conversation),
+  );
+}
+
+export function isPublishedReadyForRepublishWithDelta(
+  conversation: ConversationMeta,
+  delta: PublishedDelta,
+): boolean {
+  return delta === "ready" || (delta === "clean" && isPublishedMetadataAhead(conversation));
+}
+
 export async function getPublishCandidate(conversation: ConversationMeta): Promise<{
   path: string;
   shouldRefreshRawCopy: boolean;
