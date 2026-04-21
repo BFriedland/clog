@@ -178,6 +178,7 @@ clog/
 │   │   ├── status.ts        # Show current state
 │   │   ├── show.ts          # Display conversation content
 │   │   ├── path.ts          # Print raw file path
+│   │   ├── drain.ts         # Export conversations as JSON, markdown, or raw source
 │   │   ├── list.ts          # List conversations with filters
 │   │   ├── exclude.ts       # Exclude conversations from discovery
 │   │   ├── unexclude.ts     # Reverse an exclusion
@@ -836,6 +837,10 @@ clog show <id> --path      Print the file path (raw copy if staged/published, so
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
+clog drain <id>            Export conversation data to stdout (JSON by default)
+clog drain [filters]       Export a filtered set to stdout
+clog drain <id> --to <path>  Export one conversation to a file
+clog drain --to-dir <dir>  Export one file per conversation to a directory
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog rename-author <old> <new>  Rename author across local conversations
@@ -990,7 +995,13 @@ Columns are dynamically sized to the terminal width. For every non-terminal colu
 
 `clog list --all` is partly discovery-backed. It lists DB-backed conversations in any state, and it may also scan enabled local source paths to show excluded conversations that are still present on disk. These excluded rows are ephemeral display rows: they are not stored in the database, they are shown dimmed with state `excluded`, and they disappear from `list --all` if the source file is deleted, moved outside enabled scan scope, or belongs to a disabled source. Remote excluded conversations are not listed; remote exclusion blocks import.
 
+Metadata filters on `clog list` are exact-match selectors, not fuzzy search. This keeps selection predictable and makes it clear that text discovery belongs to `--grep`, not to metadata filters. The `--help` output should describe `--project`, `--author`, and `--tag` as exact metadata filters so users do not expect substring matching.
+
 `--project` matches against `projectName`, using case-insensitive exact matching. Users pass `api-service`, not `/Users/alice/work/api-service`. LIKE wildcards (`%`, `_`) in the project name are escaped to prevent injection in DB queries. There is no default user-facing path filter flag; local path filtering belongs in config and `clogignore`.
+
+`--author` matches `author` by exact, case-sensitive string equality. It is not substring, fuzzy, or case-insensitive matching.
+
+`--tag` matches tags by exact, case-insensitive equality after tag normalization. It is not substring or fuzzy matching.
 
 `--grep` performs a simple case-insensitive substring match against the `title`, `summary`, and message `content` fields. A conversation matches if any of those contain the search text. This is deliberately simple — it's not regex, not full-text search, not semantic. It's the equivalent of piping through `grep -i` and is intended to remain useful alongside semantic search (Section 10), since it's fast, predictable, and doesn't require any additional dependencies. Message-content matching requires reading the curated raw file for each candidate conversation, which is acceptable at Phase 1 scale; if this becomes a bottleneck, Phase 2's search index is the right place to optimize it. Conversations whose raw content cannot be read fall back to metadata-only matching.
 
@@ -1331,6 +1342,298 @@ Exit codes:
 
 Like other DB-touching paths, `clog plunge` acquires the DB lock for the duration of the run. It is diagnostically read-only, but DB locking still requires the temporary lockfile lifecycle under `CLOG_HOME`.
 
+### 5.7.3 The `drain` Command
+
+`clog drain` exports conversations out of clog as portable files or stdout
+payloads. It is the inverse of curation: `add` and `publish` bring
+conversations into clog's curated corpus; `drain` lets them flow back out.
+
+`clog drain` is read-only. It never modifies the database, raw files,
+source files, or remote checkout contents.
+
+This section defines the user-visible command contract. Lower-level export
+format notes for `drain` live in
+`docs/DRAIN_SPEC_NOTES.md`.
+
+Supported command shapes:
+
+```text
+clog drain <id>                         Single conversation to stdout (JSON).
+clog drain <id> --format md             Single conversation to stdout (markdown).
+clog drain <id> --raw                   Single conversation raw JSONL to stdout.
+clog drain <id> --to <path>             Single conversation to a file.
+clog drain [filters]                    JSON array to stdout.
+clog drain [filters] --refresh          Refresh local discovery, then export.
+clog drain --to-dir <dir>               Default curated export to a directory.
+clog drain <id...> --to-dir <dir>       Multiple conversations to a directory.
+clog drain --to-dir <dir> [filters]     Filtered conversations to a directory.
+```
+
+#### 5.7.3.1 Resolved Conversation Set
+
+`clog drain` first resolves a conversation set from explicit IDs and filter
+flags.
+
+- By default, `clog drain` resolves against the current database state only.
+- `--refresh` is an explicit opt-in to run the same local discovery refresh
+  as `clog list` before resolving the conversation set. This refresh updates
+  the local discovered corpus and emits the same aggregated scan warnings to
+  stderr that other scan-driven commands use.
+- If IDs and filters are both present, `clog drain` first builds the
+  filtered candidate set, then resolves each explicit ID within that set.
+- Filters are part of the user's selector. An invocation such as
+  `clog drain abcd --author alice` is interpreted as "export Alice's
+  `abcd` conversation," not "resolve `abcd` globally, then filter later."
+- This means a globally ambiguous ID may resolve successfully if the
+  filtered candidate set contains exactly one match.
+- If multiple filtered candidates still match an ID, `clog drain` returns
+  the normal ambiguity error with copy-pasteable candidates.
+- If no filtered candidates match an ID, `clog drain` returns the normal
+  no-match error for that ID.
+- After ID resolution and filter application, the resolved set is
+  deduplicated by full conversation ID. Repeating the same ID, or mixing
+  source-qualified and unqualified forms that resolve to the same
+  conversation, does not produce duplicate exports.
+- If neither IDs nor filters is present, the default scope matches
+  `clog list`'s curated-by-default view: local curated conversations plus
+  same-author synced remote conversations.
+- If neither IDs nor filters is present and `config.author` is empty or
+  unset, the default scope is local curated conversations only.
+- Broader export requires explicit filters such as `--origin remote`,
+  `--author`, or `--state`.
+- Bare `clog drain` with no IDs, no filters, no `--to`, and no
+  `--to-dir` is a usage error. To export to stdout, the user must provide
+  at least one conversation ID or at least one filter flag.
+
+This preserves the two intended command shapes:
+
+- query-like export (`clog drain --state discovered`,
+  `clog drain --author alice`) operates on the current clog corpus
+- refreshed query-like export (`clog drain --state discovered --refresh`)
+  first updates the local discovered corpus, then exports from that updated
+  state
+- explicit export (`clog drain a1b2c3`) exports the conversations already
+  known to clog without doing a discovery refresh first
+
+#### 5.7.3.2 Modes
+
+`clog drain` operates in one of three modes, determined by whether
+`--to` or `--to-dir` is present.
+
+**Stdout mode** (no `--to`, no `--to-dir`) writes the resolved export payload to stdout
+with no progress output. Diagnostics go to stderr.
+
+- `json` supports set export. A single explicit ID with no filters writes
+  one JSON object; otherwise stdout JSON is a JSON array in deterministic
+  order.
+- `md` requires exactly one matching conversation.
+- `--raw` requires exactly one matching conversation.
+
+Stdout mode is atomic. `clog drain` must not write partial export data to
+stdout. If any conversation needed for the stdout payload fails, it writes
+nothing to stdout, reports the error to stderr, and exits `1`.
+
+**Single-file mode** (`--to <path>`): Writes exactly one exported
+conversation to the supplied file path. It does not create parent
+directories. Existing files are not overwritten unless `--force` is
+passed. If the resolved set contains more than one conversation, `clog
+drain` returns a usage error directing the user to `--to-dir`.
+
+**Directory mode** (`--to-dir <dir>`): Writes one file per conversation into the
+target directory. The directory is created if it does not exist, including
+intermediate parents. Existing files are not overwritten unless `--force`
+is passed.
+
+Directory mode prints no per-conversation success output. When complete, it
+prints a one-line summary to stderr:
+
+```text
+Drained 41 conversations to ./export/
+Drained 38 conversations to ./export/ (3 failed)
+```
+
+#### 5.7.3.3 Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--to <path>` | `-o` | Write one exported conversation to this file path. Single-file mode only. |
+| `--to-dir <dir>` | | Write one file per conversation to this directory. Directory mode only. |
+| `--format <fmt>` | `-f` | Output format: `json` (default) or `md`. |
+| `--raw` | | Emit the exact underlying source file instead of parsed export data. Incompatible with `--format`. |
+| `--force` | | File and directory output modes only. Overwrite an existing target file or directory entry. |
+| `--refresh` | | Refresh local discovery before resolving the export set. This may update the discovered corpus and emit aggregated scan warnings to stderr. |
+| `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `published`). |
+| `--project <name>` | `-p` | Filter by project name (same semantics as `clog list --project`). |
+| `--author <name>` | `-a` | Filter by author (same semantics as `clog list --author`). |
+| `--tag <tag>` | `-t` | Filter by tag (same semantics as `clog list --tag`). |
+| `--origin <origin>` | | Filter by origin: `local` or `remote` (same semantics as `clog list --origin`). |
+
+`clog drain` supports a deliberate subset of `clog list` filters. In v1 it
+supports metadata-backed export selection: `--state`, `--project`,
+`--author`, `--tag`, and `--origin`.
+
+Like `clog list`, these metadata filters are exact-match selectors rather
+than fuzzy search. This keeps export selection predictable and avoids
+overloading metadata filters with text-search behavior. The `--help` output
+for `clog drain` should describe `--project`, `--author`, and `--tag` as
+exact metadata filters so users do not expect substring matching.
+
+Filter semantics:
+
+- `--project` matches `projectName` by case-insensitive exact equality
+- `--author` matches `author` by exact, case-sensitive string equality
+- `--tag` matches normalized tags by exact, case-insensitive equality
+- `--origin` matches `local` or `remote` exactly
+
+`clog drain` does not support `clog list` display or discovery-expansion
+flags such as `--columns` or `--all`, and it does not support content-search
+selection via `--grep`.
+
+#### 5.7.3.4 ID Resolution
+
+ID resolution follows the same rules as other clog commands, as defined in
+§3.3: short prefixes of at least 4 characters, source-qualified forms
+(`a1b2c3@claude-code`), and ambiguity errors with copy-pasteable
+candidates.
+
+When `clog drain` is invoked with explicit IDs and metadata filters, it
+does not resolve IDs against the full conversation table and intersect
+afterward. Instead, it:
+
+1. builds the candidate set using the supplied `--state`, `--project`,
+   `--author`, `--tag`, and `--origin` filters
+2. resolves each explicit ID within that candidate set
+3. deduplicates the resolved conversations by full ID
+
+This preserves normal resolver grammar while making filters participate in
+disambiguation.
+
+Consequences:
+
+- an otherwise ambiguous prefix resolves successfully if the filtered
+  candidate set contains exactly one match
+- the same prefix still errors as ambiguous if multiple filtered candidates
+  remain
+- the same prefix errors as no-match if the filtered candidate set contains
+  none
+- source-qualified forms such as `prefix@source` continue to restrict
+  matching to the named source, within the filtered candidate set
+
+Directory mode accepts zero or more explicit IDs. Single-file mode requires
+exactly one resolved conversation. Stdout mode may also be invoked with
+IDs, filters, or both; the format-specific match-count rules from
+§5.7.3.2 apply after resolution.
+
+#### 5.7.3.5 Accessible Conversations
+
+`clog drain` can export any conversation whose content path resolves
+successfully:
+
+- **Published (local)** — reads from the curated raw copy at `filePath`
+- **Staged** — reads from the curated raw copy at `filePath`
+- **Discovered** — reads from `sourcePath` if the source file still exists
+- **Remote** — reads from the resolved remote checkout path, using the same
+  content-path resolution rules as `clog show` and `clog path`
+
+Content-path resolution must reuse the same logic as `clog show` /
+`clog path`.
+
+#### 5.7.3.6 Ordering
+
+Whenever `clog drain` exports more than one conversation, the resolved set
+is ordered deterministically:
+
+1. ascending by `createdAt`
+2. then by `source`
+3. then by full `id`
+
+This order governs:
+
+- JSON array output in stdout mode
+- directory traversal order
+
+#### 5.7.3.7 Exit Codes
+
+| Code | Condition |
+|------|-----------|
+| `0` | All requested conversations were successfully drained. |
+| `1` | The command was valid but one or more conversations could not be drained, or the resolved set was empty. Partial success is allowed in directory mode. |
+| `2` | Usage error (bad flags, ambiguous ID, unsupported match count for the selected stdout format, etc.). |
+
+#### 5.7.3.8 Export Formats and Scope
+
+`clog drain` supports three export formats:
+
+- `json` — the canonical parsed export format, using clog-native metadata
+  field names plus parsed `messages`
+- `md` — a human-readable transcript export
+- `--raw` — the exact underlying source file with no parsing or metadata
+  envelope
+
+The JSON export is a portable export object, not a dump of clog's internal
+database row. It includes user-facing metadata such as `id`, `source`,
+`title`, `summary`, `author`, `projectName`, `tags`, `slug`, `createdAt`,
+`publishedAt`, `state`, and parsed `messages`. It intentionally omits
+local-only/internal fields such as `sourceId`, `projectPath`,
+`discoveredAt`, `modifiedAt`, `publishedMessageCount`, `publishVersion`,
+`sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, and `origin`.
+
+Markdown is a convenience rendering, not the canonical export contract.
+Markdown stdout mode requires exactly one matching conversation. File mode
+writes one markdown file. Directory mode writes one markdown file per
+conversation.
+
+Raw export always reads from the same resolved content path that `clog path`
+and `clog show` use. In stdout mode and file mode, `--raw` requires
+exactly one matching conversation. In directory mode, `--raw` writes one
+raw file per conversation.
+
+File mode writes to the exact path supplied by `--to`. Directory mode
+writes one file per conversation and assigns filenames deterministically
+from the full conversation ID and selected format. The exact filename and
+low-level serialization rules are documented in `docs/DRAIN_SPEC_NOTES.md`.
+
+#### 5.7.3.9 Scope Boundaries
+
+`clog drain` intentionally does not:
+
+- modify clog state
+- mark conversations as exported
+- support streaming or watch modes
+- write aggregate multi-conversation files in directory mode
+- reuse `clog show`'s presentation format as a separate export type
+- support filtering by specific remote URL in v1
+- support partial-message export flags such as `--head` / `--tail`
+
+#### 5.7.3.10 Error Handling
+
+Specific `clog drain` error conditions:
+
+| Condition | Behavior |
+|-----------|----------|
+| No IDs, no filters, no `--to`, no `--to-dir` | Usage error: `clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.` Exit `2`. |
+| `--to` with `--to-dir` | Usage error. Exit `2`. |
+| `--raw` with `--format` | Usage error. Exit `2`. |
+| `--force` without `--to` or `--to-dir` | Usage error. Exit `2`. |
+| `--refresh` present | Run the same local discovery refresh as `clog list` before resolving the export set; scan warnings are emitted to stderr. |
+| Ambiguous ID prefix | Same ambiguity behavior as other clog commands. When filters are present, ambiguity is evaluated within the filtered candidate set. Exit `2`. |
+| ID prefix has no match within the filtered candidate set | Same no-match behavior as other clog commands, evaluated within the filtered candidate set. Exit `1`. |
+| Resolved set is empty | Error: no conversations match. Exit `1`. |
+| Stdout `md` with multiple matches | Usage error: markdown stdout requires exactly one conversation. Exit `2`. |
+| Stdout `raw` with multiple matches | Usage error: raw stdout requires exactly one conversation. Exit `2`. |
+| `--to` with multiple matches | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
+| Parent directory for `--to` does not exist | Error. Exit `1`. |
+| Source/raw/remote content path missing | Error for that conversation. Stdout mode exits `1`; file mode exits `1`; directory mode continues and exits `1` if any failures occurred. |
+| Parse failure in parsed formats | Error for that conversation. Same partial-success model. |
+| Output file already exists (no `--force`) | File mode: error and exit `1`. Directory mode: skip that conversation, report error, continue, exit `1` if any conflicts occurred. |
+| `--to-dir` directory cannot be created | Error. Exit `1`. |
+
+In directory mode, failures are reported individually to stderr as they
+occur, identifying the conversation and the reason. Export continues with
+remaining conversations. After processing completes, `clog drain` prints a
+one-line summary reporting the number written and, when non-zero, the
+number failed.
+
 ### 5.8 The `diff` Command
 
 `clog diff` shows what changed since last publish, mirroring `git diff`:
@@ -1485,7 +1788,7 @@ The filter counts are reason-based and disjoint. If a source file still exists u
 
 All CLI commands use a consistent error handling wrapper:
 
-- **Normal mode:** Errors are caught and printed to stderr as `error: <message>`. The exit code is set to 1 via `process.exitCode` (graceful cleanup, no abrupt termination). Stack traces are hidden.
+- **Normal mode:** Errors are caught and printed to stderr as `error: <message>`. The exit code is set via `process.exitCode`. Most command errors exit `1`; usage errors may exit `2`. Stack traces are hidden.
 - **Debug mode (`CLOG_DEBUG=1`):** The wrapper is bypassed, so errors propagate with full stack traces for troubleshooting.
 
 This follows the same principle as health checks (Section 7.3): **corrupted things produce clear errors**, not raw stack traces.
@@ -1791,6 +2094,7 @@ Phase 1 implementation work includes:
 - `src/adapters/codex-cli.ts` — implement Codex discovery and parsing
 - `src/cli/scan.ts` — iterate all enabled adapters and prune stale discovered rows per source
 - `src/cli/add.ts` — copy raw files into `raw/<source>/` and implement targeted-add discovery retry
+- `src/cli/drain.ts` — export conversations as portable JSON, markdown, or raw source
 - `src/cli/show.ts`, `src/cli/path.ts`, `src/cli/diff.ts` — use source-aware content path resolution and parsing
 - `src/cli/publish.ts` — publish staged raw copies, set `published_message_count`, and use source-aware parsing
 - `src/db/index.ts` — add `projectName`, `projectPath`, and `publishedMessageCount` to conversation insert/update/read paths, filters, and publish-state queries

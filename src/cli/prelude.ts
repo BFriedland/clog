@@ -19,7 +19,7 @@ export async function runWithCliErrorHandling(
     const message =
       error instanceof Error ? error.message : "Unknown error";
     process.stderr.write(`error: ${message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof ClogError ? error.exitCode : 1;
   }
 }
 
