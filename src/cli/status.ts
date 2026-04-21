@@ -6,7 +6,12 @@ import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
-import { classifyPublishedDelta, getScanWarningsForCommand, renderWarnings } from "./common.js";
+import {
+  classifyPublishedDelta,
+  getScanWarningsForCommand,
+  isPublishedReadyForRepublishWithDelta,
+  renderWarnings,
+} from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
 export function buildStatusCommand(): Command {
@@ -31,6 +36,8 @@ export function buildStatusCommand(): Command {
           readyPublished.push(conversation);
         } else if (kind === "source_ahead") {
           sourceAheadPublished.push(conversation);
+        } else if (isPublishedReadyForRepublishWithDelta(conversation, kind)) {
+          readyPublished.push(conversation);
         } else {
           cleanPublished.push(conversation);
         }
@@ -127,8 +134,24 @@ export function buildStatusCommand(): Command {
         }
       }
 
+      await renderSearchSection();
       await renderRemoteSection(config);
     });
+}
+
+async function renderSearchSection(): Promise<void> {
+  const unindexed = (
+    await listConversations({ states: ["published"], indexed: false })
+  ).length;
+
+  if (unindexed === 0) {
+    return;
+  }
+
+  process.stdout.write(`\nSearch:\n`);
+  process.stdout.write(
+    `  ${unindexed} conversation(s) not yet indexed. Run \`clog index\` to index.\n`,
+  );
 }
 
 async function renderRemoteSection(
@@ -139,18 +162,9 @@ async function renderRemoteSection(
   }
 
   const remoteCount = (await listConversations({ origin: "remote" })).length;
-  const unindexed = (
-    await listConversations({ states: ["published"], indexed: false })
-  ).length;
 
   process.stdout.write(`\nRemote: ${config.remote.url}\n`);
   process.stdout.write(`  ${remoteCount} conversation(s) imported from remote.\n`);
-
-  if (unindexed > 0) {
-    process.stdout.write(
-      `  ${unindexed} conversation(s) not yet indexed. Run \`clog index\` to index.\n`,
-    );
-  }
 
   const staleness = await checkStaleness();
   if (staleness.kind === "stale") {

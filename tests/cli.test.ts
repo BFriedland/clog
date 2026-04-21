@@ -903,6 +903,46 @@ describe("cli", () => {
       expect(reloaded?.state).toBe("published");
       expect(reloaded?.publishedMessageCount).toBe(4);
     });
+
+    it("republishes metadata-only published conversations when called without ids", async () => {
+      const convId = "53535353-5353-5353-5353-535353535353";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("First"),
+        assistantLine("Reply", "msg_01"),
+      ]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Metadata changed",
+          state: "published",
+          filePath: rawPath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
+          modifiedAt: "2026-02-01T10:05:00.000Z",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Metadata changed");
+
+      const published = await getConversationById(convId);
+      expect(published?.publishVersion).toBe(1);
+      expect(published?.publishedAt).toBe("2026-02-01T10:00:00.000Z");
+
+      const publishResult = await runBuiltCommand(buildPublishCommand, []);
+      expect(publishResult.stdout).toContain("Published 1 conversation(s)");
+
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.publishVersion).toBe(2);
+      expect(reloaded?.publishedAt).not.toBe("2026-02-01T10:00:00.000Z");
+      expect(reloaded?.modifiedAt).toBe(reloaded?.publishedAt);
+    });
   });
 
   // ========================================
@@ -1502,6 +1542,56 @@ describe("cli", () => {
       expect(stdout).toContain("Checkpoint lag");
     });
 
+    it("marks a published conversation as ready when metadata changed after publish", async () => {
+      const convId = "c7777777-7777-7777-7777-777777777777";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("First"),
+        assistantLine("Reply", "msg_01"),
+      ]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Metadata changed",
+          state: "published",
+          filePath: rawPath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
+          modifiedAt: "2026-02-01T10:05:00.000Z",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Conversations to be published:");
+      expect(stdout).toContain("Metadata changed");
+      expect(stdout).toContain("modified:");
+    });
+
+    it("shows unindexed published conversations in a search section without requiring a remote", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "c8888888-8888-8888-8888-888888888888",
+          sourceId: "c8888888-8888-8888-8888-888888888888",
+          title: "Local unindexed row",
+          state: "published",
+          filePath: "/tmp/local-unindexed.jsonl",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishVersion: 1,
+          indexedAt: null,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Search:");
+      expect(stdout).toContain("1 conversation(s) not yet indexed");
+      expect(stdout).not.toContain("Remote:");
+    });
+
     it("renders a remote section when a remote is configured", async () => {
       const config = await loadConfig();
       config.remote.url = "git@example.com:team/repo.git";
@@ -1523,6 +1613,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Search:");
       expect(stdout).toContain("Remote: git@example.com:team/repo.git");
       expect(stdout).toContain("1 conversation(s) imported from remote");
       expect(stdout).toContain("1 conversation(s) not yet indexed");
