@@ -35,6 +35,7 @@ const visibilityModule = await import("../src/sync/visibility.js");
 const mockedCheckVisibility = vi.mocked(visibilityModule.checkVisibility);
 
 import { buildConfigCommand } from "../src/cli/config.js";
+import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildListCommand } from "../src/cli/list.js";
@@ -192,6 +193,514 @@ describe("cli", () => {
 
       const reloaded = await getConversationById(convId);
       expect(reloaded?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+    });
+  });
+
+  // ========================================
+  // drain
+  // ========================================
+
+  describe("drain (SPEC §5)", () => {
+    it("drains a single explicit ID as one JSON object to stdout", async () => {
+      const convId = "d1111111-1111-1111-1111-111111111111";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Drain object");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          title: "Drain object",
+          tags: ["debug"],
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, [convId]);
+      const parsed = JSON.parse(stdout) as Record<string, unknown>;
+
+      expect(parsed).toMatchObject({
+        id: convId,
+        source: "claude-code",
+        title: "Drain object",
+        summary: "",
+        author: "testuser",
+        projectName: "webapp",
+        tags: ["debug"],
+        slug: null,
+        createdAt: "2026-02-01T10:00:00.000Z",
+        publishedAt: null,
+        state: "staged",
+      });
+      expect(parsed.messages).toEqual([
+        {
+          role: "user",
+          content: "Drain object",
+          timestamp: "2026-02-01T10:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "Response",
+          timestamp: "2026-02-01T10:00:01.000Z",
+        },
+      ]);
+      expect(stdout.endsWith("\n")).toBe(true);
+    });
+
+    it("drains filter-based selection as a deterministically ordered JSON array", async () => {
+      const firstId = "d2222222-2222-2222-2222-222222222222";
+      const secondId = "d3333333-3333-3333-3333-333333333333";
+
+      const firstRaw = getRawConversationPath("claude-code", firstId);
+      const secondRaw = getRawConversationPath("claude-code", secondId);
+      await writeMinimalClaudeJsonl(firstRaw, "Later");
+      await writeMinimalClaudeJsonl(secondRaw, "Earlier");
+
+      await insertConversation(
+        makeConversation({
+          id: firstId,
+          sourceId: firstId,
+          state: "staged",
+          filePath: firstRaw,
+          title: "Later",
+          createdAt: "2026-02-01T10:00:02.000Z",
+          tags: ["auth"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: secondId,
+          sourceId: secondId,
+          state: "published",
+          filePath: secondRaw,
+          title: "Earlier",
+          createdAt: "2026-02-01T10:00:01.000Z",
+          publishedAt: "2026-02-01T10:05:00.000Z",
+          publishVersion: 1,
+          tags: ["AUTH"],
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, ["--tag", "auth"]);
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+
+      expect(parsed).toHaveLength(2);
+      expect(parsed.map((item) => item.id)).toEqual([secondId, firstId]);
+    });
+
+    it("uses filters to disambiguate an otherwise ambiguous explicit ID", async () => {
+      const aliceId = "dabc1111-1111-1111-1111-111111111111";
+      const bobId = "dabc2222-2222-2222-2222-222222222222";
+
+      const aliceRaw = getRawConversationPath("claude-code", aliceId);
+      const bobRaw = getRawConversationPath("claude-code", bobId);
+      await writeMinimalClaudeJsonl(aliceRaw, "Alice export");
+      await writeMinimalClaudeJsonl(bobRaw, "Bob export");
+
+      await insertConversation(
+        makeConversation({
+          id: aliceId,
+          sourceId: aliceId,
+          state: "staged",
+          filePath: aliceRaw,
+          author: "alice",
+          title: "Alice export",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: bobId,
+          sourceId: bobId,
+          state: "staged",
+          filePath: bobRaw,
+          author: "bob",
+          title: "Bob export",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, ["dabc", "--author", "alice"]);
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.id).toBe(aliceId);
+      expect(parsed[0]?.author).toBe("alice");
+    });
+
+    it("includes same-author remote conversations in bare directory mode when config.author is set", async () => {
+      const local = await seedStagedConversation("d1010101-1010-1010-1010-101010101010", {
+        title: "Local export",
+      });
+      const remotePath = path.join(tempDir, "remote-export.jsonl");
+      await writeMinimalClaudeJsonl(remotePath, "Remote export");
+      const remote = await seedRemoteConversation("d2020202-2020-2020-2020-202020202020", {
+        title: "Remote export",
+        author: "testuser",
+        filePath: remotePath,
+      });
+
+      const outDir = path.join(tempDir, "drain-default-scope");
+      const { stderr } = await runBuiltCommand(buildDrainCommand, ["--to-dir", outDir]);
+
+      expect(stderr).toContain(`Drained 2 conversations to ${outDir}/`);
+      expect(await fs.readFile(path.join(outDir, `${local.id}.json`), "utf8")).toContain(
+        local.id,
+      );
+      expect(await fs.readFile(path.join(outDir, `${remote.id}.json`), "utf8")).toContain(
+        remote.id,
+      );
+    });
+
+    it("falls back to local curated conversations only in bare directory mode when config.author is empty", async () => {
+      const config = await loadConfig();
+      config.author = "";
+      await saveConfig(config);
+
+      await seedStagedConversation("d3030303-3030-3030-3030-303030303030", {
+        title: "Local only",
+      });
+      await seedRemoteConversation("d4040404-4040-4040-4040-404040404040", {
+        title: "Hidden remote",
+        author: "alice",
+      });
+
+      const outDir = path.join(tempDir, "drain-local-only");
+      const { stderr } = await runBuiltCommand(buildDrainCommand, ["--to-dir", outDir]);
+
+      expect(stderr).toContain(`Drained 1 conversation to ${outDir}/`);
+      expect(
+        await fs.readFile(
+          path.join(outDir, "d3030303-3030-3030-3030-303030303030.json"),
+          "utf8",
+        ),
+      ).toContain(
+        "d3030303-3030-3030-3030-303030303030",
+      );
+      await expect(
+        fs.access(path.join(outDir, "d4040404-4040-4040-4040-404040404040.json")),
+      ).rejects.toThrow();
+    });
+
+    it("writes no stdout bytes when a multi-conversation stdout export fails partway through", async () => {
+      const goodId = "d5050505-5050-5050-5050-505050505050";
+      const badId = "d6060606-6060-6060-6060-606060606060";
+      const goodRaw = getRawConversationPath("claude-code", goodId);
+      await writeMinimalClaudeJsonl(goodRaw, "Good export");
+
+      await insertConversation(
+        makeConversation({
+          id: goodId,
+          sourceId: goodId,
+          state: "staged",
+          filePath: goodRaw,
+          title: "Good export",
+          tags: ["atomicity"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: badId,
+          sourceId: badId,
+          state: "staged",
+          filePath: path.join(tempDir, "missing.jsonl"),
+          title: "Bad export",
+          tags: ["atomicity"],
+        }),
+      );
+
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, ["--tag", "atomicity"]);
+
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.stdout).toBe("");
+      expect(String((result.error as Error)?.message ?? "")).toMatch(/Curated raw file is missing/i);
+    });
+
+    it("reports remote-specific recovery guidance when a raw remote backing file is missing", async () => {
+      const conv = await seedRemoteConversation("d7070707-7070-7070-7070-707070707070", {
+        filePath: path.join(tempDir, "missing-remote-checkout.jsonl"),
+      });
+
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [conv.id, "--raw"]);
+
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.stdout).toBe("");
+      expect(String((result.error as Error)?.message ?? "")).toMatch(/Remote checkout file is missing/i);
+      expect(String((result.error as Error)?.message ?? "")).toMatch(/clog refresh/);
+      expect(String((result.error as Error)?.message ?? "")).toMatch(/clog sync pull/);
+      expect(String((result.error as Error)?.message ?? "")).not.toMatch(/clog add/);
+    });
+
+    it("requires exactly one match for markdown stdout", async () => {
+      const first = await seedStagedConversation("d4444444-4444-4444-4444-444444444444", {
+        title: "First markdown",
+      });
+      const second = await seedStagedConversation("d5555555-5555-5555-5555-555555555555", {
+        title: "Second markdown",
+      });
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, [first.id, second.id, "--format", "md"]),
+      ).rejects.toThrow(/markdown stdout requires exactly one conversation/i);
+    });
+
+    it("renders markdown with at least triple-backtick fences", async () => {
+      const convId = "d8888888-8888-8888-8888-888888888888";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeJsonl(rawPath, [
+        userLine("Contains `inline` ticks"),
+        assistantLine("Reply with ``` fenced content", "msg_md_1"),
+      ]);
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          title: "Markdown fences",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, [convId, "--format", "md"]);
+
+      expect(stdout).toContain("```text\nContains `inline` ticks\n```");
+      expect(stdout).toContain("````text\nReply with ``` fenced content\n````");
+    });
+
+    it("writes directory exports and skips existing files without --force", async () => {
+      const convId = "d6666666-6666-6666-6666-666666666666";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Collision title");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          title: "Collision title",
+        }),
+      );
+
+      const outDir = path.join(tempDir, "drain-out");
+      await fs.mkdir(outDir, { recursive: true });
+      await fs.writeFile(
+        path.join(outDir, `${convId}.json`),
+        "existing\n",
+        "utf8",
+      );
+
+      const { stderr } = await runBuiltCommand(buildDrainCommand, [convId, "--to-dir", outDir]);
+
+      expect(stderr).toContain("Could not drain d666666@claude-code");
+      expect(stderr).toContain("already exists");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (1 failed)`);
+    });
+
+    it("continues directory export after one conversation fails and writes the others", async () => {
+      const goodId = "d9090909-9090-9090-9090-909090909090";
+      const badId = "da0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+      const goodRaw = getRawConversationPath("claude-code", goodId);
+      await writeMinimalClaudeJsonl(goodRaw, "Directory success");
+
+      await insertConversation(
+        makeConversation({
+          id: goodId,
+          sourceId: goodId,
+          state: "staged",
+          filePath: goodRaw,
+          title: "Directory success",
+          tags: ["dir-partial"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: badId,
+          sourceId: badId,
+          state: "staged",
+          filePath: path.join(tempDir, "missing-dir.jsonl"),
+          title: "Directory failure",
+          tags: ["dir-partial"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "drain-partial");
+      const { stderr } = await runBuiltCommand(buildDrainCommand, [
+        "--tag",
+        "dir-partial",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(stderr).toContain("Could not drain da0a0a0@claude-code");
+      expect(stderr).toContain(`Drained 1 conversation to ${outDir}/ (1 failed)`);
+      expect(await fs.readFile(path.join(outDir, `${goodId}.json`), "utf8")).toContain(
+        goodId,
+      );
+    });
+
+    it("serializes drain JSON with the documented top-level field order", async () => {
+      const convId = "db1b1b1b-1b1b-1b1b-1b1b-1b1b1b1b1b1b";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Ordered JSON");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "published",
+          filePath: rawPath,
+          title: "Ordered JSON",
+          publishedAt: "2026-02-01T10:05:00.000Z",
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, [convId]);
+      const parsed = JSON.parse(stdout) as Record<string, unknown>;
+
+      expect(Object.keys(parsed)).toEqual([
+        "id",
+        "source",
+        "title",
+        "summary",
+        "author",
+        "projectName",
+        "tags",
+        "slug",
+        "createdAt",
+        "publishedAt",
+        "state",
+        "messages",
+      ]);
+      expect(Object.keys((parsed.messages as Array<Record<string, unknown>>)[0] ?? {})).toEqual([
+        "role",
+        "content",
+        "timestamp",
+      ]);
+    });
+
+    it("validates --format, --origin, and output-flag usage errors", async () => {
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--format", "yaml"]),
+      ).rejects.toThrow(/--format must be "json" or "md"/i);
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--origin", "somewhere"]),
+      ).rejects.toThrow(/--origin must be "local" or "remote"/i);
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--force"]),
+      ).rejects.toThrow(/--force requires --to <path> or --to-dir <dir>/i);
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--to", "/tmp/out.json", "--to-dir", "/tmp/out"]),
+      ).rejects.toThrow(/--to and --to-dir cannot be combined/i);
+    });
+
+    it("writes a single conversation to the exact file path supplied by --to", async () => {
+      const convId = "dc1c1c1c-1c1c-1c1c-1c1c-1c1c1c1c1c1c";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Single file");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          title: "Single file",
+        }),
+      );
+
+      const outPath = path.join(tempDir, "drain-one.json");
+      const { stdout, stderr } = await runBuiltCommand(buildDrainCommand, [convId, "--to", outPath]);
+
+      expect(stdout).toBe("");
+      expect(stderr).toBe("");
+      const parsed = JSON.parse(await fs.readFile(outPath, "utf8")) as Record<string, unknown>;
+      expect(parsed.id).toBe(convId);
+    });
+
+    it("overwrites an existing single-file target only when --force is passed", async () => {
+      const convId = "dc5c5c5c-5c5c-5c5c-5c5c-5c5c5c5c5c5c";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Force overwrite");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          title: "Force overwrite",
+        }),
+      );
+
+      const outPath = path.join(tempDir, "drain-force.json");
+      await fs.writeFile(outPath, '{"existing":true}\n', "utf8");
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, [convId, "--to", outPath]),
+      ).rejects.toThrow(/Output file already exists/i);
+
+      await runBuiltCommand(buildDrainCommand, [convId, "--to", outPath, "--force"]);
+
+      const parsed = JSON.parse(await fs.readFile(outPath, "utf8")) as Record<string, unknown>;
+      expect(parsed.id).toBe(convId);
+      expect(parsed.title).toBe("Force overwrite");
+    });
+
+    it("rejects multi-conversation export with --to and points to --to-dir", async () => {
+      await seedStagedConversation("dc2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c", {
+        title: "First file mode",
+        tags: ["multi-to"],
+      });
+      await seedStagedConversation("dc3c3c3c-3c3c-3c3c-3c3c-3c3c3c3c3c3c", {
+        title: "Second file mode",
+        tags: ["multi-to"],
+      });
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["--tag", "multi-to", "--to", path.join(tempDir, "out.json")]),
+      ).rejects.toThrow(/Use --to-dir <dir> for multi-conversation export/i);
+    });
+
+    it("rejects --to when the parent directory does not exist", async () => {
+      const convId = "dc4c4c4c-4c4c-4c4c-4c4c-4c4c4c4c4c4c";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Missing parent");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+        }),
+      );
+
+      await expect(
+        runBuiltCommand(
+          buildDrainCommand,
+          [convId, "--to", path.join(tempDir, "missing-parent", "out.json")],
+        ),
+      ).rejects.toThrow(/Parent directory does not exist/i);
+    });
+
+    it("reports a clear no-match message when an explicit id is absent from the filtered candidate set", async () => {
+      const convId = "d7777777-7777-7777-7777-777777777777";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Overlap");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "staged",
+          filePath: rawPath,
+          author: "alice",
+        }),
+      );
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, [convId, "--author", "bob"]),
+      ).rejects.toThrow(/No conversation matches "d7777777-7777-7777-7777-777777777777"/);
+    });
+
+    it("reports a clear filter-only message when no conversations match", async () => {
+      await expect(runBuiltCommand(buildDrainCommand, ["--author", "nobody"])).rejects.toThrow(
+        /Try 'clog list' with the same filters to inspect the current set/,
+      );
     });
   });
 
@@ -1262,8 +1771,22 @@ async function runBuiltCommand(
   builder: () => Command,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  const result = await runBuiltCommandCapturingError(builder, args);
+  if (result.error) {
+    throw result.error;
+  }
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+async function runBuiltCommandCapturingError(
+  builder: () => Command,
+  args: string[],
+): Promise<{ stdout: string; stderr: string; error: unknown }> {
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
+  const previousExitCode = process.exitCode;
+  process.exitCode = undefined;
+  let error: unknown = null;
 
   const stdoutSpy = vi
     .spyOn(process.stdout, "write")
@@ -1287,12 +1810,15 @@ async function runBuiltCommand(
     const cmd = builder();
     cmd.exitOverride();
     await cmd.parseAsync(args, { from: "user" });
+  } catch (caught) {
+    error = caught;
   } finally {
+    process.exitCode = previousExitCode;
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   }
 
-  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
+  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join(""), error };
 }
 
 function makeConversation(overrides: Partial<ConversationMeta> = {}): ConversationMeta {

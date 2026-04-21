@@ -205,6 +205,44 @@ describe("e2e", () => {
     expect(stdout).toContain("bob");
   });
 
+  it("drain returns exit code 2 for stdout usage with no ids, no filters, and no --to", async () => {
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    await expect(run(["drain"])).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining(
+        "clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.",
+      ),
+    });
+  });
+
+  it("drain returns exit code 1 with recovery guidance when an explicit ID does not match", async () => {
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    await expect(run(["drain", "deadbeef"])).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(
+        `No conversation matches "deadbeef". Run 'clog list' or 'clog status' to find available IDs.`,
+      ),
+    });
+  });
+
+  it("drain exports a discovered conversation as raw source", async () => {
+    const id = "19191919-1919-1919-1919-191919191919";
+    const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
+    await writeClaudeConversation(filePath, "Drain raw source");
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["status"]);
+
+    const { stdout } = await run(["drain", id.slice(0, 7), "--raw"]);
+
+    expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
+  });
+
   it("add then publish then show works for a discovered conversation", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
     await writeClaudeConversation(

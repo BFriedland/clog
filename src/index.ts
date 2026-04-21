@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { buildAddCommand } from "./cli/add.js";
 import { buildConfigCommand } from "./cli/config.js";
 import { buildDiffCommand } from "./cli/diff.js";
+import { buildDrainCommand } from "./cli/drain.js";
 import { buildEditCommand } from "./cli/edit.js";
 import { buildExcludeCommand } from "./cli/exclude.js";
 import { runIndexCommand } from "./cli/index-cmd.js";
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   program.addCommand(buildPathCommand());
   program.addCommand(buildPlungeCommand());
   program.addCommand(buildDiffCommand());
+  program.addCommand(buildDrainCommand());
   program.addCommand(buildExcludeCommand());
   program.addCommand(buildUnexcludeCommand());
   program.addCommand(buildConfigCommand());
