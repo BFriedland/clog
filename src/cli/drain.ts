@@ -4,7 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { getConversationById, listConversations, resolveConversationId } from "../db/index.js";
+import { listConversations } from "../db/index.js";
 import type { Config } from "../config/schema.js";
 import type { ConversationMeta, ConversationState, Message } from "../models/conversation.js";
 import { pathExists } from "../utils/fs.js";
@@ -16,6 +16,7 @@ import {
   resolveContentPath,
 } from "./common.js";
 import { scanLocalSources } from "./scan.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 type DrainFormat = "json" | "md";
 
@@ -51,7 +52,7 @@ interface DrainExport {
 export function buildDrainCommand(): Command {
   return new Command("drain")
     .description("Export conversations as JSON, markdown, or raw source")
-    .argument("[ids...]", "Conversation IDs to export")
+    .argument("[selectors...]", "Conversation IDs or project selectors to export")
     .option("-o, --to <path>", "Write one exported conversation to this file path")
     .option("--to-dir <dir>", "Write one file per conversation to this directory")
     .option("-f, --format <fmt>", "Output format: json or md")
@@ -63,14 +64,14 @@ export function buildDrainCommand(): Command {
     .option("-a, --author <name>", "Exact author metadata filter")
     .option("-t, --tag <tag>", "Exact tag metadata filter")
     .option("--origin <origin>", "Exact origin filter: local or remote")
-    .action(async (ids: string[], options: DrainOptions) => {
-      await runDrainCommand(ids, options);
+    .action(async (selectors: string[], options: DrainOptions) => {
+      await runDrainCommand(selectors, options);
     });
 }
 
-async function runDrainCommand(ids: string[], options: DrainOptions): Promise<void> {
+async function runDrainCommand(selectors: string[], options: DrainOptions): Promise<void> {
   const format = parseFormat(options.format);
-  validateDrainOptions(ids, options, format);
+  validateDrainOptions(selectors, options, format);
   const hasFilters = hasFilterOptions(options);
 
   const config = await loadConfig();
@@ -80,9 +81,9 @@ async function runDrainCommand(ids: string[], options: DrainOptions): Promise<vo
     renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
-  const conversations = await resolveDrainConversations(ids, options, config);
+  const conversations = await resolveDrainConversations(selectors, options, config);
   if (conversations.length === 0) {
-    if (ids.length > 0 && hasFilters) {
+    if (selectors.length > 0 && hasFilters) {
       throw new ClogError(
         "No conversations match the requested export. The supplied ID(s) and filter(s) did not overlap.",
       );
@@ -124,7 +125,7 @@ async function runDrainCommand(ids: string[], options: DrainOptions): Promise<vo
 }
 
 function validateDrainOptions(
-  ids: string[],
+  selectors: string[],
   options: DrainOptions,
   format: DrainFormat,
 ): void {
@@ -140,7 +141,7 @@ function validateDrainOptions(
     throw new UsageError("--force requires --to <path> or --to-dir <dir>.");
   }
 
-  if (!options.to && !options.toDir && ids.length === 0 && !hasFilterOptions(options)) {
+  if (!options.to && !options.toDir && selectors.length === 0 && !hasFilterOptions(options)) {
     throw new UsageError("clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.");
   }
 
@@ -160,12 +161,12 @@ function validateDrainOptions(
 }
 
 async function resolveDrainConversations(
-  ids: string[],
+  selectors: string[],
   options: DrainOptions,
   config: Config,
 ): Promise<ConversationMeta[]> {
   const hasFilters = hasFilterOptions(options);
-  const defaultScope = ids.length === 0 && !hasFilters;
+  const defaultScope = selectors.length === 0 && !hasFilters;
   const stateFilter = options.state as ConversationState | undefined;
   const states: ConversationState[] | undefined = stateFilter
     ? [stateFilter]
@@ -187,8 +188,13 @@ async function resolveDrainConversations(
       })
     : null;
 
-  const explicitConversations = ids.length > 0
-    ? await resolveExplicitIds(ids, filteredConversations ?? undefined)
+  const explicitConversations = selectors.length > 0
+    ? resolveConversationSelectors({
+        commandName: "clog drain",
+        tokens: selectors,
+        idCandidates: filteredConversations ?? (await listConversations()),
+        projectCandidates: filteredConversations ?? (await listConversations()),
+      })
     : null;
 
   let conversations: ConversationMeta[];
@@ -199,75 +205,6 @@ async function resolveDrainConversations(
   }
 
   return dedupeAndSortConversations(conversations);
-}
-
-async function resolveExplicitIds(
-  ids: string[],
-  candidates?: ConversationMeta[],
-): Promise<ConversationMeta[]> {
-  const conversations: ConversationMeta[] = [];
-
-  for (const inputId of ids) {
-    if (candidates) {
-      const matches = candidates?.filter((conversation) => matchesConversationId(conversation, inputId)) ?? [];
-      if (matches.length === 0) {
-        throw new ClogError(
-          `No conversation matches "${inputId}". Run 'clog list' or 'clog status' to find available IDs.`,
-        );
-      }
-      if (matches.length > 1) {
-        const rendered = matches
-          .map((conversation) => `${conversation.id}@${conversation.source}`)
-          .join("\n");
-        throw new UsageError(
-          `Conversation ID "${inputId}" is ambiguous. Matches:\n${rendered}`,
-        );
-      }
-      conversations.push(matches[0]);
-      continue;
-    }
-
-    let resolvedId: string;
-    try {
-      resolvedId = (await resolveConversationId(inputId)).id;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      if (message.startsWith("No conversation matches ")) {
-        throw new ClogError(
-          `No conversation matches "${inputId}". Run 'clog list' or 'clog status' to find available IDs.`,
-        );
-      }
-
-      throw new UsageError(message);
-    }
-
-    const conversation = await getConversationById(resolvedId);
-    if (!conversation) {
-      throw new UsageError(`Conversation "${inputId}" not found.`);
-    }
-
-    conversations.push(conversation);
-  }
-
-  return conversations;
-}
-
-function matchesConversationId(conversation: ConversationMeta, inputId: string): boolean {
-  const trimmed = inputId.trim();
-  const [rawPrefix, rawSource] = trimmed.split("@", 2);
-  const prefix = rawPrefix.toLowerCase();
-  const source = rawSource?.toLowerCase();
-
-  if (prefix.length < 4) {
-    throw new UsageError(`Conversation IDs must use at least 4 characters, got "${inputId}".`);
-  }
-
-  if (source && conversation.source.toLowerCase() !== source) {
-    return false;
-  }
-
-  return conversation.id.toLowerCase().startsWith(prefix);
 }
 
 async function drainToStdout(

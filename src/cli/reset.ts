@@ -1,18 +1,26 @@
 import { Command } from "commander";
 
-import { updateConversation } from "../db/index.js";
+import { listConversations, updateConversation } from "../db/index.js";
 import {
   assertNoneRemote,
   removeRawCopyIfPresent,
-  resolveManyConversationsOrFail,
 } from "./common.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildResetCommand(): Command {
   return new Command("reset")
     .description("Unstage conversations back to discovered")
-    .argument("<ids...>")
-    .action(async (ids: string[]) => {
-      const conversations = await resolveManyConversationsOrFail(ids);
+    .argument("<selectors...>")
+    .action(async (selectors: string[]) => {
+      const conversations = resolveConversationSelectors({
+        commandName: "clog reset",
+        tokens: selectors,
+        idCandidates: await listConversations(),
+        projectCandidates: await listConversations({
+          states: ["staged"],
+          origin: "local",
+        }),
+      });
       assertNoneRemote(conversations, "clog reset");
 
       for (const conversation of conversations) {

@@ -13,18 +13,23 @@ import {
   isPublishedReadyForRepublish,
   parseConversationMessages,
   parseConversationMessagesFromPath,
-  resolveManyConversationsOrFail,
 } from "./common.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildPublishCommand(): Command {
   return new Command("publish")
     .description("Publish conversations")
-    .argument("[ids...]")
-    .action(async (ids: string[]) => {
+    .argument("[selectors...]")
+    .action(async (selectors: string[]) => {
       const config = await loadConfig();
       const conversations =
-        ids.length > 0
-          ? await resolveManyConversationsOrFail(ids)
+        selectors.length > 0
+          ? resolveConversationSelectors({
+              commandName: "clog publish",
+              tokens: selectors,
+              idCandidates: await listConversations(),
+              projectCandidates: await collectProjectPublishTargets(),
+            })
           : await collectBarePublishTargets();
 
       if (conversations.length === 0) {
@@ -37,7 +42,12 @@ export function buildPublishCommand(): Command {
       const publishedConversations: ConversationMeta[] = [];
 
       for (const conversation of conversations) {
-        if (ids.length > 0 && conversation.state !== "discovered" && conversation.state !== "staged" && conversation.state !== "published") {
+        if (
+          selectors.length > 0 &&
+          conversation.state !== "discovered" &&
+          conversation.state !== "staged" &&
+          conversation.state !== "published"
+        ) {
           throw new Error(`Conversation ${conversation.id} is not publishable.`);
         }
 
@@ -112,4 +122,9 @@ async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
     }
   }
   return [...staged, ...readyPublished];
+}
+
+async function collectProjectPublishTargets(): Promise<ConversationMeta[]> {
+  const discovered = await listConversations({ states: ["discovered"], origin: "local" });
+  return [...discovered, ...(await collectBarePublishTargets())];
 }

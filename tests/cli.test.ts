@@ -35,6 +35,7 @@ const visibilityModule = await import("../src/sync/visibility.js");
 const mockedCheckVisibility = vi.mocked(visibilityModule.checkVisibility);
 
 import { buildConfigCommand } from "../src/cli/config.js";
+import { buildAddCommand } from "../src/cli/add.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
@@ -942,6 +943,137 @@ describe("cli", () => {
       expect(reloaded?.publishVersion).toBe(2);
       expect(reloaded?.publishedAt).not.toBe("2026-02-01T10:00:00.000Z");
       expect(reloaded?.modifiedAt).toBe(reloaded?.publishedAt);
+    });
+  });
+
+  describe("project-aware selectors", () => {
+    it("stages discovered conversations by bare project name", async () => {
+      const firstId = "71111111-1111-1111-1111-111111111111";
+      const secondId = "72222222-2222-2222-2222-222222222222";
+      const firstSource = path.join(sourceDir, `${firstId}.jsonl`);
+      const secondSource = path.join(sourceDir, `${secondId}.jsonl`);
+      await writeMinimalClaudeJsonl(firstSource, "API one");
+      await writeMinimalClaudeJsonl(secondSource, "API two");
+
+      await seedConversation(firstId, {
+        sourcePath: firstSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(secondId, {
+        sourcePath: secondSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation("73333333-3333-3333-3333-333333333333", {
+        projectName: "webapp",
+      });
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+
+      expect(stdout).toContain("Added 2 conversations");
+      expect((await getConversationById(firstId))?.state).toBe("staged");
+      expect((await getConversationById(secondId))?.state).toBe("staged");
+      expect((await getConversationById("73333333-3333-3333-3333-333333333333"))?.state).toBe(
+        "discovered",
+      );
+    });
+
+    it("reports ambiguity when a bare selector matches both an id prefix and a project", async () => {
+      const sourcePath = path.join(sourceDir, "webapp0000-1111-1111-1111-111111111111.jsonl");
+      await writeMinimalClaudeJsonl(sourcePath, "Collision");
+
+      await seedConversation("webapp0000-1111-1111-1111-111111111111", {
+        sourcePath,
+        projectName: "other-project",
+      });
+      await seedConversation("74444444-4444-4444-4444-444444444444", {
+        sourcePath: path.join(sourceDir, "74444444-4444-4444-4444-444444444444.jsonl"),
+        projectName: "webapp",
+        projectPath: "/Users/testuser/projects/webapp",
+      });
+
+      await expect(runBuiltCommand(buildAddCommand, ["webapp"])).rejects.toThrow(/ambiguous/i);
+    });
+
+    it("resets staged conversations by project selector", async () => {
+      const first = await seedStagedConversation("75555555-5555-5555-5555-555555555555", {
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      const second = await seedStagedConversation("76666666-6666-6666-6666-666666666666", {
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildResetCommand, ["api-service"]);
+
+      expect((await getConversationById(first.id))?.state).toBe("discovered");
+      expect((await getConversationById(second.id))?.state).toBe("discovered");
+    });
+
+    it("publishes and unpublishes by project selector", async () => {
+      const firstId = "77777777-7777-7777-7777-777777777771";
+      const secondId = "77777777-7777-7777-7777-777777777772";
+      const firstSource = path.join(sourceDir, `${firstId}.jsonl`);
+      const secondSource = path.join(sourceDir, `${secondId}.jsonl`);
+      await writeMinimalClaudeJsonl(firstSource, "Publish one");
+      await writeMinimalClaudeJsonl(secondSource, "Publish two");
+
+      await seedConversation(firstId, {
+        sourcePath: firstSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(secondId, {
+        sourcePath: secondSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildPublishCommand, ["project:api-service"]);
+      expect((await getConversationById(firstId))?.state).toBe("published");
+      expect((await getConversationById(secondId))?.state).toBe("published");
+
+      await runBuiltCommand(buildUnpublishCommand, ["api-service"]);
+      expect((await getConversationById(firstId))?.state).toBe("staged");
+      expect((await getConversationById(secondId))?.state).toBe("staged");
+    });
+
+    it("resolves drain project selectors against the filtered candidate set", async () => {
+      const aliceId = "78888888-8888-8888-8888-888888888888";
+      const bobId = "79999999-9999-9999-9999-999999999999";
+      const aliceRaw = getRawConversationPath("claude-code", aliceId);
+      const bobRaw = getRawConversationPath("claude-code", bobId);
+      await writeMinimalClaudeJsonl(aliceRaw, "Alice API");
+      await writeMinimalClaudeJsonl(bobRaw, "Bob API");
+
+      await seedConversation(aliceId, {
+        state: "staged",
+        filePath: aliceRaw,
+        author: "alice",
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(bobId, {
+        state: "staged",
+        filePath: bobRaw,
+        author: "bob",
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, ["api-service", "--author", "alice"]);
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.id).toBe(aliceId);
+    });
+
+    it("rejects project selectors on singular commands", async () => {
+      await expect(runBuiltCommand(buildShowCommand, ["project:api-service"])).rejects.toThrow(
+        /only accepts conversation IDs/i,
+      );
     });
   });
 

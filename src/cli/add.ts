@@ -1,7 +1,8 @@
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { deleteConversation, updateConversation } from "../db/index.js";
+import { deleteConversation, listConversations, updateConversation } from "../db/index.js";
+import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { ClogError } from "../utils/errors.js";
 import { nowIso } from "../utils/time.js";
@@ -11,49 +12,64 @@ import {
   getScanWarningsForCommand,
   pathExists,
   renderWarnings,
-  resolveManyConversationsOrFail,
 } from "./common.js";
 import { scanLocalSources } from "./scan.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildAddCommand(): Command {
   return new Command("add")
     .description("Stage or refresh conversations")
-    .argument("[ids...]", "Conversation IDs")
+    .argument("[selectors...]", "Conversation IDs or project selectors")
     .option("--all")
-    .option("--project <name>")
-    .action(async (ids: string[], options) => {
+    .action(async (selectors: string[], options) => {
       const config = await loadConfig();
 
-      let conversations: Awaited<ReturnType<typeof resolveManyConversationsOrFail>> = [];
+      let conversations: ConversationMeta[] = [];
+      let scanRan = false;
 
-      if (ids.length > 0) {
+      if (selectors.length > 0) {
         try {
-          conversations = await resolveManyConversationsOrFail(ids);
-        } catch {
+          conversations = resolveConversationSelectors({
+            commandName: "clog add",
+            tokens: selectors,
+            idCandidates: await listConversations(),
+            projectCandidates: await listConversations({
+              states: ["discovered"],
+              origin: "local",
+            }),
+          });
+        } catch (error) {
+          if (
+            !(error instanceof ClogError) ||
+            !error.message.startsWith("No conversation") &&
+              !error.message.startsWith("No project")
+          ) {
+            throw error;
+          }
+
           const scanResult = await scanLocalSources(config);
           renderWarnings(getScanWarningsForCommand(scanResult));
-          try {
-            conversations = await resolveManyConversationsOrFail(ids);
-          } catch (err) {
-            if (err instanceof ClogError && err.message.startsWith("No conversation matches")) {
-              throw new ClogError(
-                `${err.message}\nhint: pass a conversation ID prefix (4+ chars), or --project <name> to stage a whole project`,
-              );
-            }
-            throw err;
-          }
+          scanRan = true;
+          conversations = resolveConversationSelectors({
+            commandName: "clog add",
+            tokens: selectors,
+            idCandidates: await listConversations(),
+            projectCandidates: await listConversations({
+              states: ["discovered"],
+              origin: "local",
+            }),
+          });
         }
       }
 
-      if (options.all || options.project) {
+      if (options.all) {
         const scanResult = await scanLocalSources(config);
         renderWarnings(getScanWarningsForCommand(scanResult));
-        conversations = await import("../db/index.js").then(({ listConversations }) =>
-          listConversations({
-            states: ["discovered"],
-            projectName: options.project,
-          }),
-        );
+        scanRan = true;
+        conversations = await listConversations({
+          states: ["discovered"],
+          origin: "local",
+        });
       }
 
       if (conversations.length === 0) {
@@ -63,7 +79,7 @@ export function buildAddCommand(): Command {
 
       let changed = 0;
       const warnings: ClogWarning[] = [];
-      const isScanDrivenSelection = Boolean(options.all || options.project);
+      const isScanDrivenSelection = Boolean(options.all || scanRan);
 
       for (const conversation of conversations) {
         if (!(await pathExists(conversation.sourcePath))) {

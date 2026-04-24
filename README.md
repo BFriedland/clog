@@ -6,7 +6,7 @@
 
 Turn your AI coding agent conversations into a searchable, shareable knowledge base.
 
-clog scans your machine for Claude Code and Codex CLI conversations, lets you curate the good ones, and publishes them to a local library that your coding agents can access via MCP. Add semantic search if you want it, or share with your team through any git remote.
+With clog, you can build a library from your Claude Code and Codex CLI conversations and make it available to your team and your agents. Use titles, summaries, and tags to curate it, then explore it through MCP tools, semantic search, or git-based sharing.
 
 ## Install
 
@@ -24,16 +24,11 @@ clog status
 # Add source keys when multiple backends are in play
 clog status --source
 
-# Stage the interesting ones
-clog add a1b2c3
-clog add --all
+# Publish a project straight to your local library
+clog publish myapp
 
-# Give them useful titles and tags
-clog edit a1b2c3 --title "Debug JWT refresh race condition"
-clog tag a1b2c3 auth debugging
-
-# Publish to your local library
-clog publish
+# Or publish one conversation by short ID
+clog publish a1b2c3
 
 # Browse and inspect
 clog list
@@ -45,7 +40,7 @@ clog sync push
 
 ## Commands
 
-All IDs accept short prefixes of at least 4 characters, like git. They also accept source-qualified forms, like `a1b2@claude-code` or `f9e8@codex-cli`.
+Many clog commands work with either a project name or a conversation ID. Conversations can also be referenced by a short ID prefix of at least 4 characters, like git.
 
 ### Discovery & Curation
 
@@ -53,8 +48,8 @@ All IDs accept short prefixes of at least 4 characters, like git. They also acce
 |---------|-------------|
 | `clog status` | Scan sources and show discovered, staged, and modified published conversations (`--source`) |
 | `clog list [filters]` | List conversations — staged + published by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
-| `clog add <id...>` | Stage or refresh conversations (`--all`, `--project <name>`) |
-| `clog reset <id...>` | Move staged conversations back to discovered |
+| `clog add [selector...]` | Stage conversations from a project or by ID (`--all`) |
+| `clog reset <selector...>` | Move staged conversations back to discovered |
 | `clog edit <id>` | Edit metadata (`--title`, `--summary`, `--author`) |
 | `clog tag <id> <tags...>` | Add tags |
 | `clog untag <id> <tags...>` | Remove tags |
@@ -66,11 +61,12 @@ All IDs accept short prefixes of at least 4 characters, like git. They also acce
 
 | Command | What it does |
 |---------|-------------|
-| `clog publish [id...]` | Publish all staged conversations, or explicitly publish specific local conversations |
-| `clog unpublish <id...>` | Move published conversations back to staged |
+| `clog publish [selector...]` | Publish staged conversations, or publish a project directly |
+| `clog unpublish <selector...>` | Move published conversations back to staged |
 | `clog diff [id...]` | Show new messages since last publish (`--staged`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
+| `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`) |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 ### Semantic Search

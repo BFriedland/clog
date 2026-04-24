@@ -1,15 +1,24 @@
 import { Command } from "commander";
 
-import { updateConversation } from "../db/index.js";
+import { listConversations, updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
-import { assertNoneRemote, resolveManyConversationsOrFail } from "./common.js";
+import { assertNoneRemote } from "./common.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildUnpublishCommand(): Command {
   return new Command("unpublish")
     .description("Move published conversations back to staged")
-    .argument("<ids...>")
-    .action(async (ids: string[]) => {
-      const conversations = await resolveManyConversationsOrFail(ids);
+    .argument("<selectors...>")
+    .action(async (selectors: string[]) => {
+      const conversations = resolveConversationSelectors({
+        commandName: "clog unpublish",
+        tokens: selectors,
+        idCandidates: await listConversations(),
+        projectCandidates: await listConversations({
+          states: ["published"],
+          origin: "local",
+        }),
+      });
       assertNoneRemote(conversations, "clog unpublish");
 
       for (const conversation of conversations) {
