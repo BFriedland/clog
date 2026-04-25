@@ -5,6 +5,7 @@ import {
   assertNoneRemote,
   removeRawCopyIfPresent,
 } from "./common.js";
+import { collectProjectResetTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildResetCommand(): Command {
@@ -16,10 +17,7 @@ export function buildResetCommand(): Command {
         commandName: "clog reset",
         tokens: selectors,
         idCandidates: await listConversations(),
-        projectCandidates: await listConversations({
-          states: ["staged"],
-          origin: "local",
-        }),
+        projectCandidates: await collectProjectResetTargets(),
       });
       assertNoneRemote(conversations, "clog reset");
 

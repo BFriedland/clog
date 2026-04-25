@@ -15,6 +15,7 @@ import {
   renderWarnings,
   resolveContentPath,
 } from "./common.js";
+import { collectProjectDrainTargets } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
@@ -193,7 +194,7 @@ async function resolveDrainConversations(
         commandName: "clog drain",
         tokens: selectors,
         idCandidates: filteredConversations ?? (await listConversations()),
-        projectCandidates: filteredConversations ?? (await listConversations()),
+        projectCandidates: await collectProjectDrainTargets(filteredConversations),
       })
     : null;
 

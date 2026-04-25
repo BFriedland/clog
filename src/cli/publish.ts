@@ -10,10 +10,10 @@ import {
   defaultPublishFilePath,
   ensureRawCopy,
   getPublishCandidate,
-  isPublishedReadyForRepublish,
   parseConversationMessages,
   parseConversationMessagesFromPath,
 } from "./common.js";
+import { collectBarePublishTargets, collectProjectPublishTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildPublishCommand(): Command {
@@ -110,21 +110,4 @@ function resolveFilePathOrFallback(
   fallback: string,
 ): string {
   return conversation.filePath ?? fallback;
-}
-
-async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
-  const staged = await listConversations({ states: ["staged"], origin: "local" });
-  const published = await listConversations({ states: ["published"], origin: "local" });
-  const readyPublished: ConversationMeta[] = [];
-  for (const conversation of published) {
-    if (await isPublishedReadyForRepublish(conversation)) {
-      readyPublished.push(conversation);
-    }
-  }
-  return [...staged, ...readyPublished];
-}
-
-async function collectProjectPublishTargets(): Promise<ConversationMeta[]> {
-  const discovered = await listConversations({ states: ["discovered"], origin: "local" });
-  return [...discovered, ...(await collectBarePublishTargets())];
 }

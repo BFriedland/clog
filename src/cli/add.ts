@@ -4,7 +4,6 @@ import { loadConfig } from "../config/index.js";
 import { deleteConversation, listConversations, updateConversation } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
-import { ClogError } from "../utils/errors.js";
 import { nowIso } from "../utils/time.js";
 import {
   ensureRawCopy,
@@ -13,6 +12,7 @@ import {
   pathExists,
   renderWarnings,
 } from "./common.js";
+import { collectProjectAddTargets } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
@@ -23,49 +23,21 @@ export function buildAddCommand(): Command {
     .option("--all")
     .action(async (selectors: string[], options) => {
       const config = await loadConfig();
+      const scanResult = await scanLocalSources(config);
+      renderWarnings(getScanWarningsForCommand(scanResult));
 
       let conversations: ConversationMeta[] = [];
-      let scanRan = false;
 
       if (selectors.length > 0) {
-        try {
-          conversations = resolveConversationSelectors({
-            commandName: "clog add",
-            tokens: selectors,
-            idCandidates: await listConversations(),
-            projectCandidates: await listConversations({
-              states: ["discovered"],
-              origin: "local",
-            }),
-          });
-        } catch (error) {
-          if (
-            !(error instanceof ClogError) ||
-            !error.message.startsWith("No conversation") &&
-              !error.message.startsWith("No project")
-          ) {
-            throw error;
-          }
-
-          const scanResult = await scanLocalSources(config);
-          renderWarnings(getScanWarningsForCommand(scanResult));
-          scanRan = true;
-          conversations = resolveConversationSelectors({
-            commandName: "clog add",
-            tokens: selectors,
-            idCandidates: await listConversations(),
-            projectCandidates: await listConversations({
-              states: ["discovered"],
-              origin: "local",
-            }),
-          });
-        }
+        conversations = resolveConversationSelectors({
+          commandName: "clog add",
+          tokens: selectors,
+          idCandidates: await listConversations(),
+          projectCandidates: await collectProjectAddTargets(),
+        });
       }
 
       if (options.all) {
-        const scanResult = await scanLocalSources(config);
-        renderWarnings(getScanWarningsForCommand(scanResult));
-        scanRan = true;
         conversations = await listConversations({
           states: ["discovered"],
           origin: "local",
@@ -79,7 +51,7 @@ export function buildAddCommand(): Command {
 
       let changed = 0;
       const warnings: ClogWarning[] = [];
-      const isScanDrivenSelection = Boolean(options.all || scanRan);
+      const isScanDrivenSelection = true;
 
       for (const conversation of conversations) {
         if (!(await pathExists(conversation.sourcePath))) {

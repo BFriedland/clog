@@ -46,7 +46,7 @@ describe("workflow", () => {
 
   it("progresses through add → edit → tag → publish (SPEC §5.2)", async () => {
     const convId = "aaaaaaaa-1111-2222-3333-444444444444";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Help me debug this");
 
     await insertConversation(makeDiscoveredConversation({ sourcePath }));
@@ -76,7 +76,7 @@ describe("workflow", () => {
 
   it("add copies the source file into ~/.clog/raw/<source>/<id>.jsonl (SPEC §5.5)", async () => {
     const convId = "bbbbbbbb-2222-3333-4444-555555555555";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Copy me");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -157,7 +157,7 @@ describe("workflow", () => {
 
   it("publish increments publishVersion on republish (SPEC §5.6)", async () => {
     const convId = "eeeeeeee-5555-6666-7777-888888888888";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "v1");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -178,7 +178,7 @@ describe("workflow", () => {
 
   it("add refreshes a published raw copy while preserving state=published (SPEC §5.5)", async () => {
     const convId = "11111111-2222-3333-4444-555555555555";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -221,7 +221,7 @@ describe("workflow", () => {
 
   it("bare publish republishes a ready published conversation after clog add (SPEC §5.4)", async () => {
     const convId = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -253,7 +253,7 @@ describe("workflow", () => {
 
   it("status and bare publish agree on metadata-only republish readiness", async () => {
     const convId = "abababab-1234-5678-9abc-def012345678";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -284,7 +284,7 @@ describe("workflow", () => {
 
   it("add on an unchanged published raw copy is a content no-op (SPEC §5.5)", async () => {
     const convId = "22222222-3333-4444-5555-666666666666";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Unchanged");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -315,7 +315,7 @@ describe("workflow", () => {
 
   it("explicit publish <id> pushthrough on a modified published source (SPEC §5.6)", async () => {
     const convId = "33333333-4444-5555-6666-777777777777";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -491,7 +491,7 @@ function makeDiscoveredConversation(
 
 async function writeClaudeJsonl(filePath: string, userMessage: string): Promise<void> {
   await writeJsonl(filePath, [
-    userMessageLine(userMessage),
+    userMessageLine(userMessage, "2026-02-01T10:00:00.000Z", deriveClaudeCwd(filePath)),
     assistantTextLine("I can help with that", "msg_01"),
   ]);
 }
@@ -499,11 +499,13 @@ async function writeClaudeJsonl(filePath: string, userMessage: string): Promise<
 function userMessageLine(
   content: string,
   timestamp = "2026-02-01T10:00:00.000Z",
+  cwd = "/Users/testuser/projects/webapp",
 ): Record<string, unknown> {
   return {
     type: "user",
     message: { role: "user", content },
     timestamp,
+    cwd,
   };
 }
 
@@ -524,4 +526,12 @@ function assistantTextLine(
     },
     timestamp,
   };
+}
+
+function claudeDiscoveredSourcePath(root: string, projectName: string, id: string): string {
+  return path.join(root, projectName, `${id}.jsonl`);
+}
+
+function deriveClaudeCwd(filePath: string): string {
+  return `/Users/testuser/projects/${path.basename(path.dirname(filePath))}`;
 }

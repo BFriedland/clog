@@ -950,8 +950,8 @@ describe("cli", () => {
     it("stages discovered conversations by bare project name", async () => {
       const firstId = "71111111-1111-1111-1111-111111111111";
       const secondId = "72222222-2222-2222-2222-222222222222";
-      const firstSource = path.join(sourceDir, `${firstId}.jsonl`);
-      const secondSource = path.join(sourceDir, `${secondId}.jsonl`);
+      const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
+      const secondSource = claudeDiscoveredSourcePath(sourceDir, "api-service", secondId);
       await writeMinimalClaudeJsonl(firstSource, "API one");
       await writeMinimalClaudeJsonl(secondSource, "API two");
 
@@ -979,16 +979,90 @@ describe("cli", () => {
       );
     });
 
+    it("scans before resolving a project selector so newly discovered project conversations are included", async () => {
+      const existingId = "7bbbbbbb-1111-1111-1111-111111111111";
+      const newId = "7ccccccc-2222-2222-2222-222222222222";
+      const existingSource = claudeDiscoveredSourcePath(sourceDir, "api-service", existingId);
+      const newSource = claudeDiscoveredSourcePath(sourceDir, "api-service", newId);
+      await writeMinimalClaudeJsonl(existingSource, "Existing API");
+      await writeMinimalClaudeJsonl(newSource, "New API");
+
+      await seedConversation(existingId, {
+        sourcePath: existingSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+
+      expect(stdout).toContain("Added 2 conversations");
+      expect((await getConversationById(existingId))?.state).toBe("staged");
+      expect((await getConversationById(newId))?.state).toBe("staged");
+    });
+
+    it("refreshes published conversations by project selector", async () => {
+      const convId = "7aaaaaaa-1111-2222-3333-444444444444";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", convId);
+      await writeMinimalClaudeJsonl(sourcePath, "Initial prompt");
+
+      await seedConversation(convId, {
+        sourcePath,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildAddCommand, [convId]);
+      await runBuiltCommand(buildPublishCommand, [convId]);
+
+      const firstPublished = await getConversationById(convId);
+      expect(firstPublished?.state).toBe("published");
+      const firstModifiedAt = firstPublished?.modifiedAt;
+      const firstPublishedAt = firstPublished?.publishedAt;
+      const firstPublishVersion = firstPublished?.publishVersion;
+      const firstPublishedMessageCount = firstPublished?.publishedMessageCount;
+
+      await writeJsonl(sourcePath, [
+        userLine("Initial prompt"),
+        assistantLine("Response", "msg_01"),
+        userLine("Follow-up", "2026-02-01T10:05:00.000Z"),
+        assistantLine("Updated response", "msg_02", "2026-02-01T10:05:01.000Z"),
+      ]);
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+      expect(stdout).toContain("Added 1 conversation");
+
+      const refreshed = await getConversationById(convId);
+      expect(refreshed?.state).toBe("published");
+      expect(refreshed?.modifiedAt).not.toBe(firstModifiedAt);
+      expect(refreshed?.publishedAt).toBe(firstPublishedAt);
+      expect(refreshed?.publishVersion).toBe(firstPublishVersion);
+      expect(refreshed?.publishedMessageCount).toBe(firstPublishedMessageCount);
+
+      const rawContent = await fs.readFile(refreshed!.filePath!, "utf8");
+      const sourceContent = await fs.readFile(sourcePath, "utf8");
+      expect(rawContent).toBe(sourceContent);
+    });
+
     it("reports ambiguity when a bare selector matches both an id prefix and a project", async () => {
-      const sourcePath = path.join(sourceDir, "webapp0000-1111-1111-1111-111111111111.jsonl");
+      const sourcePath = claudeDiscoveredSourcePath(
+        sourceDir,
+        "other-project",
+        "webapp0000-1111-1111-1111-111111111111",
+      );
       await writeMinimalClaudeJsonl(sourcePath, "Collision");
 
       await seedConversation("webapp0000-1111-1111-1111-111111111111", {
         sourcePath,
         projectName: "other-project",
       });
+      const webappSource = claudeDiscoveredSourcePath(
+        sourceDir,
+        "webapp",
+        "74444444-4444-4444-4444-444444444444",
+      );
+      await writeMinimalClaudeJsonl(webappSource, "Project row");
       await seedConversation("74444444-4444-4444-4444-444444444444", {
-        sourcePath: path.join(sourceDir, "74444444-4444-4444-4444-444444444444.jsonl"),
+        sourcePath: webappSource,
         projectName: "webapp",
         projectPath: "/Users/testuser/projects/webapp",
       });
@@ -1015,8 +1089,8 @@ describe("cli", () => {
     it("publishes and unpublishes by project selector", async () => {
       const firstId = "77777777-7777-7777-7777-777777777771";
       const secondId = "77777777-7777-7777-7777-777777777772";
-      const firstSource = path.join(sourceDir, `${firstId}.jsonl`);
-      const secondSource = path.join(sourceDir, `${secondId}.jsonl`);
+      const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
+      const secondSource = claudeDiscoveredSourcePath(sourceDir, "api-service", secondId);
       await writeMinimalClaudeJsonl(firstSource, "Publish one");
       await writeMinimalClaudeJsonl(secondSource, "Publish two");
 
@@ -2158,7 +2232,7 @@ async function seedStagedConversationWithMessages(
 
 async function writeMinimalClaudeJsonl(filePath: string, userText: string): Promise<void> {
   await writeJsonl(filePath, [
-    userLine(userText),
+    userLine(userText, "2026-02-01T10:00:00.000Z", deriveClaudeCwd(filePath)),
     assistantLine("Response", "msg_01"),
   ]);
 }
@@ -2166,11 +2240,13 @@ async function writeMinimalClaudeJsonl(filePath: string, userText: string): Prom
 function userLine(
   content: string,
   timestamp = "2026-02-01T10:00:00.000Z",
+  cwd = "/Users/testuser/projects/webapp",
 ): Record<string, unknown> {
   return {
     type: "user",
     message: { role: "user", content },
     timestamp,
+    cwd,
   };
 }
 
@@ -2191,4 +2267,12 @@ function assistantLine(
     },
     timestamp,
   };
+}
+
+function claudeDiscoveredSourcePath(root: string, projectName: string, id: string): string {
+  return path.join(root, projectName, `${id}.jsonl`);
+}
+
+function deriveClaudeCwd(filePath: string): string {
+  return `/Users/testuser/projects/${path.basename(path.dirname(filePath))}`;
 }

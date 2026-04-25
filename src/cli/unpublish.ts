@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { listConversations, updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { assertNoneRemote } from "./common.js";
+import { collectProjectUnpublishTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildUnpublishCommand(): Command {
@@ -14,10 +15,7 @@ export function buildUnpublishCommand(): Command {
         commandName: "clog unpublish",
         tokens: selectors,
         idCandidates: await listConversations(),
-        projectCandidates: await listConversations({
-          states: ["published"],
-          origin: "local",
-        }),
+        projectCandidates: await collectProjectUnpublishTargets(),
       });
       assertNoneRemote(conversations, "clog unpublish");
 
