@@ -22,7 +22,7 @@ describe("scan", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("applies excluded, config, and clogignore filtering in order", async () => {
+  it("applies clogignore and config filtering in order", async () => {
     const claudeRoot = path.join(tempDir, "claude");
     const config = getDefaultConfig("alice");
     config.sources["claude-code"].paths = [claudeRoot];
@@ -33,13 +33,11 @@ describe("scan", () => {
 
     await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
     await fs.writeFile(
-      path.join(process.env.CLOG_HOME!, "excluded"),
-      "11111111-1111-1111-1111-111111111111@claude-code\n",
-      "utf8",
-    );
-    await fs.writeFile(
       path.join(process.env.CLOG_HOME!, "clogignore"),
-      "project:/Users/alice/work/ignored/*\n",
+      [
+        "11111111-1111-1111-1111-111111111111",
+        "/Users/alice/work/ignored/*",
+      ].join("\n"),
       "utf8",
     );
 
@@ -51,11 +49,55 @@ describe("scan", () => {
     const result = await scanLocalSources(config);
     const conversations = await listConversations();
 
-    expect(result.counts.excluded).toBe(1);
     expect(result.counts.filtered).toBe(1);
-    expect(result.counts.ignored).toBe(1);
+    expect(result.counts.ignored).toBe(2);
     expect(conversations).toHaveLength(1);
     expect(conversations[0]?.id).toBe("44444444-4444-4444-4444-444444444444");
+  });
+
+  it("treats ~/ path rules in clogignore as home-expanded project-path matches", async () => {
+    const claudeRoot = path.join(tempDir, "claude");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["codex-cli"].enabled = false;
+    await saveConfig(config);
+
+    const fakeHome = path.join(tempDir, "home", "alice");
+    const originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+
+    try {
+      await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+      await fs.writeFile(
+        path.join(process.env.CLOG_HOME!, "clogignore"),
+        "~/personal/\n",
+        "utf8",
+      );
+
+      await writeClaudeConversation(
+        claudeRoot,
+        "12121212-1212-1212-1212-121212121212",
+        path.join(fakeHome, "personal", "app"),
+      );
+      await writeClaudeConversation(
+        claudeRoot,
+        "13131313-1313-1313-1313-131313131313",
+        path.join(fakeHome, "work", "app"),
+      );
+
+      const result = await scanLocalSources(config);
+      const conversations = await listConversations();
+
+      expect(result.counts.ignored).toBe(1);
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0]?.id).toBe("13131313-1313-1313-1313-131313131313");
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
   });
 
   it("updates discovered metadata when source content grows", async () => {
@@ -342,7 +384,7 @@ describe("scan", () => {
     await expect(getConversationById(id)).resolves.toBeNull();
   });
 
-  it("treats excluded Codex conversations as excluded before undiscoverable", async () => {
+  it("treats clogignore ID rules as ignored before undiscoverable", async () => {
     const codexRoot = path.join(tempDir, ".codex");
     const config = getDefaultConfig("alice");
     config.sources["claude-code"].enabled = false;
@@ -352,8 +394,8 @@ describe("scan", () => {
     const id = "abab7777-7777-7777-7777-777777777777";
     await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
     await fs.writeFile(
-      path.join(process.env.CLOG_HOME!, "excluded"),
-      `${id}@codex-cli\n`,
+      path.join(process.env.CLOG_HOME!, "clogignore"),
+      `${id}\n`,
       "utf8",
     );
 
@@ -379,7 +421,7 @@ describe("scan", () => {
 
     const result = await scanLocalSources(config);
 
-    expect(result.counts.excluded).toBe(1);
+    expect(result.counts.ignored).toBe(1);
     expect(result.counts.undiscoverable).toBe(0);
     expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
       false,

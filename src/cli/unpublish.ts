@@ -9,14 +9,23 @@ import { resolveConversationSelectors } from "./selectors.js";
 export function buildUnpublishCommand(): Command {
   return new Command("unpublish")
     .description("Move published conversations back to staged")
-    .argument("<selectors...>")
+    .argument("[selectors...]")
     .action(async (selectors: string[]) => {
-      const conversations = resolveConversationSelectors({
-        commandName: "clog unpublish",
-        tokens: selectors,
-        idCandidates: await listConversations(),
-        projectCandidates: await collectProjectUnpublishTargets(),
-      });
+      const conversations =
+        selectors.length > 0
+          ? resolveConversationSelectors({
+              commandName: "clog unpublish",
+              tokens: selectors,
+              idCandidates: await listConversations(),
+              projectCandidates: await collectProjectUnpublishTargets(),
+            })
+          : await collectProjectUnpublishTargets();
+
+      if (conversations.length === 0) {
+        process.stdout.write("No published conversations to unpublish.\n");
+        return;
+      }
+
       assertNoneRemote(conversations, "clog unpublish");
 
       for (const conversation of conversations) {

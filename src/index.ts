@@ -15,6 +15,7 @@ import { buildPlungeCommand } from "./cli/plunge.js";
 import { preAction, runWithCliErrorHandling } from "./cli/prelude.js";
 import { buildPublishCommand } from "./cli/publish.js";
 import { buildRefreshCommand } from "./cli/refresh.js";
+import { buildRemoveCommand } from "./cli/remove.js";
 import { buildRemoteCommand } from "./cli/remote.js";
 import { buildRenameAuthorCommand } from "./cli/rename-author.js";
 import { buildResetCommand } from "./cli/reset.js";
@@ -72,6 +73,7 @@ async function main(): Promise<void> {
   program.addCommand(buildDrainCommand());
   program.addCommand(buildExcludeCommand());
   program.addCommand(buildUnexcludeCommand());
+  program.addCommand(buildRemoveCommand());
   program.addCommand(buildConfigCommand());
   program.addCommand(buildRenameAuthorCommand());
   program.addCommand(buildRemoteCommand());

@@ -56,7 +56,7 @@ import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("cli", () => {
@@ -1542,7 +1542,7 @@ describe("cli", () => {
       expect(stdout).toContain("Author-less local");
     });
 
-    it("--all rediscovers excluded conversations from the source adapter (SPEC §5.3)", async () => {
+    it("--all rediscovers ignored conversations from the source adapter (SPEC §5.3)", async () => {
       const convId = "bb000000-0000-0000-0000-000000000002";
       const sourcePath = path.join(sourceDir, "-Users-alice-proj", `${convId}.jsonl`);
       await writeJsonl(sourcePath, [
@@ -1550,15 +1550,15 @@ describe("cli", () => {
           type: "user",
           timestamp: "2026-02-01T10:00:00.000Z",
           cwd: "/Users/alice/proj",
-          message: { role: "user", content: "To be excluded" },
+          message: { role: "user", content: "To be ignored" },
         },
       ]);
 
-      await fs.writeFile(getExcludedPath(), `${convId}@claude-code\n`, "utf8");
+      await fs.writeFile(getClogIgnorePath(), `${convId}\n`, "utf8");
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
       expect(stdout).toContain(convId.slice(0, 7));
-      expect(stdout).toContain("excluded");
+      expect(stdout).toContain("ignored");
     });
 
     it("--all renders the display table including staged and published rows", async () => {

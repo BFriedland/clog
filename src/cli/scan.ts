@@ -14,8 +14,11 @@ import {
 import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { nowIso } from "../utils/time.js";
-import { matchesClogIgnoreRule, pathMatchesBoundary, readClogIgnoreRules } from "./clogignore.js";
-import { isExcluded, readExcludedEntries } from "./excluded.js";
+import {
+  conversationMatchesAnyClogIgnoreRule,
+  pathMatchesBoundary,
+  readClogIgnoreRules,
+} from "./clogignore.js";
 
 interface ScanCandidate {
   source: string;
@@ -35,7 +38,6 @@ export interface ScanResult {
     discovered: number;
     updated: number;
     pruned: number;
-    excluded: number;
     filtered: number;
     ignored: number;
     undiscoverable: number;
@@ -52,15 +54,12 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     discovered: 0,
     updated: 0,
     pruned: 0,
-    excluded: 0,
     filtered: 0,
     ignored: 0,
     undiscoverable: 0,
   };
 
-  const [{ entries: excludedEntries, warnings: excludedWarnings }, clogIgnoreRules] =
-    await Promise.all([readExcludedEntries(), readClogIgnoreRules()]);
-  warnings.push(...excludedWarnings);
+  const clogIgnoreRules = await readClogIgnoreRules();
 
   const adapters = getEnabledAdapters(config);
   const candidates: ScanCandidate[] = [];
@@ -75,9 +74,13 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     })) {
       encounteredKeys.add(`${adapter.name}:${discovered.sourceId}`);
 
-      const excluded = isExcluded(excludedEntries, discovered.sourceId, adapter.name);
-      if (excluded) {
-        counts.excluded += 1;
+      if (conversationMatchesAnyClogIgnoreRule({
+        sourceId: discovered.sourceId,
+        projectName: discovered.metadata.projectName,
+        projectPath: discovered.metadata.projectPath,
+        sourcePath: discovered.sourcePath,
+      }, clogIgnoreRules)) {
+        counts.ignored += 1;
         continue;
       }
 
@@ -92,18 +95,6 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
 
       if (!passesConfigPathFilters(adapter.name, config, discovered.metadata.projectPath)) {
         counts.filtered += 1;
-        continue;
-      }
-
-      if (
-        clogIgnoreRules.some((rule) =>
-          matchesClogIgnoreRule(rule, {
-            projectPath: discovered.metadata.projectPath ?? "",
-            createdAt: discovered.metadata.createdAt,
-          }),
-        )
-      ) {
-        counts.ignored += 1;
         continue;
       }
 

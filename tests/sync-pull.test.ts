@@ -161,7 +161,7 @@ describe("sync pull reconciliation", () => {
     expect(row).toHaveLength(1);
   });
 
-  it("skips pairs whose id@source is in the excluded file", async () => {
+  it("skips pairs whose id is ignored by clogignore", async () => {
     const id = "a7777777-7777-7777-7777-777777777777";
     await writeRemotePair("alice", "claude-code", id, {
       title: "Should be excluded",
@@ -169,8 +169,8 @@ describe("sync pull reconciliation", () => {
     });
 
     await fs.writeFile(
-      path.join(tempDir, "excluded"),
-      `${id}@claude-code\n`,
+      path.join(tempDir, "clogignore"),
+      `${id}\n`,
       "utf8",
     );
 

@@ -9,6 +9,7 @@ import { buildAddCommand } from "../src/cli/add.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildExcludeCommand } from "../src/cli/exclude.js";
 import { buildPublishCommand } from "../src/cli/publish.js";
+import { buildRemoveCommand } from "../src/cli/remove.js";
 import { buildResetCommand } from "../src/cli/reset.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
@@ -17,7 +18,7 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("workflow", () => {
@@ -343,7 +344,7 @@ describe("workflow", () => {
     expect(republished?.publishedAt).not.toBe(firstPublish?.publishedAt);
   });
 
-  it("exclude → unexclude round-trip updates the excluded file", async () => {
+  it("exclude → unexclude round-trip updates clogignore without removing current DB rows", async () => {
     const convId = "44444444-5555-6666-7777-888888888888";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Exclude me");
@@ -353,74 +354,92 @@ describe("workflow", () => {
     await runBuiltCommand(buildExcludeCommand, [convId]);
 
     const afterExclude = await getConversationById(convId);
-    expect(afterExclude).toBeNull();
+    expect(afterExclude).not.toBeNull();
 
-    const excludedContent = await fs.readFile(getExcludedPath(), "utf8");
-    expect(excludedContent).toContain(`${convId}@claude-code`);
+    const clogIgnoreContent = await fs.readFile(getClogIgnorePath(), "utf8");
+    expect(clogIgnoreContent).toContain(convId);
 
-    await runBuiltCommand(buildUnexcludeCommand, [`${convId}@claude-code`]);
+    await runBuiltCommand(buildUnexcludeCommand, [convId]);
 
-    const afterUnexclude = await fs.readFile(getExcludedPath(), "utf8");
+    const afterUnexclude = await fs.readFile(getClogIgnorePath(), "utf8");
     expect(afterUnexclude).not.toContain(convId);
   });
 
-  it("exclude fails when the excluded file has invalid lines (SPEC §5.10)", async () => {
-    const convId = "55555555-6666-7777-8888-999999999999";
+  it("exclude suggests rerunning remove with the same literal rule text", async () => {
+    const convId = "44444444-5555-6666-7777-999999999999";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Exclude fails on invalid");
+    await writeClaudeJsonl(sourcePath, "Exclude guidance");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    // Write an invalid line into the excluded file.
-    await fs.writeFile(getExcludedPath(), "not-a-valid-entry\n", "utf8");
+    const { stdout } = await runBuiltCommand(buildExcludeCommand, [convId]);
 
-    await expect(runBuiltCommand(buildExcludeCommand, [convId])).rejects.toThrow(
-      /Excluded file is invalid/,
-    );
-
-    // The conversation is NOT removed when the mutation fails.
-    const still = await getConversationById(convId);
-    expect(still).not.toBeNull();
+    expect(stdout).toContain("currently in clog's database match this rule");
+    expect(stdout).toContain(`Use 'clog remove ${convId}'`);
   });
 
-  it("unexclude reports ambiguity with copy-pasteable candidates (SPEC §5.10)", async () => {
-    // Two excluded entries that share a prefix.
-    const excludedContent = [
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-      "abcd2222-2222-2222-2222-222222222222@claude-code",
-    ].join("\n");
-    await fs.writeFile(getExcludedPath(), `${excludedContent}\n`, "utf8");
+  it("exclude rejects project selector syntax", async () => {
+    const convId = "55555555-6666-7777-8888-999999999999";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Exclude rejects project selector");
 
-    await expect(runBuiltCommand(buildUnexcludeCommand, ["abcd"])).rejects.toThrow(
-      /ambiguous/i,
+    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
+
+    await expect(runBuiltCommand(buildExcludeCommand, ["project:myapp"])).rejects.toThrow(
+      /does not accept project selectors/i,
     );
   });
 
-  it("exclude rejects a file that contains duplicate entries (SPEC §5.10)", async () => {
-    // Mutation commands (exclude/unexclude) fail without changing the file when any
-    // invalid or duplicate line is present. Blanks and comments are still tolerated.
-    const existing = [
-      "# existing exclusions",
-      "",
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-    ].join("\n");
-    await fs.writeFile(getExcludedPath(), `${existing}\n`, "utf8");
+  it("exclude rejects unsupported date-rule syntax", async () => {
+    await expect(runBuiltCommand(buildExcludeCommand, ["before:2025-06-01"])).rejects.toThrow(
+      /does not accept unsupported ignore-rule syntax/i,
+    );
+  });
 
+  it("remove rejects blank rules", async () => {
+    await expect(runBuiltCommand(buildRemoveCommand, [""])).rejects.toThrow(
+      /Ignore rules cannot be blank\./,
+    );
+  });
+
+  it("remove rejects unsupported date-rule syntax", async () => {
+    await expect(runBuiltCommand(buildRemoveCommand, ["after:2025-06-01"])).rejects.toThrow(
+      /does not accept unsupported ignore-rule syntax/i,
+    );
+  });
+
+  it("unexclude removes all exact matching lines", async () => {
+    const clogIgnoreContent = ["myapp", "other", "myapp"].join("\n");
+    await fs.writeFile(getClogIgnorePath(), `${clogIgnoreContent}\n`, "utf8");
+
+    await runBuiltCommand(buildUnexcludeCommand, ["myapp"]);
+
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).resolves.toBe("other\n");
+  });
+
+  it("unexclude leaves clogignore absent when no exact rule matches", async () => {
+    await fs.rm(getClogIgnorePath(), { force: true });
+
+    await runBuiltCommand(buildUnexcludeCommand, ["myapp"]);
+
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("remove deletes current DB rows without editing clogignore", async () => {
     const convId = "66666666-7777-8888-9999-aaaaaaaaaaaa";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Added to existing excluded file");
+    await writeClaudeJsonl(sourcePath, "Remove current match");
     await insertConversation(
       makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
     );
+    await fs.writeFile(getClogIgnorePath(), "myapp\n", "utf8");
 
-    await expect(runBuiltCommand(buildExcludeCommand, [convId])).rejects.toThrow(
-      /Excluded file is invalid/,
-    );
+    await runBuiltCommand(buildRemoveCommand, [convId]);
 
-    // The conversation is NOT removed when the mutation fails.
-    const still = await getConversationById(convId);
-    expect(still).not.toBeNull();
+    await expect(getConversationById(convId)).resolves.toBeNull();
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).resolves.toBe("myapp\n");
   });
 });
 

@@ -17,8 +17,11 @@ import {
 } from "./common.js";
 import type { Config } from "../config/schema.js";
 import { scanLocalSources } from "./scan.js";
-import { matchesClogIgnoreRule, readClogIgnoreRules, pathMatchesBoundary } from "./clogignore.js";
-import { isExcluded, readExcludedEntries } from "./excluded.js";
+import {
+  conversationMatchesAnyClogIgnoreRule,
+  pathMatchesBoundary,
+  readClogIgnoreRules,
+} from "./clogignore.js";
 import { ClogError } from "../utils/errors.js";
 
 export function buildListCommand(): Command {
@@ -96,7 +99,7 @@ export function buildListCommand(): Command {
           }
         }
       } else {
-        const excludedRows = await discoverExcludedDisplayRows(config, options);
+        const ignoredRows = await discoverIgnoredDisplayRows(config, options);
         const displayRows: DisplayRow[] = [
           ...conversations.map((conversation) => ({
             id: conversation.id,
@@ -107,7 +110,7 @@ export function buildListCommand(): Command {
             author: conversation.author,
             title: conversation.title,
           })),
-          ...excludedRows,
+          ...ignoredRows,
         ].sort(compareDisplayRows);
 
         renderDisplayTable(displayRows, {
@@ -132,7 +135,7 @@ export function buildListCommand(): Command {
   return command;
 }
 
-async function discoverExcludedDisplayRows(
+async function discoverIgnoredDisplayRows(
   config: Config,
   options: {
     state?: string;
@@ -155,19 +158,12 @@ async function discoverExcludedDisplayRows(
     return [];
   }
 
-  const [{ entries }, clogIgnoreRules] = await Promise.all([
-    readExcludedEntries(),
-    readClogIgnoreRules(),
-  ]);
+  const clogIgnoreRules = await readClogIgnoreRules();
 
   const rows: DisplayRow[] = [];
 
   for (const adapter of getEnabledAdapters(config)) {
     for await (const discovered of adapter.discover()) {
-      if (!isExcluded(entries, discovered.sourceId, adapter.name)) {
-        continue;
-      }
-
       if (!discovered.metadata.projectPath) {
         continue;
       }
@@ -176,14 +172,12 @@ async function discoverExcludedDisplayRows(
         continue;
       }
 
-      if (
-        clogIgnoreRules.some((rule) =>
-          matchesClogIgnoreRule(rule, {
-            projectPath: discovered.metadata.projectPath ?? "",
-            createdAt: discovered.metadata.createdAt,
-          }),
-        )
-      ) {
+      if (!conversationMatchesAnyClogIgnoreRule({
+        sourceId: discovered.sourceId,
+        projectName: discovered.metadata.projectName,
+        projectPath: discovered.metadata.projectPath,
+        sourcePath: discovered.sourcePath,
+      }, clogIgnoreRules)) {
         continue;
       }
 
@@ -210,7 +204,7 @@ async function discoverExcludedDisplayRows(
       rows.push({
         id: discovered.sourceId,
         createdAt: discovered.metadata.createdAt,
-        state: "excluded",
+        state: "ignored",
         source: adapter.name,
         projectName: discovered.metadata.projectName,
         author: null,

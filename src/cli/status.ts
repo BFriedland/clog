@@ -107,8 +107,8 @@ export function buildStatusCommand(): Command {
       }
 
       const { counts } = scanResult;
-      if (counts.excluded || counts.filtered || counts.ignored || counts.pruned || counts.undiscoverable) {
-        const parts = `${counts.excluded} excluded, ${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned`;
+      if (counts.filtered || counts.ignored || counts.pruned || counts.undiscoverable) {
+        const parts = `${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned`;
         const undiscoverableCount = counts.undiscoverable
           ? `, ${counts.undiscoverable} undiscoverable`
           : "";

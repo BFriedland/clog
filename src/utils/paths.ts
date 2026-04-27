@@ -38,10 +38,6 @@ export function getConfigPath(): string {
   return path.join(getClogHome(), "config.json");
 }
 
-export function getExcludedPath(): string {
-  return path.join(getClogHome(), "excluded");
-}
-
 export function getClogIgnorePath(): string {
   return path.join(getClogHome(), "clogignore");
 }

@@ -1,38 +1,63 @@
 import { Command } from "commander";
 
-import { deleteConversation } from "../db/index.js";
-import { tryDeleteConversationVectors } from "../search/coherence.js";
-import { removeRawCopyIfPresent, resolveManyConversationsOrFail } from "./common.js";
+import { listConversations } from "../db/index.js";
+import { ClogError, UsageError } from "../utils/errors.js";
+import { getClogIgnorePath } from "../utils/paths.js";
 import {
-  addExcludedEntry,
-  readExcludedEntriesForMutation,
-  writeExcludedEntries,
-} from "./excluded.js";
+  appendClogIgnoreRules,
+  conversationMatchesAnyClogIgnoreRule,
+  isRecognizedClogIgnoreRule,
+} from "./clogignore.js";
 
 export function buildExcludeCommand(): Command {
   return new Command("exclude")
-    .description("Delete conversations and block rediscovery")
-    .argument("<ids...>")
-    .action(async (ids: string[]) => {
-      const { entries } = await readExcludedEntriesForMutation();
+    .description("Append literal ignore rules to clogignore")
+    .argument("<rules...>")
+    .action(async (rules: string[]) => {
+      assertValidLiteralRules(rules);
+      await appendClogIgnoreRules(rules);
 
-      const conversations = await resolveManyConversationsOrFail(ids);
-
-      for (const conversation of conversations) {
-        await removeRawCopyIfPresent(conversation);
-        await deleteConversation(conversation.id);
-        const next = addExcludedEntry(entries, conversation.sourceId, conversation.source);
-        entries.splice(0, entries.length, ...next);
+      const clogIgnorePath = getClogIgnorePath();
+      for (const rule of rules) {
+        process.stdout.write(`Added ignore rule to ${clogIgnorePath}:\n  ${rule}\n`);
       }
 
-      const failures = await tryDeleteConversationVectors(conversations.map((conversation) => conversation.id));
-      for (const failedId of failures) {
-        process.stderr.write(
-          `warning: ${failedId.slice(0, 7)} was excluded but its search vectors could not be deleted\n`,
-        );
+      const conversations = await listConversations();
+      const matched = conversations.filter((conversation) =>
+        conversationMatchesAnyClogIgnoreRule(conversation, rules),
+      );
+
+      if (matched.length === 0) {
+        return;
       }
 
-      await writeExcludedEntries(entries);
-      process.stdout.write(`Excluded ${ids.length} conversation(s)\n`);
+      process.stdout.write(
+        `\n${matched.length} conversation${matched.length === 1 ? "" : "s"} currently in clog's database match ${
+          matched.length === 1 ? "this rule" : "these rules"
+        }.\n`,
+      );
+      process.stdout.write(
+        `Use 'clog remove ${rules.join(" ")}' to remove them from clog's database.\n`,
+      );
     });
+}
+
+function assertValidLiteralRules(rules: string[]): void {
+  for (const rule of rules) {
+    if (rule.trim().length === 0) {
+      throw new ClogError("Ignore rules cannot be blank.");
+    }
+
+    if (rule.startsWith("project:")) {
+      throw new UsageError(
+        `clog exclude does not accept project selectors like "${rule}". Pass a stored ignore-rule shape such as a simple name, filename, ID, or path instead.`,
+      );
+    }
+
+    if (!isRecognizedClogIgnoreRule(rule)) {
+      throw new UsageError(
+        `clog exclude does not accept unsupported ignore-rule syntax like "${rule}". Pass a simple name, filename, ID, or path instead.`,
+      );
+    }
+  }
 }

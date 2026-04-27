@@ -11,14 +11,23 @@ import { resolveConversationSelectors } from "./selectors.js";
 export function buildResetCommand(): Command {
   return new Command("reset")
     .description("Unstage conversations back to discovered")
-    .argument("<selectors...>")
+    .argument("[selectors...]")
     .action(async (selectors: string[]) => {
-      const conversations = resolveConversationSelectors({
-        commandName: "clog reset",
-        tokens: selectors,
-        idCandidates: await listConversations(),
-        projectCandidates: await collectProjectResetTargets(),
-      });
+      const conversations =
+        selectors.length > 0
+          ? resolveConversationSelectors({
+              commandName: "clog reset",
+              tokens: selectors,
+              idCandidates: await listConversations(),
+              projectCandidates: await collectProjectResetTargets(),
+            })
+          : await collectProjectResetTargets();
+
+      if (conversations.length === 0) {
+        process.stdout.write("No staged conversations to reset.\n");
+        return;
+      }
+
       assertNoneRemote(conversations, "clog reset");
 
       for (const conversation of conversations) {

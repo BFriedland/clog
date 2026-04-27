@@ -53,8 +53,9 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog edit <id>` | Edit metadata (`--title`, `--summary`, `--author`) |
 | `clog tag <id> <tags...>` | Add tags |
 | `clog untag <id> <tags...>` | Remove tags |
-| `clog exclude <id...>` | Delete tracked conversations from clog's DB and block rediscovery |
-| `clog unexclude <id...>` | Reverse an exclusion |
+| `clog exclude <rule...>` | Ignore projects or conversations via `~/.clog/clogignore` |
+| `clog unexclude <rule...>` | Remove exact rules from `~/.clog/clogignore` |
+| `clog remove <rule...>` | Remove currently matching conversations from clog's local DB |
 | `clog rename-author <old> <new>` | Rename an author across local conversations |
 
 ### Publishing & Inspection
@@ -166,7 +167,7 @@ clog sync push
 - `clog list` shows your conversations by default. `--all` includes teammates'; `--author bob` filters to one person.
 - Remote conversations are read-only — you can view but not edit them.
 - Unpublishing a synced conversation retracts it from the remote on next push.
-- `clog exclude` hides any local or remote conversations you don't want to see.
+- Use `clog exclude` to ignore projects or conversations, and `clog remove` if you also want to delete current local DB rows.
 - `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
 
 ## Config File
@@ -186,14 +187,17 @@ clog config set sources.claude-code.includePaths '["~/work/"]'
 clog config set sources.claude-code.excludePaths '["~/personal/"]'
 ```
 
-You can also create `~/.clog/clogignore` for pattern-based filtering:
+Use `~/.clog/clogignore` to keep projects or conversations out of clog:
 
 ```text
-# Skip personal projects
-project:~/personal/*
+# Ignore a project by name
+myapp
 
-# Skip old conversations
-before:2025-01-01
+# Ignore one conversation by filename
+12345678-1234-1234-1234-123456789abc.jsonl
+
+# Ignore by path
+~/personal/
 ```
 
 The `search` and `remote` config blocks are managed by `clog search --init` and `clog remote add`.

@@ -180,13 +180,15 @@ clog/
 │   │   ├── path.ts          # Print raw file path
 │   │   ├── drain.ts         # Export conversations as JSON, markdown, or raw source
 │   │   ├── list.ts          # List conversations with filters
-│   │   ├── exclude.ts       # Exclude conversations from discovery
-│   │   ├── unexclude.ts     # Reverse an exclusion
+│   │   ├── exclude.ts       # Append literal ignore rules to clogignore
+│   │   ├── unexclude.ts     # Remove exact ignore rules from clogignore
+│   │   ├── remove.ts        # Remove current DB rows that match ignore-rule syntax
 │   │   ├── tag.ts           # Add tags
 │   │   ├── untag.ts         # Remove tags
 │   │   ├── config.ts        # View/edit configuration
-│   │   ├── excluded.ts      # Excluded file read/write
 │   │   ├── clogignore.ts    # Pattern-based discovery filtering
+│   │   ├── selectors.ts     # Shared project-aware selector resolution
+│   │   ├── project-targets.ts # Per-command project batching policies
 │   │   ├── colors.ts        # State-based color helpers
 │   │   └── rename-author.ts # Bulk author rename across conversations
 │   ├── adapters/            # Source-specific conversation parsers
@@ -271,7 +273,7 @@ This is intentional. clog does not use a composite key for the built-in sources 
 
 **Source-native metadata:** clog preserves source-provided metadata such as summaries and slugs when a source exposes them in a trusted native field. Phase 1 does not synthesize summary or slug values during discovery for sources that do not provide them.
 
-**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the user-facing project label, usually the basename of `projectPath`. User-facing table columns, `--project <name>`, MCP filters, and remote metadata use `projectName` and label it "project." Path-based filters such as `includePaths`, `excludePaths`, and `clogignore` `project:` rules match against the full normalized `projectPath`.
+**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the user-facing project label, usually the basename of `projectPath`. User-facing table columns, `--project <name>`, MCP filters, and remote metadata use `projectName` and label it "project." Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
 
 ### 3.2 Message Format (On-Demand Parsing)
 
@@ -387,8 +389,7 @@ Phase 3 (§11.4) adds: `origin` column (migration version 3)
 ~/.clog/
 ├── clog.db                  # SQLite database — metadata only (~5MB at scale)
 ├── config.json              # User configuration
-├── excluded                 # Auto-managed list of source-qualified IDs (id@source)
-├── clogignore               # User-edited pattern rules for discovery filtering
+├── clogignore               # User-edited ignore rules for discovery/import filtering
 └── raw/                     # Source JSONL files (copied on add)
     ├── claude-code/
     │   ├── c7044ea5-c019-44d6-a77a-500036740f9a.jsonl
@@ -725,7 +726,7 @@ The empty Codex `summary` and `null` Codex `slug` values are intentional in Phas
 
 Discovery filtering operates on the detected `projectPath`, not the `~/.codex/sessions/...` storage path.
 
-If `projectPath` cannot be determined, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery, and including projectless conversations would make later filter changes change what private data had already entered the DB.
+If `projectPath` cannot be determined, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths`, `excludePaths`, or path-like `clogignore` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery, and including projectless conversations would make later filter changes change what private data had already entered the DB.
 
 For Codex title extraction, a canonical user message is wrapper-only when its trimmed extracted text consists entirely of one or more known context wrapper blocks and contains no other human prose. In Phase 1, the known wrapper block names are `environment_context` and `user_shell_command`. This allowlist is intentionally narrow because the exact set of Codex wrapper tags may evolve; unknown XML-like tags are not treated as wrapper-only automatically.
 
@@ -817,19 +818,19 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 
 ```
 clog init                  Initialize clog (runs automatically on first use)
-clog status [--source]     Show staged, modified, and discovered conversations + scan filter counts
+clog status [--source] [--undiscoverable]  Show staged, modified, and discovered conversations + scan filter counts
 clog list [filters]        List conversations (default: staged + published)
-clog add <id...>           Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
+clog add [selectors...]    Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
 clog add --all             Add all discovered conversations
-clog add --project X       Add all discovered conversations for a project
-clog reset <id...>         Unstage staged conversation(s) back to discovered
-clog exclude <id...>       Delete conversation(s) and permanently block re-discovery
-clog unexclude <id...>     Remove conversation(s) from the excluded list
+clog reset [selectors...]  Unstage staged conversation(s) back to discovered
+clog exclude <rule...>     Append literal ignore rules to ~/.clog/clogignore
+clog unexclude <rule...>   Remove exact ignore rules from ~/.clog/clogignore
+clog remove <rule...>      Remove current DB rows that match ignore-rule syntax
 clog edit <id> [flags]     Edit conversation metadata (--title, --summary, --author)
 clog tag <id> <tags...>    Add tags to a conversation
 clog untag <id> <tags...>  Remove tags from a conversation
-clog publish [id...]       Publish conversations to the knowledge base
-clog unpublish <id...>     Move published conversation(s) back to staged
+clog publish [selectors...] Publish conversations to the knowledge base
+clog unpublish [selectors...] Move published conversation(s) back to staged
 clog diff [id...]           Show new messages since last publish
 clog diff --staged [id...]  Show full content of staged conversations
 clog show <id>             Display a conversation's content and metadata
@@ -837,10 +838,10 @@ clog show <id> --path      Print the file path (raw copy if staged/published, so
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
-clog drain <id>            Export conversation data to stdout (JSON by default)
+clog drain <selector>      Export conversation data to stdout (JSON by default)
 clog drain [filters]       Export a filtered set to stdout
-clog drain <id> --to <path>  Export one conversation to a file
-clog drain --to-dir <dir>  Export one file per conversation to a directory
+clog drain <selector> --to <path>  Export one conversation to a file
+clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a directory
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog rename-author <old> <new>  Rename author across local conversations
@@ -860,6 +861,27 @@ clog refresh               Reconcile DB from git checkout without fetching
 ```
 
 All commands that accept `<id>` also accept short prefixes (minimum 4 characters). See Section 3.3 for details.
+
+### 5.1.1 Shared Selector Model
+
+`clog add`, `clog reset`, `clog publish`, `clog unpublish`, and selector-bearing `clog drain` share one project-aware selector model.
+
+For these commands, each positional token may resolve as either:
+
+- a conversation ID selector (`abcd1234`, `abcd1234@claude-code`)
+- a project selector (`api-service`, `project:api-service`)
+
+Resolution rules:
+
+- bare tokens first check both spaces: conversation IDs and project names
+- if a bare token matches both, the command fails with an ambiguity error and tells the user to disambiguate with either a fuller or source-qualified conversation ID, or `project:<name>`
+- `project:<name>` is the explicit project-selector escape hatch
+- final targets are deduplicated by canonical conversation ID
+
+Project selectors are a batching mechanism, not a separate command meaning. `clog <command> <project>` must behave like applying `clog <command> <id>` to each matching conversation in that project, using the same validation and state-transition rules as the per-conversation form.
+Mixed selectors are allowed, such as `clog add myapp abcd1234`.
+
+Singular commands such as `clog show`, `clog edit`, `clog tag`, `clog untag`, `clog path`, and `clog diff` remain conversation-only. On those commands, bare tokens are always conversation IDs and `project:<name>` is rejected explicitly.
 
 ### 5.2 Workflow
 
@@ -881,7 +903,7 @@ Untracked conversations:
     discovered:    d4e5f6a  2026-02-18  api-service Add rate limiting middleware
     discovered:    g7h8i9b  2026-02-17  frontend Fix SSR hydration mismatch
 
-(23 excluded, 8 filtered by config, 4 ignored by clogignore)
+(8 filtered by config, 4 ignored by clogignore)
 
 # 2. Review discovered conversations
 $ clog list --state discovered
@@ -941,7 +963,7 @@ Untracked conversations:
 
 ### 5.2.1 The `reset` Command
 
-`clog reset <id...>` is the inverse of `clog add`: it unstages staged conversations and moves them back to `discovered`.
+`clog reset [selectors...]` is the inverse of `clog add`: it unstages staged conversations and moves them back to `discovered`. With no selectors, it resets every local staged conversation.
 
 For each staged conversation, reset:
 
@@ -952,7 +974,7 @@ For each staged conversation, reset:
 
 `clog reset` does not operate on published conversations. If the user tries to reset a published conversation, clog refuses and suggests `clog unpublish <id>` first. To move a published conversation back to discovered, the explicit sequence is `clog unpublish <id>` followed by `clog reset <id>`.
 
-`clog reset` does not operate on remote conversations. Remote conversations are read-only; use `clog exclude <id>` to hide a remote conversation locally.
+`clog reset` does not operate on remote conversations. Remote conversations are read-only; use `clog exclude <rule>` to prevent future rediscovery or re-import, and `clog remove <rule>` if you also want the current local DB row removed.
 
 ### 5.3 The `list` Command
 
@@ -963,7 +985,7 @@ For each staged conversation, reset:
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `published`) |
-| `--all` | | Show all known conversations, plus excluded local source conversations that are still discoverable |
+| `--all` | | Show all known conversations, plus ignored local source conversations that are still discoverable |
 | `--project <name>` | `-p` | Filter by project |
 | `--author <name>` | `-a` | Filter by author |
 | `--tag <tag>` | `-t` | Filter by tag |
@@ -974,7 +996,7 @@ For each staged conversation, reset:
 # Filter by state
 $ clog list --state discovered
 
-# Show everything, including discovered rows and rediscovered excluded local sources
+# Show everything, including discovered rows and rediscovered ignored local sources
 $ clog list --all
 
 # Filter by project, author, tag, or text search
@@ -993,7 +1015,7 @@ $ clog list -c id,date,title
 
 Columns are dynamically sized to the terminal width. For every non-terminal column, width is computed from the current result set as `max(header width, widest rendered cell width) + 1`, producing dense output without large fixed-width gaps. The final visible column absorbs the remaining terminal width. When that final column is truncated, it must still allow at least `1` visible character plus `...` (minimum width `4`). The `author` column is auto-shown when multiple distinct authors are present, even without `--columns`. The `source` column is auto-shown when the selected result set contains conversations from multiple distinct sources. `--columns` still overrides the default column set.
 
-`clog list --all` is partly discovery-backed. It lists DB-backed conversations in any state, and it may also scan enabled local source paths to show excluded conversations that are still present on disk. These excluded rows are ephemeral display rows: they are not stored in the database, they are shown dimmed with state `excluded`, and they disappear from `list --all` if the source file is deleted, moved outside enabled scan scope, or belongs to a disabled source. Remote excluded conversations are not listed; remote exclusion blocks import.
+`clog list --all` is partly discovery-backed. It lists DB-backed conversations in any state, and it may also scan enabled local source paths to show ignored conversations that are still present on disk. These ignored rows are ephemeral display rows: they are not stored in the database, they are shown dimmed with state `ignored`, and they disappear from `list --all` if the source file is deleted, moved outside enabled scan scope, or belongs to a disabled source. Remote conversations are never synthesized into these ephemeral rows.
 
 Metadata filters on `clog list` are exact-match selectors, not fuzzy search. This keeps selection predictable and makes it clear that text discovery belongs to `--grep`, not to metadata filters. The `--help` output should describe `--project`, `--author`, and `--tag` as exact metadata filters so users do not expect substring matching.
 
@@ -1092,9 +1114,9 @@ Scanning is idempotent. Each scan will:
 - **Detect moved source files.** When a known conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `staged`/`published`, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
 - **Prune stale entries per source.** After discovery completes, remove `discovered`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Staged and published conversations are never pruned (they have their own copies in `~/.clog/raw/`). The scan reports a `pruned` count alongside other filter counts.
 
-**Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting. This includes `clog status`, `clog list`, `clog add --all`, `clog add --project`, and any other command path that refreshes the discovered corpus before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. The command exit code remains 0 unless the requested operation itself fails.
+**Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting. This includes `clog status`, `clog list`, `clog add --all`, selector-bearing `clog add`, and any other command path that refreshes the discovered corpus before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. The command exit code remains 0 unless the requested operation itself fails.
 
-Source discovery, excluded-file, and remote reconciliation warnings use a structured internal shape:
+Source discovery and remote reconciliation warnings use a structured internal shape:
 
 ```typescript
 type ClogWarningCode =
@@ -1104,8 +1126,6 @@ type ClogWarningCode =
   | "path_filter_without_project"
   | "unsupported_source"
   | "missing_source_file"
-  | "invalid_excluded_file"
-  | "duplicate_excluded_entry"
   | "remote_incomplete_pair"
   | "remote_invalid_metadata"
   | "remote_invalid_content";
@@ -1131,13 +1151,11 @@ interface ClogWarning {
 
 CLI output may group warnings by `code` to avoid pages of repeated text. MCP surfaces the same warnings in a top-level `warnings` array on tools that perform scanning or remote reconciliation; warnings are never injected into transcript text.
 
-This structured warning contract applies to source discovery, excluded-file, and remote reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
+This structured warning contract applies to source discovery and remote reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
 
-**Graceful handling of missing sources in scan-driven add flows.** `clog add --all` and `clog add --project ...` require a fresh scan because they operate on the current discovered corpus. If a source file is deleted between that scan and the copy step, clog prints a warning, deletes the stale discovered DB entry, and skips that conversation rather than crashing.
+**Graceful handling of missing sources in scan-driven add flows.** `clog add --all` and selector-bearing `clog add` require a fresh scan because they operate on the current discovered corpus. If a source file is deleted between that scan and the copy step, clog prints a warning, deletes the stale discovered DB entry, and skips that conversation rather than crashing.
 
-`clog add --project <name>` matches against `projectName`, using the same case-insensitive exact matching as `clog list --project`.
-
-**Targeted add behavior.** `clog add <id...>` does not require a fresh global scan when the specified conversations already exist in the database; it first tries to resolve IDs against the current DB. If any supplied ID is unknown, clog scans enabled local sources, then tries to resolve the ID again. This scan must not fail just because it found zero conversations; in that case the command reports the requested ID as not found. Malformed source files may warn and be skipped. If refreshed discovery makes the prefix ambiguous, the command fails with copy-pasteable disambiguation candidates. If a targeted conversation's stored `sourcePath` is missing, malformed, or otherwise unusable, that specific add fails clearly and suggests running `clog status` to refresh discovery.
+**Targeted add behavior.** `clog add` refreshes local discovery before resolving selectors. If a requested selector no longer matches anything after that refresh, the command fails as "no conversation or project matches." If a source file disappears after scan but before the copy step, clog warns, deletes the stale discovered row, and skips that conversation.
 
 `clog add` is the staging operation. For a discovered conversation, it copies the current source file to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, and changes `state` to `staged`. For an already staged local conversation, running `clog add <id>` again refreshes the staged raw copy from the current source file and leaves it staged.
 
@@ -1149,15 +1167,14 @@ For a published local conversation, `clog add <id>` refreshes the curated raw co
 
 **Performance:** Scan results are cached in the database. Subsequent scans skip unchanged files (matched by `source + sourceId`, checked via `source_mtime`), keeping scanning fast even with hundreds of conversations. The adapter's early-stop strategy (read only the first valid `cwd`, first user message, summary line, and other required metadata, then skip the rest) keeps initial scans fast too. If scanning latency becomes an issue at thousands of conversations, this is an optimization target — but the mtime-based caching should handle typical scale well.
 
-**Filtering personal conversations:** Developers use personal laptops and will have conversations unrelated to the company. Scanning respects three layers of filtering:
+**Filtering personal conversations:** Developers use personal laptops and will have conversations unrelated to the company. Scanning respects two explicit filter layers plus a fail-closed undiscoverable rule:
 
 - `config.json` `includePaths` / `excludePaths` for persistent directory-level filtering
 - `~/.clog/clogignore` for pattern-based rules (see Section 5.10)
-- `~/.clog/excluded` for individually excluded conversations (see Section 5.10)
 
 The config file supports `sources.<name>.includePaths` and `sources.<name>.excludePaths` for each built-in source. If `includePaths` is set, only conversations whose `projectPath` values match those directories by the path-boundary rule in §7.1 are discovered. If `excludePaths` is set, matching `projectPath` values are skipped. Both can be used together. This is the primary mechanism for keeping personal conversations out of the knowledge base.
 
-If a source cannot determine a conversation's `projectPath`, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths`, `excludePaths`, or `clogignore` `project:` rules are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery. The scan reports an `undiscoverable` count alongside the other filter counts. When the count is non-zero, `clog status` includes it in the dimmed filter summary line with a hint directing the user to `clog status --undiscoverable` for details.
+If a source cannot determine a conversation's `projectPath`, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning unless an earlier `clogignore` rule already suppressed it. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths` or `excludePaths` are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery. The scan reports an `undiscoverable` count alongside the other filter counts. When the count is non-zero, `clog status` includes it in the dimmed filter summary line with a hint directing the user to `clog status --undiscoverable` for details.
 
 ### 5.6 The `publish` Command
 
@@ -1175,13 +1192,19 @@ Publishing is a local operation in Phase 1. It:
 # Publish all staged
 $ clog publish
 
-# Publish specific conversations (works from any local state)
+# Publish specific conversations or project-scoped batches (works from any local state)
 $ clog publish a1b2c3 d4e5f6
+$ clog publish api-service
+$ clog publish project:api-service
 ```
 
 When called with no arguments, `clog publish` publishes all staged conversations. It does not implicitly publish modified published conversations; those require explicit IDs so republishing an existing knowledge-base entry is deliberate.
 
-When called with explicit IDs, `clog publish <id...>` can publish discovered, staged, or already published local conversations:
+When called with explicit selectors, `clog publish [selectors...]` can publish discovered, staged, or already published local conversations.
+
+Project selectors are only a batching mechanism here: `clog publish myapp` must behave like applying explicit `clog publish <id>` to each matching local conversation in project `myapp`, using the same per-conversation publish rules described below. This includes discovered, staged, and already published local rows when those rows are otherwise valid explicit publish targets.
+
+Per-conversation explicit publish behavior:
 
 - For a discovered conversation, explicit publish is a shortcut for `clog add <id>` followed by `clog publish <id>`: it verifies the source file exists, copies it to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, parses that raw copy, and publishes it.
 - For a staged conversation, explicit publish reads the staged raw copy at `file_path`; it does not refresh or overwrite that copy from `sourcePath`.
@@ -1199,12 +1222,18 @@ If a source file needed for the discovered-conversation shortcut is unavailable,
 `clog unpublish` moves published conversations back to the `staged` state. The raw file in `~/.clog/raw/` is preserved — the conversation is still tracked, just no longer visible to agents via the MCP server.
 
 ```bash
-# Unpublish specific conversations
+# Unpublish all published conversations
+$ clog unpublish
+
+# Unpublish specific conversations or project-scoped batches
 $ clog unpublish a1b2c3 d4e5f6
+$ clog unpublish api-service
 Unpublished 2 conversations (moved to staged)
 ```
 
 This is a local state change. Phase 3 (§11.7) extends this: unpublishing a previously-synced conversation propagates as a retraction on the next `sync push`.
+
+With no selectors, `clog unpublish` moves every local published conversation back to `staged`. With selectors, project selectors are again just batching: `clog unpublish myapp` behaves like applying `clog unpublish <id>` to each matching local published conversation in project `myapp`.
 
 Unpublish changes only curation state and search eligibility. It does not clear `published_at`, `published_message_count`, or `publish_version`; those fields remain the active last-publish checkpoint for display and later republish decisions. To remove that active publish checkpoint, reset the conversation after unpublishing it.
 
@@ -1241,7 +1270,7 @@ clog plunge --verbose
 
 Its purpose is to answer a narrow question: "is this clog install obviously broken or inconsistent?" It does not repair anything automatically. It does not compact storage. It does not attempt to audit every subsystem clog may ever gain.
 
-Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects an existing clog install. It must not auto-create `~/.clog`, `config.json`, `excluded`, `clogignore`, or any other clog-managed files as part of preflight initialization. If the clog home does not exist yet, the command exits with a short explanatory note instead of initializing state.
+Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects an existing clog install. It must not auto-create `~/.clog`, `config.json`, `clogignore`, or any other clog-managed files as part of preflight initialization. If the clog home does not exist yet, the command exits with a short explanatory note instead of initializing state.
 
 `clog plunge` audits a bounded subset of clog-managed local state only:
 
@@ -1249,7 +1278,6 @@ Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects 
 - basic DB row invariants that should never be violated
 - curated raw-file presence and parseability for local staged/published rows
 - publish checkpoint sanity for local published rows
-- `excluded`
 - `clogignore`
 - `config.json`
 
@@ -1277,12 +1305,11 @@ The command currently checks:
 10. reset-cleared curation fields on discovered rows
 11. required publish metadata on published rows
 12. parseable timestamps and `published_at <= modified_at`
-13. valid `excluded` entries
-14. excluded IDs not still present among local DB rows
-15. recognized `clogignore` grammar
-16. `config.json` parse/schema validity
-17. empty `config.author`
-18. configured source/include/exclude paths that do not exist
+13. readable `clogignore`
+14. supported `clogignore` rule syntax
+15. `config.json` parse/schema validity
+16. empty `config.author`
+17. configured source/include/exclude paths that do not exist
 
 Notes:
 
@@ -1294,9 +1321,8 @@ Human-readable output is grouped in stable subsystem order:
 1. Database
 2. Raw files
 3. Publish checkpoints
-4. Excluded file
-5. clogignore
-6. Config
+4. clogignore
+5. Config
 
 Conversation-scoped findings are rendered in a multi-line form:
 
@@ -1358,20 +1384,21 @@ format notes for `drain` live in
 Supported command shapes:
 
 ```text
-clog drain <id>                         Single conversation to stdout (JSON).
-clog drain <id> --format md             Single conversation to stdout (markdown).
-clog drain <id> --raw                   Single conversation raw JSONL to stdout.
-clog drain <id> --to <path>             Single conversation to a file.
+clog drain <selector>                   Single conversation or project-scoped export to stdout (JSON).
+clog drain <selector> --format md       Single conversation to stdout (markdown).
+clog drain <selector> --raw             Single conversation raw JSONL to stdout.
+clog drain <selector> --to <path>       Single conversation to a file.
+clog drain api-service --author alice   Project selector resolved within a filtered candidate set.
 clog drain [filters]                    JSON array to stdout.
 clog drain [filters] --refresh          Refresh local discovery, then export.
 clog drain --to-dir <dir>               Default curated export to a directory.
-clog drain <id...> --to-dir <dir>       Multiple conversations to a directory.
+clog drain <selectors...> --to-dir <dir> Multiple conversations to a directory.
 clog drain --to-dir <dir> [filters]     Filtered conversations to a directory.
 ```
 
 #### 5.7.3.1 Resolved Conversation Set
 
-`clog drain` first resolves a conversation set from explicit IDs and filter
+`clog drain` first resolves a conversation set from explicit selectors and filter
 flags.
 
 - By default, `clog drain` resolves against the current database state only.
@@ -1379,31 +1406,37 @@ flags.
   as `clog list` before resolving the conversation set. This refresh updates
   the local discovered corpus and emits the same aggregated scan warnings to
   stderr that other scan-driven commands use.
-- If IDs and filters are both present, `clog drain` first builds the
-  filtered candidate set, then resolves each explicit ID within that set.
+- If selectors and filters are both present, `clog drain` first builds the
+  filtered candidate set, then resolves each explicit selector within that set.
 - Filters are part of the user's selector. An invocation such as
   `clog drain abcd --author alice` is interpreted as "export Alice's
   `abcd` conversation," not "resolve `abcd` globally, then filter later."
+- Likewise, `clog drain api-service --author alice` is interpreted as
+  "export Alice's `api-service` conversations," not "resolve the project
+  globally, then filter later."
 - This means a globally ambiguous ID may resolve successfully if the
   filtered candidate set contains exactly one match.
 - If multiple filtered candidates still match an ID, `clog drain` returns
   the normal ambiguity error with copy-pasteable candidates.
 - If no filtered candidates match an ID, `clog drain` returns the normal
   no-match error for that ID.
-- After ID resolution and filter application, the resolved set is
+- Project selectors participate in the same filtered candidate set as
+  conversation IDs. They match project names using the shared selector model
+  from §5.1.1 and expand to the filtered conversations in that project.
+- After selector resolution and filter application, the resolved set is
   deduplicated by full conversation ID. Repeating the same ID, or mixing
-  source-qualified and unqualified forms that resolve to the same
-  conversation, does not produce duplicate exports.
-- If neither IDs nor filters is present, the default scope matches
+  source-qualified and unqualified forms, or mixing a project selector with
+  one of its member conversation IDs, does not produce duplicate exports.
+- If neither selectors nor filters is present, the default scope matches
   `clog list`'s curated-by-default view: local curated conversations plus
   same-author synced remote conversations.
-- If neither IDs nor filters is present and `config.author` is empty or
+- If neither selectors nor filters is present and `config.author` is empty or
   unset, the default scope is local curated conversations only.
 - Broader export requires explicit filters such as `--origin remote`,
   `--author`, or `--state`.
-- Bare `clog drain` with no IDs, no filters, no `--to`, and no
+- Bare `clog drain` with no selectors, no filters, no `--to`, and no
   `--to-dir` is a usage error. To export to stdout, the user must provide
-  at least one conversation ID or at least one filter flag.
+  at least one conversation selector or at least one filter flag.
 
 This preserves the two intended command shapes:
 
@@ -1412,8 +1445,8 @@ This preserves the two intended command shapes:
 - refreshed query-like export (`clog drain --state discovered --refresh`)
   first updates the local discovered corpus, then exports from that updated
   state
-- explicit export (`clog drain a1b2c3`) exports the conversations already
-  known to clog without doing a discovery refresh first
+- explicit export (`clog drain a1b2c3`, `clog drain api-service`) exports the
+  conversations already known to clog without doing a discovery refresh first
 
 #### 5.7.3.2 Modes
 
@@ -1423,7 +1456,8 @@ This preserves the two intended command shapes:
 **Stdout mode** (no `--to`, no `--to-dir`) writes the resolved export payload to stdout
 with no progress output. Diagnostics go to stderr.
 
-- `json` supports set export. A single explicit ID with no filters writes
+- `json` supports set export. A single explicit selector that resolves to one
+  conversation, with no filters, writes
   one JSON object; otherwise stdout JSON is a JSON array in deterministic
   order.
 - `md` requires exactly one matching conversation.
@@ -1489,39 +1523,43 @@ Filter semantics:
 flags such as `--columns` or `--all`, and it does not support content-search
 selection via `--grep`.
 
-#### 5.7.3.4 ID Resolution
+#### 5.7.3.4 Selector Resolution
 
-ID resolution follows the same rules as other clog commands, as defined in
-§3.3: short prefixes of at least 4 characters, source-qualified forms
-(`a1b2c3@claude-code`), and ambiguity errors with copy-pasteable
-candidates.
+Conversation-ID resolution follows the same rules as other clog commands, as
+defined in §3.3: short prefixes of at least 4 characters, source-qualified
+forms (`a1b2c3@claude-code`), and ambiguity errors with copy-pasteable
+candidates. Project-selector resolution follows the shared selector model in
+§5.1.1.
 
-When `clog drain` is invoked with explicit IDs and metadata filters, it
-does not resolve IDs against the full conversation table and intersect
+When `clog drain` is invoked with explicit selectors and metadata filters, it
+does not resolve selectors against the full conversation table and intersect
 afterward. Instead, it:
 
 1. builds the candidate set using the supplied `--state`, `--project`,
    `--author`, `--tag`, and `--origin` filters
-2. resolves each explicit ID within that candidate set
+2. resolves each explicit selector within that candidate set
 3. deduplicates the resolved conversations by full ID
 
-This preserves normal resolver grammar while making filters participate in
+This preserves normal selector grammar while making filters participate in
 disambiguation.
 
 Consequences:
 
-- an otherwise ambiguous prefix resolves successfully if the filtered
+- an otherwise ambiguous conversation-ID prefix resolves successfully if the filtered
   candidate set contains exactly one match
-- the same prefix still errors as ambiguous if multiple filtered candidates
+- the same conversation-ID prefix still errors as ambiguous if multiple filtered candidates
   remain
-- the same prefix errors as no-match if the filtered candidate set contains
+- the same conversation-ID prefix errors as no-match if the filtered candidate set contains
   none
 - source-qualified forms such as `prefix@source` continue to restrict
   matching to the named source, within the filtered candidate set
+- project selectors such as `api-service` or `project:api-service` expand only
+  within the filtered candidate set, so a filter like `--author alice` narrows
+  the project batch before export
 
-Directory mode accepts zero or more explicit IDs. Single-file mode requires
+Directory mode accepts zero or more explicit selectors. Single-file mode requires
 exactly one resolved conversation. Stdout mode may also be invoked with
-IDs, filters, or both; the format-specific match-count rules from
+selectors, filters, or both; the format-specific match-count rules from
 §5.7.3.2 apply after resolution.
 
 #### 5.7.3.5 Accessible Conversations
@@ -1696,93 +1734,102 @@ CLI output uses coloring to communicate state at a glance:
 
 - **Green** — conversations ready to publish: staged (added) conversations, and published conversations whose refreshed raw copy is ahead of the last published checkpoint
 - **Red** — untracked (discovered) conversations, and published conversations whose source file has grown but has not yet been refreshed into the curated raw copy
-- **Dim** — excluded local source conversations rediscovered for `clog list --all`
+- **Dim** — ignored local source conversations rediscovered for `clog list --all`
 - Default (no color) — published conversations with nothing pending
 
 This applies to `clog status`, `clog list`, and any other command that displays conversation state.
 
-### 5.10 The `exclude` Command and `clogignore`
+### 5.10 `clogignore`, `exclude`, `unexclude`, and `remove`
 
-There are two mechanisms for keeping conversations out of the knowledge base, serving different purposes.
+`~/.clog/clogignore` is the single user-facing ignore file. It is plain text, hand-editable, comment-friendly, and consulted by local discovery, `clog list --all`'s discovery-backed ignored rows, and remote pull reconciliation.
 
-**`clog exclude <id>` — explicit removal of specific conversations:**
+Example:
 
-1. Deletes the conversation from the database
-2. Appends the source-qualified ID (`sourceId@source`) to `~/.clog/excluded`
-3. Future scans check this file and skip matching entries
+```text
+# Ignore by project name
+myapp
 
-The `excluded` file is plumbing — machine-managed, one source-qualified ID per line. Each non-comment entry must be written as `sourceId@source`. Blank lines and lines whose first non-whitespace character is `#` are comments and ignored.
+# Ignore by exact conversation ID
+12345678-1234-1234-1234-123456789abc
 
-```
-abc12399-9cd8-7350-88a8-7ebb92b02bb6@claude-code
-def45677-1111-2222-3333-444455556666@codex-cli
-```
+# Ignore by filename
+12345678-1234-1234-1234-123456789abc.jsonl
 
-Developers shouldn't need to edit it by hand, but it's plain text if they do.
-
-On read, clog trims whitespace, ignores comments, parses valid `sourceId@source` entries, and deduplicates exact normalized duplicates in memory. A valid line is either blank, a comment, or a correctly formatted `sourceId@source` entry. Any other non-comment line is invalid. Read-only commands such as scan, status, list, and sync pull may emit `duplicate_excluded_entry` or `invalid_excluded_file` warnings and otherwise continue. Mutation commands such as `exclude` and `unexclude` fail without changing the file when any invalid line is present, and print the invalid line numbers plus the expected format.
-
-`clog exclude` deletes the raw file from `~/.clog/raw/` if one exists. When a user explicitly excludes a conversation, they expect it gone from clog — leaving orphaned copies would be surprising and potentially problematic for conversations with sensitive content.
-
-Excluded conversations are not retained as catalog rows. The only persistent exclusion record is the `id@source` entry in `~/.clog/excluded`. `clog list --all` can still show an excluded local conversation by rediscovering its source file and overlaying the excluded list; if the source file is unavailable or outside enabled scan scope, there is no title/date/project metadata to display and the excluded entry is not shown as a row.
-
-**`clog unexclude <id>` — reverse an exclusion:**
-
-Accepts the same ID grammar as DB-backed commands: `<id-or-prefix>` or `<id-or-prefix>@<source>`. Resolution is against valid entries in `~/.clog/excluded`, not the database, because excluded conversations are removed from the DB. If `@source` is present, candidates are limited to that source. Otherwise candidates from every source are considered. A candidate matches when its full ID starts with the supplied prefix. If exactly one entry matches, remove it. If none match, report that no excluded conversation matched. If multiple entries match, fail with copy-pasteable `id@source` candidates and tell the user to type a longer prefix or add `@source`.
-
-After unexcluding, the conversation will be picked up again on the next scan if its source file still exists and its source is enabled. The user would then need to `clog add` it again to copy the raw file. If the source file is also gone, the conversation simply won't come back. That's the expected behavior.
-
-`clog unexclude` does not accept `--all`. Reversing exclusions should be deliberate and specific.
-
-**`~/.clog/clogignore` — pattern-based rules for discovery filtering:**
-
-A human-editable file checked during scanning. Conversations matching any rule are skipped and never inserted into the database.
-
-```
-# Ignore conversations from personal project directories
-project:~/personal/*
-project:~/side-projects/*
-
-# Ignore conversations older than a date
-before:2025-06-01
+# Ignore by path
+~/personal/
 ```
 
-**Supported patterns (MVP):**
+Lines whose first non-whitespace character is `#` are comments. Blank lines are ignored.
 
-| Pattern | Matches on | Example |
-|---------|-----------|---------|
-| `project:<glob>` | Stored `projectPath` | `project:~/personal/*` |
-| `before:<date>` | Conversation creation date (ISO 8601) | `before:2025-01-01` |
-| `after:<date>` | Conversation creation date | `after:2026-12-31` |
+**Matcher contract:**
 
-Lines starting with `#` are comments. Blank lines are ignored. Globs use standard `*` matching on normalized, `~`-expanded paths. For `project:` rules without glob metacharacters, path matching uses the same path-boundary rule as `includePaths` and `excludePaths` in §7.1.
+- path-like rules (strings that start with `~` or contain `/` or `\`) match normalized `projectPath` and `sourcePath`
+- path-like rules with `*` use glob-style matching; path-like rules without `*` use the same path-boundary semantics as `includePaths` and `excludePaths`
+- basename-like rules such as `foo.jsonl` match exact basename equality against `sourcePath`
+- UUID-like rules match exact `sourceId`
+- short hex rules of length 4 or more match `sourceId` by prefix
+- simple names such as `myapp` match `projectName` case-insensitively, and also match exact path components or basenames case-insensitively; they do not do substring matching
+- unsupported syntaxes such as `project:<name>`, `before:<date>`, and `after:<date>` are not valid `clogignore` rules
 
-If a conversation's `projectPath` cannot be determined, discovery fails closed for that conversation before evaluating `clogignore`: skip it and emit a `path_filter_without_project` warning. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. Project-path filtering is the primary privacy boundary for local discovery; clog must not include conversations whose project path cannot be checked.
+**Remote-pull subset:** remote import candidates do not have meaningful local paths, so remote pull uses a narrower subset of the same file:
 
-**Not included in MVP:** `title:` pattern matching. Title-based filtering sounds useful but is fragile — it matches against the first human message before it's been parsed, truncated, or cleaned, and silent mismatches would be hard to debug. Defer until there's a demonstrated need.
+- UUID-like rules match exact remote IDs
+- short hex rules match remote ID prefixes
+- simple names match remote `projectName` case-insensitively
+- path-like rules and filename-only rules do not suppress remote import
 
-**Evaluation order during scanning:**
+**Discovery order and fail-closed behavior:**
 
-1. Scan source location and compute `sourceId@source` for each file
-2. Check `excluded` file — if listed, skip (counted as "excluded")
-3. Extract minimal discovery metadata needed for filtering: `projectPath`, `projectName`, `createdAt`, and any other adapter metadata that can be read without full transcript parsing
-4. If `projectPath` is null, skip (counted as "undiscoverable"; see §5.5)
-5. Check `config.json` `includePaths` / `excludePaths` against `projectPath` — if filtered out, skip (counted as "filtered")
-6. Check `clogignore` patterns against the minimal metadata — if any rule matches, skip (counted as "ignored")
-7. Check database — if already tracked, skip or update (check mtime for changes)
-8. Insert the metadata into the DB as `discovered`
+1. Discover the source file and extract minimal metadata (`sourceId`, `sourcePath`, `projectName`, `projectPath`, `createdAt`, and source-specific summary/title metadata)
+2. Evaluate `clogignore`
+3. If `projectPath` is still unavailable, skip the conversation as `undiscoverable`
+4. Apply `config.json` `includePaths` / `excludePaths`
+5. Insert or update the DB row
 
-**Scan output must report filtering.** Developers need to trust that their personal conversations aren't leaking in. `clog status` shows a filter summary line at the bottom when any conversations were filtered:
+The `projectPath` fail-closed rule still applies even when no path filters are configured. clog treats unknown project paths as unsafe because path filtering is the primary privacy boundary for local discovery. The ordering above is intentional: an ID rule in `clogignore` may suppress a conversation before it would otherwise appear as `undiscoverable`.
 
+**`clog exclude <rule...>`**
+
+- Appends each user-supplied rule to `~/.clog/clogignore` exactly as typed
+- Does not resolve bare tokens as conversations or projects before writing
+- Rejects unsupported ignore-rule syntax such as `project:<name>`, `before:<date>`, and `after:<date>`; users should pass a simple name, filename, ID, or path instead
+- Reports the `clogignore` path and the exact line or lines written
+- After writing, reports how many current DB rows match the newly added rule union
+- If one or more current DB rows match, points the user to `clog remove` with the same literal rule text the user typed
+
+`clog exclude` does not delete DB rows or curated raw files by itself.
+
+**`clog unexclude <rule...>`**
+
+- Removes exact matching lines from `~/.clog/clogignore`
+- Does not use selector semantics or prefix matching
+- Removes all exact duplicate lines that match the supplied text
+- Reports the `clogignore` path and the exact line or lines removed
+- If no line matches, reports that clearly and leaves the file unchanged
+
+**`clog remove <rule...>`**
+
+- Uses the same literal rule syntax and matcher contract as `clogignore`
+- Does not require the rule to already exist in `clogignore`
+- Rejects unsupported ignore-rule syntax such as `project:<name>`, `before:<date>`, and `after:<date>` for the same reason as `exclude`
+- Deletes the union of matching current DB rows, local or remote
+- Deletes curated raw copies for removed local curated rows
+- Best-effort deletes search vectors for removed searchable rows
+- Reports the number of removed conversations
+- If no current DB rows match, reports that clearly and leaves the database unchanged
+- Leaves `clogignore` unchanged
+
+**Scan output must report filtering.** `clog status` shows a dimmed filter summary line when any scan counts are non-zero:
+
+```text
+(8 filtered by config, 4 ignored by clogignore, 2 undiscoverable; run "clog status --undiscoverable" for details)
 ```
-(23 excluded, 8 filtered by config, 4 ignored by clogignore, 2 undiscoverable; run "clog status --undiscoverable" for details)
-```
 
-The line is dimmed and only appears if at least one count is non-zero. The undiscoverable hint portion (including the semicolon and `run "clog status --undiscoverable" for details`) only appears when the undiscoverable count is non-zero.
+The line appears only if at least one count is non-zero. The undiscoverable hint portion only appears when the undiscoverable count is non-zero.
 
-The filter counts are reason-based and disjoint. If a source file still exists under a watched root but is now excluded, ignored, filtered, or undiscoverable, `clog` removes any stale discovered row without also incrementing `pruned`. `pruned` is reserved for discovered rows whose source file no longer appears in the scanned source roots.
+The filter counts are reason-based and disjoint. If a source file still exists under a watched root but is now ignored, filtered, or undiscoverable, clog removes any stale discovered row without also incrementing `pruned`. `pruned` is reserved for discovered rows whose source file no longer appears in the scanned source roots.
 
-`excluded` and `clogignore` are strictly local — they are never synced to a remote (see §11).
+`clogignore` is strictly local. It is never synced to a remote, though the local file is still consulted during remote pull reconciliation.
 
 ### 5.11 Error Handling
 
@@ -2012,7 +2059,7 @@ Phase 3 (§11.5) adds: `remote` block
 
 **Path filtering rules:** `includePaths` and `excludePaths` match against the stored `projectPath` associated with the conversation. Claude Code derives this from the first `cwd` found in the main conversation JSONL. Codex CLI derives it from `session_meta.payload.cwd`, falling back to the first valid `turn_context.payload.cwd` found in source-file order. If `includePaths` is set and non-empty, a conversation must match at least one include path. If `excludePaths` is set, any matching conversation is skipped regardless of include paths.
 
-Paths support `~` expansion and are compared after normalization. A `projectPath` matches a configured path only when the normalized paths are equal, or when the normalized `projectPath` is a descendant of the configured path separated by the platform path separator. Implementations must not use raw string-prefix matching: `/Users/alice/work-personal` does not match `/Users/alice/work`, while `/Users/alice/work/api-service` does. This path-boundary rule also applies to non-glob `clogignore` `project:` rules.
+Paths support `~` expansion and are compared after normalization. A `projectPath` matches a configured path only when the normalized paths are equal, or when the normalized `projectPath` is a descendant of the configured path separated by the platform path separator. Implementations must not use raw string-prefix matching: `/Users/alice/work-personal` does not match `/Users/alice/work`, while `/Users/alice/work/api-service` does. This path-boundary rule also applies to non-glob path-like `clogignore` rules.
 
 **`clog config set` value parsing:** Values are parsed as JSON first, falling back to a plain string if JSON parsing fails. This allows setting complex types naturally:
 
@@ -2253,7 +2300,7 @@ The `indexed_at` column tracks vector DB state:
 
 **Embedding is optional per conversation.** A conversation can be published without being indexed. This decouples the curation workflow from search infrastructure — publishing works without a vector DB.
 
-**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `published` state, and has a non-null `indexed_at` timestamp. A published conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past publishes. Semantic search must not return conversations that have been deleted, excluded, or moved out of `published` state.
+**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `published` state, and has a non-null `indexed_at` timestamp. A published conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past publishes. Semantic search must not return conversations that have been deleted, removed from `published` state, or otherwise dropped from the local database.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -2306,7 +2353,8 @@ The search index follows the lifecycle of conversations in the database:
 | Remote reconciliation metadata update on a published conversation | Conversation remains `published`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, or slug do not clear `indexed_at`. |
 | `unpublish` | Conversation leaves `published` state and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
 | `reset` | Only operates on staged conversations; `filePath` is cleared and the conversation returns to `discovered` | No search effect; staged conversations are not searchable |
-| `exclude` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-published conversation is a harmless no-op. |
+| `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
+| `remove` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-published conversation is a harmless no-op. |
 | `remote remove` | All conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
 | Remote reconciliation delete/retract | Conversation is removed from the DB or replaced by a non-searchable state | Conversation ceases to be searchable; vectors are deleted |
 
@@ -2366,7 +2414,7 @@ Phase 2 requires changes to existing Phase 1 code:
 
 **Tagging** (`clog tag`, `clog untag`, and MCP `clog_update` tag changes): Tags are DB-side metadata filters, not embedded vector content. Tag changes do not trigger re-indexing and do not change `indexed_at`. Tag-based filtering reflects the new DB state immediately.
 
-**Unpublish / exclude / deletion**: When a published conversation stops being searchable because it is unpublished, excluded, deleted during reconciliation, or otherwise removed from the database, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk. `clog reset` has no search cleanup role because it only operates on staged conversations, which are not searchable.
+**Unpublish / removal / deletion**: When a published conversation stops being searchable because it is unpublished, removed from the database, deleted during reconciliation, or otherwise no longer searchable, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk. `clog reset` has no search cleanup role because it only operates on staged conversations, which are not searchable.
 
 **Config schema**: Add `search.embedding.type` and `search.vectorStore.type` fields to the config schema (Section 7).
 
@@ -2466,18 +2514,14 @@ Remote conversations cannot be edited, tagged, or unpublished locally. `clog edi
 
 A future version may add an explicit workflow to materialize one or more remote conversations into a local source directory so the user can continue them locally. That continuation flow is out of scope for Phase 3 / v1 sync.
 
-#### Exclude Works on Remote Conversations
+#### Ignore Rules Apply to Remote Conversations
 
-`clog exclude` is extended to work on remote conversations. The excluded file (`~/.clog/excluded`) is the single source of truth for exclusions, regardless of whether the conversation is local or remote. During reconciliation, source-qualified IDs (`id@source`) in the excluded file are skipped before import — the same way the scan pipeline skips them during local discovery.
+Remote conversations use the same local ignore-intent model as local discovery, but through `clogignore` rather than a separate blocklist. If the user wants to stop seeing a remote conversation locally:
 
-The excluded file (not the DB or config) is the right home for this because:
+1. add an ignore rule with `clog exclude <rule>`
+2. remove the current imported DB row with `clog remove <rule>` if desired
 
-- It already exists and works for local conversations
-- It survives DB deletion (the DB is disposable; exclusions are user intent)
-- It separates concerns — config is for settings, the excluded file is a blocklist
-- It keeps config from growing with a list of IDs irrelevant to most operations
-
-`clog unexclude` reverses the exclusion. For remote conversations, the next `clog sync pull` or `clog refresh` re-imports them.
+During subsequent reconciliation, remote pairs whose IDs or project names match the local `clogignore` remote subset are skipped before import. `clog unexclude` removes the ignore rule again; the next `clog sync pull` or `clog refresh` may then re-import matching remote conversations.
 
 #### Commits Use the User's Existing Git Identity
 
@@ -2835,7 +2879,7 @@ The command does not touch the git checkout, push, or config. On the next `clog 
 
 Before the pull phase, snapshot the set of `(source, id)` tuples for published conversations where `author = config.author` and `origin = <remote URL>`. These are conversations imported from the remote (possibly pushed from another machine) that the user has not explicitly deleted. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — the pre-reconcile snapshot excludes those so retractions still proceed.
 
-This complements the import-side guards in §11.8 (excluded-file check and local-precedence rule), which prevent most re-imports but not all. If reconcile does re-create a row that wasn't in the snapshot, the export phase still retracts the checkout files.
+This complements the import-side guards in §11.8 (`clogignore` remote gating and local-precedence rule), which prevent most re-imports but not all. If reconcile does re-create a row that wasn't in the snapshot, the export phase still retracts the checkout files.
 
 **Export phase** (write local state to checkout):
 
@@ -2924,7 +2968,7 @@ For search coherence, imported conversations follow the same stale-index rule as
 
 **Remote validation warnings:** Warnings are emitted during the command that performs validation and are not persisted as conversation state. Each warning uses the `ClogWarning` shape with `remote: { author, source, id }`, affected `paths`, validation reason, reconciliation action taken, and a concrete fix suggestion. For example, if the paired JSONL fails to parse through the selected source adapter, the warning should say that the pair was skipped, any existing local imported row was left unchanged, and the publishing author should republish the conversation or repair/remove the pair in the remote repo.
 
-**Excluded conversations:** Before importing, check the source-qualified ID (`id@source`) against the excluded file (`~/.clog/excluded`). If excluded, skip. This reuses the same exclusion mechanism as the local scan pipeline — a single blocklist for both local discovery and remote reconciliation.
+**Ignored conversations:** Before importing, check `~/.clog/clogignore` using the remote-pull subset from §5.10. If the remote ID or project name matches a local ignore rule, skip import. Path-like rules and filename-only rules do not suppress remote import.
 
 **Local takes precedence on duplicates:** During reconciliation, if a conversation with the same `source + source_id` already exists with `origin IS NULL` (user has their own local copy), skip the remote version entirely. The user's own curation takes precedence.
 
@@ -2994,7 +3038,7 @@ When a remote is configured and remote conversations exist in the DB, append a f
 
 Phase 3 adds `--origin <origin>` to `clog list`. Its semantics:
 
-- `--all` — show all conversations (local + remote), including rediscovered excluded local source conversations per §5.3
+- `--all` — show all conversations (local + remote), including rediscovered ignored local source conversations per §5.3
 - `--author <name>` — filter by author
 - `--origin local` — only local conversations (`origin IS NULL`)
 - `--origin remote` — only remote conversations (`origin IS NOT NULL`)
@@ -3116,8 +3160,8 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 
 - `src/cli/list.ts` — default filter to `author = config.author OR origin IS NULL`; add `--all`, `--origin` flags; team conversation footer
 - `src/cli/edit.ts`, `src/cli/tag.ts`, `src/cli/untag.ts`, `src/cli/unpublish.ts` — refuse remote conversations
-- `src/cli/exclude.ts` — extend to work on remote conversations (delete from DB, add to excluded file)
-- `src/sync/pull.ts` — check excluded file before importing during reconciliation
+- `src/cli/exclude.ts`, `src/cli/unexclude.ts`, `src/cli/remove.ts`, `src/cli/clogignore.ts` — shared ignore-rule model and explicit current-row removal
+- `src/sync/pull.ts` — check `clogignore` before importing during reconciliation, using ID/project-name semantics only
 - `src/cli/status.ts` — report remote info, unindexed count, staleness warning
 - `src/mcp/server.ts` — add optional `origin` filter to `clog_list_published` and `clog_search`; include `source` metadata
 - `src/index.ts` — register new commands (remote, sync, refresh)
@@ -3184,7 +3228,7 @@ tests/
 ├── db.test.ts               # CRUD, state transitions, publish fields, project filtering
 ├── mcp.test.ts              # MCP tool handler tests (list, get, update, browse, search)
 ├── models.test.ts           # Zod schema validation for conversation and message types
-├── scan.test.ts             # Scan pipeline, 3-layer filtering, stale entry pruning
+├── scan.test.ts             # Scan pipeline, ignore/config filtering, stale entry pruning
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
 ├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
 ├── workflow.test.ts         # Multi-step workflows: add → publish, etc.
@@ -3284,7 +3328,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Scan tests** (`scan.test.ts`):
 
-- 3-layer filter pipeline (excluded → config → clogignore)
+- 2-layer path/privacy filter pipeline (`clogignore` → config) plus undiscoverable handling
 - mtime-based skip for unchanged files
 - New conversation discovery
 - Stale entry pruning when source files disappear
@@ -3296,9 +3340,9 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Workflow tests** (`workflow.test.ts`):
 
-- Multi-step flows: add → publish, edit → re-publish, exclude → unexclude
+- Multi-step flows: add → publish, edit → re-publish, exclude → unexclude, exclude → remove
 - Published refresh flows: source grows after publish → `clog add <id>` refreshes the raw copy while preserving `state = "published"`, and a subsequent bare `clog publish` republishes the refreshed content; source grows after publish → explicit `clog publish <id>` refreshes and republishes without a separate add
-- Excluded-file handling: `id@source` parsing, `#` comments, duplicate deduplication, invalid-line failures for mutation commands, and unexclude ambiguity errors with copy-pasteable candidates
+- Literal ignore-rule handling: exact-line append/remove semantics, `project:<name>` rejection on ignore-rule commands, and `clog remove` deleting current DB rows without editing `clogignore`
 - State transitions through `withDb`
 
 **Sync meta tests** (`sync-meta.test.ts`, Phase 3):
@@ -3311,7 +3355,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Sync pull tests** (`sync-pull.test.ts`, Phase 3):
 
 - Reconciliation: insert new, update changed, delete only cleanly absent pairs, and preserve existing DB rows for orphaned or invalid pairs
-- Excluded conversations skipped during import
+- Remote conversations skipped when `clogignore` matches by ID or project name
 - Local-takes-precedence on duplicates
 - Source-separated remote layout scanning
 - Remote identity keyed by `(source, id)`, not `id` alone

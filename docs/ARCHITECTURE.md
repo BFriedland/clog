@@ -219,7 +219,7 @@ Notable command groupings:
 - curation state changes: `add`, `reset`, `publish`, `unpublish`
 - metadata changes: `edit`, `tag`, `rename-author`
 - inspection: `status`, `list`, `show`, `path`, `diff`
-- exclusion/filter control: `exclude`, `unexclude`, `excluded`, `clogignore`
+- exclusion/filter control: `exclude`, `unexclude`, `remove`, `clogignore`
 - search: `search-init`, `search`, `index-cmd`
 
 Rules:
@@ -356,7 +356,7 @@ Important implementation rules:
 - `reset` clears active publish fields when moving back to `discovered`
 - `unpublish` preserves the last-publish checkpoint while moving back to `staged`
 - `edit`, `tag`, `untag`, and `unpublish` refuse rows where `origin IS NOT NULL` via `assertNotRemote` / `assertNoneRemote` in `src/cli/common.ts`
-- `exclude` works on both local and remote rows: it deletes the DB row and adds the source-qualified ID to `~/.clog/excluded`, which is the single blocklist consulted by both the local scan pipeline and remote reconciliation
+- `exclude` appends literal rules to `clogignore`; `remove` deletes current matching DB rows without editing the file; the same ignore-rule model gates both local scan results and remote reconciliation
 - `src/sync/pull.ts` is the only module that may insert, update, or delete rows with `origin IS NOT NULL`; reconciliation is scoped to the currently configured remote URL and never touches rows from a different origin
 
 These rules should remain centered in shared helpers and DB updates, not spread through output code.

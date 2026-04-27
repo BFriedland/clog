@@ -5,8 +5,6 @@ export type ClogWarningCode =
   | "path_filter_without_project"
   | "unsupported_source"
   | "missing_source_file"
-  | "invalid_excluded_file"
-  | "duplicate_excluded_entry"
   | "remote_incomplete_pair"
   | "remote_invalid_metadata"
   | "remote_invalid_content";
