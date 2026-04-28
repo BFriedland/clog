@@ -202,6 +202,12 @@ myapp
 
 The `search` and `remote` config blocks are managed by `clog search --init` and `clog remote add`.
 
+## Complementary Tools
+
+**Claude Code `/insights`** — Run `/insights` inside Claude Code to get a report analyzing your Claude Code sessions — project areas, interaction patterns, friction points. Useful for spotting which conversations are worth adding to clog.
+
+**[cass](https://github.com/Dicklesworthstone/coding_agent_session_search)** — A local search engine for AI coding agent sessions. Indexes conversations from 19+ agents (Claude Code, Codex, Cursor, Aider, Gemini, and others) with full-text and semantic search.
+
 ## Environment Variables
 
 | Variable | Purpose |

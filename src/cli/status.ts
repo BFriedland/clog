@@ -48,7 +48,12 @@ export function buildStatusCommand(): Command {
       if (staged.length > 0 || readyPublished.length > 0) {
         sections.push(() => {
           process.stdout.write("Conversations to be published:\n");
-          process.stdout.write(`${dimText('  (use "clog reset <id>" to unstage)')}\n`);
+          process.stdout.write(
+            `${dimText(formatToBePublishedHint({
+              stagedCount: staged.length,
+              modifiedCount: readyPublished.length,
+            }))}\n`,
+          );
           if (staged.length > 0) {
             renderStatusLikeRows(staged, "added", "staged", {
               includeSource: options.source === true,
@@ -238,4 +243,19 @@ function getStatusProjectWidth(conversations: ConversationMeta[]): number {
   }, 0);
 
   return Math.max("PROJECT".length, widestProject) + 1;
+}
+
+function formatToBePublishedHint(counts: {
+  stagedCount: number;
+  modifiedCount: number;
+}): string {
+  if (counts.stagedCount > 0 && counts.modifiedCount > 0) {
+    return '  (use "clog publish" to publish everything here; "clog reset <id>" only unstages added conversations)';
+  }
+
+  if (counts.stagedCount > 0) {
+    return '  (use "clog reset <id>" to unstage)';
+  }
+
+  return '  (use "clog publish" to publish these modified conversations)';
 }

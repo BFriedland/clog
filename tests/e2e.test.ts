@@ -572,7 +572,7 @@ describe("e2e", () => {
     await fs.rm(filePath);
 
     await expect(run(["add", id.slice(0, 7)])).rejects.toMatchObject({
-      stderr: expect.stringContaining(`No conversation matches "${id.slice(0, 7)}"`),
+      stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
     });
   });
 

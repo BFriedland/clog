@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { listConversations, updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { assertNoneRemote } from "./common.js";
-import { collectProjectUnpublishTargets } from "./project-targets.js";
+import { collectBareUnpublishTargets, collectProjectUnpublishTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildUnpublishCommand(): Command {
@@ -19,10 +19,10 @@ export function buildUnpublishCommand(): Command {
               idCandidates: await listConversations(),
               projectCandidates: await collectProjectUnpublishTargets(),
             })
-          : await collectProjectUnpublishTargets();
+          : await collectBareUnpublishTargets();
 
       if (conversations.length === 0) {
-        process.stdout.write("No published conversations to unpublish.\n");
+        process.stdout.write('No published conversations. Use "clog publish" to publish conversations first.\n');
         return;
       }
 

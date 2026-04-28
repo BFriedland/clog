@@ -32,11 +32,19 @@ export async function collectProjectResetTargets(): Promise<ConversationMeta[]> 
   });
 }
 
+export async function collectBareResetTargets(): Promise<ConversationMeta[]> {
+  return collectProjectResetTargets();
+}
+
 export async function collectProjectUnpublishTargets(): Promise<ConversationMeta[]> {
   return listConversations({
     states: ["published"],
     origin: "local",
   });
+}
+
+export async function collectBareUnpublishTargets(): Promise<ConversationMeta[]> {
+  return collectProjectUnpublishTargets();
 }
 
 export async function collectProjectDrainTargets(

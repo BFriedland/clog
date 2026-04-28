@@ -783,6 +783,43 @@ describe("cli", () => {
   // ========================================
 
   describe("reset (SPEC §5.2.1)", () => {
+    it("prints a helpful message when called with no args and nothing is staged", async () => {
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+      expect(stdout).toContain("No staged conversations");
+    });
+
+    it("explains when only modified published conversations remain", async () => {
+      const convId = "32323232-aaaa-bbbb-cccc-323232323232";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeJsonl(sourcePath, [
+        userLine("First prompt", "2026-02-01T10:00:00.000Z"),
+        assistantLine("First reply", "msg_01", "2026-02-01T10:00:01.000Z"),
+        userLine("Second prompt", "2026-02-01T10:00:02.000Z"),
+        assistantLine("Second reply", "msg_02", "2026-02-01T10:00:03.000Z"),
+      ]);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          filePath: rawPath,
+          state: "published",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+
+      expect(stdout).toContain("No added conversations to reset.");
+      expect(stdout).toContain('use "clog publish" to publish them');
+    });
+
     it("rejects a discovered conversation with a helpful message", async () => {
       const conv = await seedConversation("31313131-3131-3131-3131-313131313131", {
         state: "discovered",
@@ -790,6 +827,17 @@ describe("cli", () => {
       await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
         /not staged/i,
       );
+    });
+
+    it("resets all staged conversations when called with no args", async () => {
+      const first = await seedStagedConversation("30303030-3030-3030-3030-303030303030");
+      const second = await seedStagedConversation("31303030-3030-3030-3030-303030303030");
+
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+
+      expect(stdout).toContain("Reset 2 conversation(s)");
+      expect((await getConversationById(first.id))?.state).toBe("discovered");
+      expect((await getConversationById(second.id))?.state).toBe("discovered");
     });
 
     it("refuses a remote conversation (SPEC §5.2.1, §11.1)", async () => {
@@ -805,6 +853,11 @@ describe("cli", () => {
   // ========================================
 
   describe("unpublish (SPEC §5.7)", () => {
+    it("prints a helpful message when called with no args and nothing is published", async () => {
+      const { stdout } = await runBuiltCommand(buildUnpublishCommand, []);
+      expect(stdout).toContain("No published conversations");
+    });
+
     it("moves a published conversation back to staged and clears indexedAt", async () => {
       const convId = "41414141-4141-4141-4141-414141414141";
       const rawPath = getRawConversationPath("claude-code", convId);
@@ -831,6 +884,25 @@ describe("cli", () => {
       // publishedAt / publishedMessageCount / publishVersion are preserved as the checkpoint.
       expect(reloaded?.publishedAt).toBe("2026-02-01T10:00:00.000Z");
       expect(reloaded?.publishVersion).toBe(1);
+    });
+
+    it("unpublishes all published conversations when called with no args", async () => {
+      const first = await seedPublishedConversationWithRawMessages(
+        "40404040-4040-4040-4040-404040404040",
+        1,
+        1,
+      );
+      const second = await seedPublishedConversationWithRawMessages(
+        "41404040-4040-4040-4040-404040404040",
+        1,
+        1,
+      );
+
+      const { stdout } = await runBuiltCommand(buildUnpublishCommand, []);
+
+      expect(stdout).toContain("Unpublished 2 conversation(s)");
+      expect((await getConversationById(first.id))?.state).toBe("staged");
+      expect((await getConversationById(second.id))?.state).toBe("staged");
     });
 
     it("throws when the conversation is not published", async () => {
@@ -1642,6 +1714,7 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Staged change");
       expect(stdout).toContain("added:");
+      expect(stdout).toContain('use "clog reset <id>" to unstage');
     });
 
     it("shows a discovered conversation under 'Untracked conversations:'", async () => {
@@ -1688,6 +1761,8 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Published with refreshed raw copy");
       expect(stdout).toContain("modified:");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
+      expect(stdout).not.toContain('use "clog reset <id>" to unstage');
     });
 
     it("--source adds the source column after the short id", async () => {
@@ -1746,6 +1821,7 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Checkpoint lag");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
     });
 
     it("marks a published conversation as ready when metadata changed after publish", async () => {
@@ -1776,6 +1852,39 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Metadata changed");
       expect(stdout).toContain("modified:");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
+    });
+
+    it("uses a mixed hint when added and modified conversations are both present", async () => {
+      await seedStagedConversation("c7878787-7878-7878-7878-787878787878", {
+        title: "Added conversation",
+      });
+
+      const convId = "c7979797-7979-7979-7979-797979797979";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("First"),
+        assistantLine("Reply", "msg_01"),
+      ]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Modified published conversation",
+          state: "published",
+          filePath: rawPath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
+          modifiedAt: "2026-02-01T10:05:00.000Z",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain('use "clog publish" to publish everything here; "clog reset <id>" only unstages added conversations');
     });
 
     it("shows unindexed published conversations in a search section without requiring a remote", async () => {
