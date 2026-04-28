@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/fix-bin-permissions.mjs",
+    "setup": "npm run build && npm link && node dist/index.js init",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

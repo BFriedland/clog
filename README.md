@@ -8,11 +8,13 @@ Turn your AI coding agent conversations into a searchable, shareable knowledge b
 
 With clog, you can build a library from your Claude Code and Codex CLI conversations and make it available to your team and your agents. Use titles, summaries, and tags to curate it, then explore it through MCP tools, semantic search, or git-based sharing.
 
+`npm run setup` builds clog, installs the `clog` command globally from your local checkout, and runs `clog init`.
+
 ## Install
 
 ```bash
 npm install
-npm run build
+npm run setup
 ```
 
 ## Quick Start
@@ -223,5 +225,6 @@ npm run test:watch     # Watch mode
 npm run test:coverage  # Run tests with coverage report
 npm run lint           # Lint src/ and tests/
 npm run build          # Build clog and fix bin permissions
+npm run setup          # Build, link, and initialize clog
 npm run dev -- status  # Run without building
 ```
