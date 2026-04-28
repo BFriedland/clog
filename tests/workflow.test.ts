@@ -270,8 +270,8 @@ describe("workflow", () => {
 
     const status = await runBuiltCommand(buildStatusCommand, []);
     expect(status.stdout).toContain("Conversations to be published:");
-    expect(status.stdout).toContain("Metadata-only republish");
-    expect(status.stdout).toContain("modified:");
+    expect(status.stdout).toContain("webapp");
+    expect(status.stdout).toContain("1 modified");
 
     await runBuiltCommand(buildPublishCommand, []);
 

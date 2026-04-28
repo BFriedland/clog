@@ -14,12 +14,26 @@ import {
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
+type StatusLabel = "added" | "modified" | "discovered";
+type StatusStagingState = "staged" | "unstaged";
+
+interface StatusEntry {
+  conversation: ConversationMeta;
+  label: StatusLabel;
+  stagingState: StatusStagingState;
+}
+
 export function buildStatusCommand(): Command {
   return new Command("status")
-    .description("Show staged, modified, and discovered conversations")
-    .option("--source", "show the source column after the short ID")
+    .description("Show staged, modified, and discovered project summaries")
+    .option("--source", "show conversation rows with the source column after the short ID")
+    .option("-c, --conversations", "show one row per conversation")
     .option("--undiscoverable", "list conversations skipped due to missing project path")
-    .action(async (options: { source?: boolean; undiscoverable?: boolean }) => {
+    .action(async (options: {
+      source?: boolean;
+      conversations?: boolean;
+      undiscoverable?: boolean;
+    }) => {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
       renderWarnings(getScanWarningsForCommand(scanResult, { suppressUndiscoverable: true }));
@@ -29,6 +43,7 @@ export function buildStatusCommand(): Command {
       const readyPublished: ConversationMeta[] = [];
       const sourceAheadPublished: ConversationMeta[] = [];
       const cleanPublished: ConversationMeta[] = [];
+      const showConversations = options.conversations === true || options.source === true;
 
       for (const conversation of published) {
         const kind = await classifyPublishedDelta(conversation);
@@ -54,16 +69,16 @@ export function buildStatusCommand(): Command {
               modifiedCount: readyPublished.length,
             }))}\n`,
           );
-          if (staged.length > 0) {
-            renderStatusLikeRows(staged, "added", "staged", {
+          renderStatusEntries(
+            [
+              ...toStatusEntries(staged, "added", "staged"),
+              ...toStatusEntries(readyPublished, "modified", "staged"),
+            ],
+            {
               includeSource: options.source === true,
-            });
-          }
-          if (readyPublished.length > 0) {
-            renderStatusLikeRows(readyPublished, "modified", "staged", {
-              includeSource: options.source === true,
-            });
-          }
+              showConversations,
+            },
+          );
         });
       }
 
@@ -73,8 +88,9 @@ export function buildStatusCommand(): Command {
           process.stdout.write(
             `${dimText('  (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)')}\n`,
           );
-          renderStatusLikeRows(sourceAheadPublished, "modified", "unstaged", {
+          renderStatusEntries(toStatusEntries(sourceAheadPublished, "modified", "unstaged"), {
             includeSource: options.source === true,
+            showConversations,
           });
         });
       }
@@ -85,8 +101,9 @@ export function buildStatusCommand(): Command {
           process.stdout.write(
             `${dimText('  (use "clog add <id>" to stage for publishing)')}\n`,
           );
-          renderStatusLikeRows(discovered, "discovered", "unstaged", {
+          renderStatusEntries(toStatusEntries(discovered, "discovered", "unstaged"), {
             includeSource: options.source === true,
+            showConversations,
           });
         });
       }
@@ -181,16 +198,41 @@ async function renderRemoteSection(
   }
 }
 
-function renderStatusLikeRows(
+function toStatusEntries(
   conversations: ConversationMeta[],
-  label: "added" | "modified" | "discovered",
-  stagingState: "staged" | "unstaged",
+  label: StatusLabel,
+  stagingState: StatusStagingState,
+): StatusEntry[] {
+  return conversations.map((conversation) => ({
+    conversation,
+    label,
+    stagingState,
+  }));
+}
+
+function renderStatusEntries(
+  entries: StatusEntry[],
+  options: { includeSource: boolean; showConversations: boolean },
+): void {
+  if (options.showConversations) {
+    renderStatusLikeRows(entries, {
+      includeSource: options.includeSource,
+    });
+    return;
+  }
+
+  renderProjectStatusRows(entries);
+}
+
+function renderStatusLikeRows(
+  entries: StatusEntry[],
   options: { includeSource: boolean },
 ): void {
-  const projectWidth = getStatusProjectWidth(conversations);
+  const projectWidth = getStatusProjectWidth(entries.map((entry) => entry.conversation));
 
-  for (const conversation of conversations) {
-    const prefix = colorizeStatusLabel(`${label}:`.padEnd(12), stagingState);
+  for (const entry of entries) {
+    const { conversation } = entry;
+    const prefix = colorizeStatusLabel(`${entry.label}:`.padEnd(12), entry.stagingState);
     const id = `${conversation.id.slice(0, 7)}`.padEnd(9);
     const source = options.includeSource ? `${conversation.source}`.padEnd(13) : "";
     const date = formatDate(conversation.createdAt).padEnd(12);
@@ -202,6 +244,127 @@ function renderStatusLikeRows(
       })}\n`,
     );
   }
+}
+
+function renderProjectStatusRows(entries: StatusEntry[]): void {
+  const projectEntries = entries.filter(hasStatusProject);
+  const conversationEntries = entries.filter((entry) => !hasStatusProject(entry));
+
+  if (projectEntries.length > 0) {
+    const groups = groupStatusEntriesByProject(projectEntries);
+    const projectWidth = getProjectSummaryNameWidth(groups);
+    const countsWidth = getProjectSummaryCountsWidth(groups);
+
+    for (const group of groups) {
+      const project = group.projectName.padEnd(projectWidth);
+      const counts = formatProjectCounts(group.entries).padEnd(countsWidth);
+      const date = formatLatestConversationDate(group.entries);
+      process.stdout.write(
+        `    ${project}${colorizeStatusLabel(counts, group.stagingState)}${date}\n`,
+      );
+    }
+  }
+
+  if (conversationEntries.length > 0) {
+    renderStatusLikeRows(conversationEntries, { includeSource: false });
+  }
+}
+
+function hasStatusProject(entry: StatusEntry): boolean {
+  return (entry.conversation.projectName?.trim().length ?? 0) > 0;
+}
+
+function groupStatusEntriesByProject(entries: StatusEntry[]): Array<{
+  projectName: string;
+  entries: StatusEntry[];
+  stagingState: StatusStagingState;
+}> {
+  const groupsByProject = new Map<string, StatusEntry[]>();
+
+  for (const entry of entries) {
+    const projectName = entry.conversation.projectName?.trim();
+    if (!projectName) {
+      continue;
+    }
+
+    const group = groupsByProject.get(projectName) ?? [];
+    group.push(entry);
+    groupsByProject.set(projectName, group);
+  }
+
+  return Array.from(groupsByProject.entries())
+    .map(([projectName, groupEntries]) => ({
+      projectName,
+      entries: groupEntries,
+      stagingState: groupEntries[0]?.stagingState ?? "unstaged",
+      latestTimestamp: getLatestConversationTimestamp(groupEntries),
+    }))
+    .sort(compareProjectStatusGroups);
+}
+
+function compareProjectStatusGroups(
+  left: { projectName: string; latestTimestamp: number },
+  right: { projectName: string; latestTimestamp: number },
+): number {
+  if (left.latestTimestamp !== right.latestTimestamp) {
+    return right.latestTimestamp - left.latestTimestamp;
+  }
+
+  return left.projectName.localeCompare(right.projectName);
+}
+
+function getProjectSummaryNameWidth(
+  groups: Array<{ projectName: string }>,
+): number {
+  const widestProject = groups.reduce((maxWidth, group) => {
+    return Math.max(maxWidth, group.projectName.length);
+  }, 0);
+
+  return widestProject + 2;
+}
+
+function getProjectSummaryCountsWidth(
+  groups: Array<{ entries: StatusEntry[] }>,
+): number {
+  const widestCounts = groups.reduce((maxWidth, group) => {
+    return Math.max(maxWidth, formatProjectCounts(group.entries).length);
+  }, 0);
+
+  return widestCounts + 2;
+}
+
+function formatProjectCounts(entries: StatusEntry[]): string {
+  const counts = new Map<StatusLabel, number>();
+
+  for (const entry of entries) {
+    counts.set(entry.label, (counts.get(entry.label) ?? 0) + 1);
+  }
+
+  return (["added", "modified", "discovered"] satisfies StatusLabel[])
+    .filter((label) => (counts.get(label) ?? 0) > 0)
+    .map((label) => `${counts.get(label)} ${label}`)
+    .join(", ");
+}
+
+function formatLatestConversationDate(entries: StatusEntry[]): string {
+  const latest = getLatestConversationTimestamp(entries);
+  const latestEntry = entries.find((entry) => Date.parse(entry.conversation.createdAt) === latest);
+  return formatDate(latestEntry?.conversation.createdAt ?? "");
+}
+
+function getLatestConversationTimestamp(entries: StatusEntry[]): number {
+  let latest = Number.NEGATIVE_INFINITY;
+
+  for (const entry of entries) {
+    const timestamp = Date.parse(entry.conversation.createdAt);
+    if (Number.isNaN(timestamp) || timestamp <= latest) {
+      continue;
+    }
+
+    latest = timestamp;
+  }
+
+  return latest;
 }
 
 function formatDate(value: string): string {
