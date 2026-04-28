@@ -28,7 +28,9 @@ export function buildUnpublishCommand(): Command {
 
       assertNoneRemote(conversations, "clog unpublish");
 
-      for (const conversation of conversations) {
+      const showProgress = process.stdout.isTTY && conversations.length > 1;
+
+      for (const [index, conversation] of conversations.entries()) {
         if (conversation.state !== "published") {
           throw new Error(
             `Conversation ${conversation.id.slice(0, 7)} is not published. Use "clog add <id>" to stage it first.`,
@@ -40,15 +42,35 @@ export function buildUnpublishCommand(): Command {
           state: "staged",
           indexedAt: null,
         });
+
+        if (showProgress) {
+          process.stdout.write(
+            `\r${index + 1}/${conversations.length} conversations unpublished locally...`,
+          );
+        }
       }
 
-      const failures = await tryDeleteConversationVectors(conversations.map((conversation) => conversation.id));
+      if (showProgress) {
+        process.stdout.write("\n");
+      }
+
+      const failures = await tryDeleteConversationVectors(
+        conversations.map((conversation) => conversation.id),
+        showProgress
+          ? (completed, total) => {
+              process.stdout.write(`\r${completed}/${total} conversations removed from vector search...`);
+              if (completed === total) {
+                process.stdout.write("\n");
+              }
+            }
+          : undefined,
+      );
       for (const failedId of failures) {
         process.stderr.write(
           `warning: ${failedId.slice(0, 7)} was unpublished but its search vectors could not be deleted\n`,
         );
       }
 
-      process.stdout.write(`Unpublished ${conversations.length} conversation(s) (moved to staged)\n`);
+      process.stdout.write(`Unpublished ${conversations.length} conversation(s) (moved to staging).\n`);
     });
 }

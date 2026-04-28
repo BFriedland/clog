@@ -57,6 +57,7 @@ export async function maybeReindexUpdatedConversation(
 
 export async function maybeAutoIndexConversations(
   conversations: ConversationMeta[],
+  onProgress?: (completed: number, total: number) => void,
 ): Promise<string[]> {
   if (conversations.length === 0 || !(await searchAvailable())) {
     return [];
@@ -66,6 +67,8 @@ export async function maybeAutoIndexConversations(
     const config = await loadConfig();
     const { embedding, vectorStore } = await getSearchProviders();
     const failures: string[] = [];
+    const indexable = conversations.filter((c) => c.state === "published");
+    let completed = 0;
 
     for (const conversation of conversations) {
       if (conversation.state !== "published") {
@@ -79,6 +82,8 @@ export async function maybeAutoIndexConversations(
       } catch {
         failures.push(conversation.id);
       }
+      completed += 1;
+      onProgress?.(completed, indexable.length);
     }
 
     return failures;
@@ -89,6 +94,7 @@ export async function maybeAutoIndexConversations(
 
 export async function tryDeleteConversationVectors(
   conversationIds: string[],
+  onProgress?: (completed: number, total: number) => void,
 ): Promise<string[]> {
   if (conversationIds.length === 0) {
     return [];
@@ -98,12 +104,13 @@ export async function tryDeleteConversationVectors(
     const { vectorStore } = await getSearchProviders();
     const failures: string[] = [];
 
-    for (const conversationId of conversationIds) {
+    for (const [index, conversationId] of conversationIds.entries()) {
       try {
         await vectorStore.delete(conversationId);
       } catch {
         failures.push(conversationId);
       }
+      onProgress?.(index + 1, conversationIds.length);
     }
 
     return failures;

@@ -40,8 +40,9 @@ export function buildPublishCommand(): Command {
       assertNoneRemote(conversations, "clog publish");
 
       const publishedConversations: ConversationMeta[] = [];
+      const showProgress = process.stdout.isTTY && conversations.length > 1;
 
-      for (const conversation of conversations) {
+      for (const [index, conversation] of conversations.entries()) {
         if (
           selectors.length > 0 &&
           conversation.state !== "discovered" &&
@@ -91,9 +92,29 @@ export function buildPublishCommand(): Command {
 
         await updateConversation(publishedConversation);
         publishedConversations.push(publishedConversation);
+
+        if (showProgress) {
+          process.stdout.write(
+            `\r${index + 1}/${conversations.length} conversations published locally...`,
+          );
+        }
       }
 
-      const indexedFailures = await maybeAutoIndexConversations(publishedConversations);
+      if (showProgress) {
+        process.stdout.write("\n");
+      }
+
+      const indexedFailures = await maybeAutoIndexConversations(
+        publishedConversations,
+        showProgress
+          ? (completed, total) => {
+              process.stdout.write(`\r${completed}/${total} conversations indexed for vector search...`);
+              if (completed === total) {
+                process.stdout.write("\n");
+              }
+            }
+          : undefined,
+      );
 
       for (const failedId of indexedFailures) {
         process.stderr.write(
@@ -101,7 +122,7 @@ export function buildPublishCommand(): Command {
         );
       }
 
-      process.stdout.write(`Published ${conversations.length} conversation(s)\n`);
+      process.stdout.write(`Published ${conversations.length} conversation(s).\n`);
     });
 }
 

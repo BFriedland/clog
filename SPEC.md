@@ -1215,6 +1215,16 @@ If a source file needed for the discovered-conversation shortcut is unavailable,
 
 `published_message_count` is `null` until the first successful publish. After first publish it is retained as the active last-publish checkpoint, including when a conversation is later unpublished back to `staged`. Every publish or republish replaces it with the current parsed message count. `clog reset` clears the active publish fields when moving a staged conversation back to `discovered`.
 
+When publish runs in an interactive terminal against more than one conversation, it renders single-line progress for each phase, updating in place as work completes:
+
+```
+58/58 conversations published locally...
+58/58 conversations indexed for vector search...
+Published 58 conversation(s).
+```
+
+The publish-loop line ticks once per conversation as the raw copy and DB row are written. The indexing line ticks once per conversation as embeddings are produced and upserted to the vector store, so the user sees real-time progress through the slow embedding step. Each phase terminates with a newline so the final counts persist on screen. In non-TTY contexts (pipes, redirected output) only the final summary is written.
+
 **Why `publish` and not `commit`?** This is intentional. Git `commit` creates a permanent, immutable snapshot with a hash. `clog publish` is a state change — conversations can be edited and re-published. Calling it `commit` would set wrong expectations about immutability, revert semantics, and diff history. `publish` communicates what actually happens: "this conversation is now visible to agents and (eventually) teammates."
 
 ### 5.7 The `unpublish` Command
@@ -1228,7 +1238,7 @@ $ clog unpublish
 # Unpublish specific conversations or project-scoped batches
 $ clog unpublish a1b2c3 d4e5f6
 $ clog unpublish api-service
-Unpublished 2 conversations (moved to staged)
+Unpublished 2 conversations (moved to staging).
 ```
 
 This is a local state change. Phase 3 (§11.7) extends this: unpublishing a previously-synced conversation propagates as a retraction on the next `sync push`.
@@ -1236,6 +1246,16 @@ This is a local state change. Phase 3 (§11.7) extends this: unpublishing a prev
 With no selectors, `clog unpublish` moves every local published conversation back to `staged`. With selectors, project selectors are again just batching: `clog unpublish myapp` behaves like applying `clog unpublish <id>` to each matching local published conversation in project `myapp`.
 
 Unpublish changes only curation state and search eligibility. It does not clear `published_at`, `published_message_count`, or `publish_version`; those fields remain the active last-publish checkpoint for display and later republish decisions. To remove that active publish checkpoint, reset the conversation after unpublishing it.
+
+In an interactive terminal against more than one conversation, unpublish mirrors publish's progress output:
+
+```
+58/58 conversations unpublished locally...
+58/58 conversations removed from vector search...
+Unpublished 58 conversation(s) (moved to staging).
+```
+
+The first line ticks once per DB state transition; the second ticks once per vector-store deletion. Each phase terminates with a newline so the final counts persist. In non-TTY contexts only the final summary is written.
 
 ### 5.7.1 The `show` and `path` Commands
 

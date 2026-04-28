@@ -111,7 +111,7 @@ export function buildAddCommand(): Command {
       }
 
       renderWarnings(warnings);
-      process.stdout.write(`Added ${changed} conversation${changed === 1 ? "" : "s"}\n`);
+      process.stdout.write(`Added ${changed} conversation${changed === 1 ? "" : "s"}.\n`);
     });
 }
 
