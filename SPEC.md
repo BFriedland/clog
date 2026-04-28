@@ -818,7 +818,7 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 
 ```
 clog init                  Re-run setup (alias: `clog setup`; runs automatically on first use; explicit init can confirm author and offer search and MCP setup)
-clog status [--source] [--undiscoverable]  Show staged, modified, and discovered conversations + scan filter counts
+clog status [-c|--conversations] [--source] [--undiscoverable]  Show staged, modified, and discovered project summaries + scan filter counts
 clog list [filters]        List conversations (default: staged + published)
 clog add [selectors...]    Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
 clog add --all             Add all discovered conversations
@@ -893,16 +893,16 @@ A typical session looks like:
 $ clog status
 Conversations to be published:
   (use "clog reset <id>" to unstage)
-    added:         a1b2c3d  2026-02-18  api-service Debug auth token refresh logic
+    api-service  1 added     2026-02-18
 
 Changes not staged for publishing:
   (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)
-    modified:      b2c3d4e  2026-02-15  api-service Set up CI pipeline
+    api-service  1 modified  2026-02-15
 
 Untracked conversations:
   (use "clog add <id>" to stage for publishing)
-    discovered:    d4e5f6a  2026-02-18  api-service Add rate limiting middleware
-    discovered:    g7h8i9b  2026-02-17  frontend Fix SSR hydration mismatch
+    api-service  1 discovered  2026-02-18
+    frontend     1 discovered  2026-02-17
 
 (8 filtered by config, 4 ignored by clogignore)
 
@@ -940,19 +940,23 @@ $ clog show a1b2c3
 
 ### 5.2 The `status` Command
 
-`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local conversations that need attention, grouped like `git status`:
+`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local projects that need attention, grouped like `git status`:
 
 - **Conversations to be published:** staged conversations and published conversations whose refreshed raw copy is ahead of the last published checkpoint. `clog publish` (no arguments) publishes everything in this group.
 - **Changes not staged for publishing:** published conversations whose source file has grown (or otherwise differs from) the curated raw copy. `clog add <id>` refreshes the raw copy and moves the row into the "to be published" group; `clog publish <id>` pushes the source change through directly.
 - **Untracked conversations:** discovered conversations not yet staged.
 
+By default, each non-empty section shows one row per project. A project row includes the project name, compact conversation counts for the statuses present in that section, and the newest conversation date in that project bucket. For example, a project with one staged conversation and two modified published conversations in "Conversations to be published" renders `1 added, 2 modified`. Projects are sorted by newest displayed bucket date first, with project name as the tie-breaker.
+
 When there is nothing pending publication, `clog status` prints the existing clean-state message instead of empty sections.
 
-`clog status` accepts an optional `--source` flag. When present, each status row includes a `SOURCE` column immediately after the short `ID` column. The value is the canonical source key such as `claude-code` or `codex-cli`. When `--source` is absent, `clog status` preserves its default row layout.
+`clog status` accepts an optional `--conversations` flag, with `-c` as a shorthand. When present, status shows the conversation-level row layout with short ID, date, project, and title.
+
+`clog status` accepts an optional `--source` flag. When present, status shows the conversation-level row layout and includes a `SOURCE` column immediately after the short `ID` column. The value is the canonical source key such as `claude-code` or `codex-cli`.
 
 `clog status` accepts an optional `--undiscoverable` flag. When present, an additional section is appended listing conversations that were skipped because their project path metadata was unavailable. The section includes the explanatory line `project path missing: these conversation files have no cwd metadata`, then shows each source adapter and source file path. When `--undiscoverable` is absent and the undiscoverable count is non-zero, the filter summary line includes the count and a hint, e.g. `(2 undiscoverable; run "clog status --undiscoverable" for details)`. This is analogous to `git status --ignored`. `clog status` suppresses the per-file `path_filter_without_project` stderr warnings in favor of the summary count; other scan-driven commands continue to emit a single aggregated warning.
 
-Example shape with `--source`:
+Example shape with `--conversations --source`:
 
 ```text
 Untracked conversations:
@@ -960,7 +964,7 @@ Untracked conversations:
     discovered:    d4e5f6a  claude-code  2026-02-18  api-service Add rate limiting middleware
 ```
 
-`clog status` uses its own compact row format rather than the generic `clog list` table. The `PROJECT` field in status output is content-width: it is sized to the widest displayed project name in that status view, plus one trailing space of padding. It must not expand to consume additional terminal width beyond that content-based width. Any remaining horizontal space belongs to the rendered title text.
+`clog status` uses its own compact row format rather than the generic `clog list` table. In the conversation-level layout, the `PROJECT` field is content-width: it is sized to the widest displayed project name in that status view, plus one trailing space of padding. It must not expand to consume additional terminal width beyond that content-based width. Any remaining horizontal space belongs to the rendered title text.
 
 ### 5.2.1 The `reset` Command
 

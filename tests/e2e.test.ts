@@ -55,8 +55,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
     const { stdout } = await run(["status"]);
-    expect(stdout).toContain("1111111");
-    expect(stdout).toContain("discovered");
+    expect(stdout).toContain("api-service");
+    expect(stdout).toContain("1 discovered");
+    expect(stdout).not.toContain("1111111");
   });
 
   it("status --source includes the source column after the short id", async () => {
@@ -76,7 +77,7 @@ describe("e2e", () => {
     expect(discoveredLine).toContain("1717171  claude-code  2026-02-01");
   });
 
-  it("status sizes the project column to content width instead of a fixed wide field", async () => {
+  it("status --conversations sizes the project column to content width instead of a fixed wide field", async () => {
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", "18181818-1818-1818-1818-181818181818.jsonl"),
       "Compact spacing",
@@ -85,7 +86,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stdout } = await run(["status"], { COLUMNS: "120" });
+    const { stdout } = await run(["status", "--conversations"], { COLUMNS: "120" });
     const lines = stdout.split("\n");
     const discoveredLine = lines.find((line) => line.includes("1818181"));
 
@@ -381,7 +382,7 @@ describe("e2e", () => {
     expect(tail.stdout).not.toContain("[ASSISTANT] Working on it.");
   });
 
-  it("status renders discovered titles on one line", async () => {
+  it("status --conversations renders discovered titles on one line", async () => {
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", "33333333-3333-3333-3333-333333333333.jsonl"),
       "Agent report:\n\n1. First item\n2. Second item",
@@ -390,7 +391,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stdout } = await run(["status"]);
+    const { stdout } = await run(["status", "--conversations"]);
     expect(stdout).toContain("Agent report: 1. First item 2. Second item");
     expect(stdout).not.toContain("Agent report:\n\n1. First item");
   });
@@ -771,7 +772,8 @@ describe("e2e", () => {
     expect(stdout).toContain(
       'use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly',
     );
-    expect(stdout).toContain("bbbbbbb");
+    expect(stdout).toContain("api-service");
+    expect(stdout).toContain("1 modified");
   });
 
   it("status ignores the legacy excluded file and still succeeds", async () => {

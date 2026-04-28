@@ -1242,7 +1242,8 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Metadata changed");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 modified");
 
       const published = await getConversationById(convId);
       expect(published?.publishVersion).toBe(1);
@@ -1945,19 +1946,20 @@ describe("cli", () => {
       expect(stdout).toContain("No conversations pending publication");
     });
 
-    it("shows a staged conversation under 'Conversations to be published:'", async () => {
+    it("shows staged project counts under 'Conversations to be published:'", async () => {
       await seedStagedConversation("c1111111-1111-1111-1111-111111111111", {
         title: "Staged change",
       });
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
-      expect(stdout).toContain("Staged change");
-      expect(stdout).toContain("added:");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 added");
+      expect(stdout).not.toContain("Staged change");
       expect(stdout).toContain('use "clog reset <id>" to unstage');
     });
 
-    it("shows a discovered conversation under 'Untracked conversations:'", async () => {
+    it("shows discovered project counts under 'Untracked conversations:'", async () => {
       await insertConversation(
         makeConversation({
           id: "c2222222-2222-2222-2222-222222222222",
@@ -1969,8 +1971,49 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Untracked conversations:");
-      expect(stdout).toContain("Pending discovery");
-      expect(stdout).toContain("discovered:");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 discovered");
+      expect(stdout).not.toContain("Pending discovery");
+    });
+
+    it("sorts project summaries by newest bucket date and shows that date", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "c2323232-2323-2323-2323-232323232323",
+          sourceId: "c2323232-2323-2323-2323-232323232323",
+          state: "discovered",
+          projectName: "zeta",
+          createdAt: "2026-02-06T10:00:00.000Z",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "c2424242-2424-2424-2424-242424242424",
+          sourceId: "c2424242-2424-2424-2424-242424242424",
+          state: "discovered",
+          projectName: "api",
+          createdAt: "2026-02-03T10:00:00.000Z",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "c2525252-2525-2525-2525-252525252525",
+          sourceId: "c2525252-2525-2525-2525-252525252525",
+          state: "discovered",
+          projectName: "api",
+          createdAt: "2026-02-05T10:00:00.000Z",
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      const apiIndex = stdout.indexOf("api");
+      const zetaIndex = stdout.indexOf("zeta");
+
+      expect(apiIndex).toBeGreaterThan(-1);
+      expect(zetaIndex).toBeGreaterThan(-1);
+      expect(zetaIndex).toBeLessThan(apiIndex);
+      expect(stdout).toContain("zeta  1 discovered  2026-02-06");
+      expect(stdout).toContain("api   2 discovered  2026-02-05");
     });
 
     it("treats a published conversation whose raw copy is ahead of the published checkpoint as ready to publish", async () => {
@@ -1999,10 +2042,22 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
-      expect(stdout).toContain("Published with refreshed raw copy");
-      expect(stdout).toContain("modified:");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 modified");
+      expect(stdout).not.toContain("Published with refreshed raw copy");
       expect(stdout).toContain('use "clog publish" to publish these modified conversations');
       expect(stdout).not.toContain('use "clog reset <id>" to unstage');
+    });
+
+    it("--conversations restores the conversation-level status rows", async () => {
+      await seedStagedConversation("c3434343-3434-3434-3434-343434343434", {
+        title: "Conversation fallback",
+      });
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, ["--conversations"]);
+      expect(stdout).toContain("c343434");
+      expect(stdout).toContain("Conversation fallback");
+      expect(stdout).toContain("added:");
     });
 
     it("--source adds the source column after the short id", async () => {
@@ -2060,7 +2115,9 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
-      expect(stdout).toContain("Checkpoint lag");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 modified");
+      expect(stdout).not.toContain("Checkpoint lag");
       expect(stdout).toContain('use "clog publish" to publish these modified conversations');
     });
 
@@ -2090,8 +2147,9 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
-      expect(stdout).toContain("Metadata changed");
-      expect(stdout).toContain("modified:");
+      expect(stdout).toContain("webapp");
+      expect(stdout).toContain("1 modified");
+      expect(stdout).not.toContain("Metadata changed");
       expect(stdout).toContain('use "clog publish" to publish these modified conversations');
     });
 
@@ -2124,6 +2182,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("1 added, 1 modified");
       expect(stdout).toContain('use "clog publish" to publish everything here; "clog reset <id>" only unstages added conversations');
     });
 

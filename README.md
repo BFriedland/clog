@@ -26,6 +26,9 @@ clog status
 # Add source keys when multiple backends are in play
 clog status --source
 
+# Show individual conversation rows
+clog status --conversations
+
 # Publish a project straight to your local library
 clog publish myapp
 
@@ -48,7 +51,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog status` | Scan sources and show discovered, staged, and modified published conversations (`--source`) |
+| `clog status` | Scan sources and show project summaries for discovered, staged, and modified published conversations (`--conversations`, `--source`) |
 | `clog list [filters]` | List conversations — staged + published by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
 | `clog add [selector...]` | Stage conversations from a project or by ID (`--all`) |
 | `clog reset <selector...>` | Move staged conversations back to discovered |
