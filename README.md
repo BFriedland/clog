@@ -93,30 +93,33 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog init` | Re-run setup, confirm the default author, and offer vector search setup (`clog setup` is an alias) |
+| `clog init` | Re-run setup, confirm the default author, and offer vector search and MCP setup (`clog setup` is an alias) |
+| `clog mcp setup [claude\|codex\|both]` | Register clog's MCP server with Claude Code, Codex CLI, or both |
 | `clog config [get\|set]` | View or edit configuration |
 
 ## MCP Server
 
 Once you've added some conversations, you can give your coding agents direct access to them via MCP.
 
+The easiest path is:
+
+```bash
+clog mcp setup both
+```
+
 With Claude Code:
 
 ```bash
-claude mcp add clog -- npx clog-mcp
+claude mcp add clog -- npx -y clog-mcp
 ```
 
 With Codex CLI:
 
 ```bash
-codex mcp add clog -- node /path/to/clog/dist/mcp/server.js
+codex mcp add clog -- npx -y clog-mcp
 ```
 
-If `clog-mcp` isn't available through `npx` in your environment, point the MCP command at your local build instead:
-
-```bash
-claude mcp add clog -- node /path/to/clog/dist/mcp/server.js
-```
+If a `clog` MCP server is already registered for one of those clients, `clog mcp setup` replaces it automatically.
 
 This gives agents the following tools:
 

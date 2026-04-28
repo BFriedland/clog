@@ -7,7 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@inquirer/prompts", () => ({
   confirm: vi.fn(),
+  select: vi.fn(),
 }));
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFile: vi.fn(),
+  };
+});
 
 vi.mock("../src/sync/staleness.js", async () => {
   const actual = await vi.importActual<typeof import("../src/sync/staleness.js")>(
@@ -44,6 +53,10 @@ vi.mock("../src/cli/search-init.js", () => ({
 
 const promptsModule = await import("@inquirer/prompts");
 const mockedPromptConfirm = vi.mocked(promptsModule.confirm);
+const mockedPromptSelect = vi.mocked(promptsModule.select);
+
+const childProcessModule = await import("node:child_process");
+const mockedExecFile = vi.mocked(childProcessModule.execFile);
 
 const searchInitModule = await import("../src/cli/search-init.js");
 const mockedRunSearchInitCommand = vi.mocked(searchInitModule.runSearchInitCommand);
@@ -54,6 +67,7 @@ import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildInitCommand } from "../src/cli/init.js";
+import { buildMcpCommand } from "../src/cli/mcp.js";
 import { buildListCommand } from "../src/cli/list.js";
 import { buildPathCommand } from "../src/cli/path.js";
 import { buildPublishCommand } from "../src/cli/publish.js";
@@ -96,7 +110,9 @@ describe("cli", () => {
     await saveConfig(config);
 
     mockedPromptConfirm.mockReset();
+    mockedPromptSelect.mockReset();
     mockedRunSearchInitCommand.mockClear();
+    mockedExecFile.mockReset();
   });
 
   afterEach(async () => {
@@ -113,13 +129,17 @@ describe("cli", () => {
     it("offers vector search setup after a fresh interactive init", async () => {
       Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
       vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: true });
-      mockedPromptConfirm.mockResolvedValueOnce(false);
+      mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
       const { stdout } = await runBuiltCommand(buildInitCommand, []);
 
       expect(stdout).toContain(`Initialized clog at ${tempDir}`);
-      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Set up vector search now?",
+        default: true,
+      });
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(2, {
+        message: "Set up MCP integration now?",
         default: true,
       });
       expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
@@ -128,7 +148,7 @@ describe("cli", () => {
     it("runs search setup when the fresh interactive init prompt is accepted", async () => {
       Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
       vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: true });
-      mockedPromptConfirm.mockResolvedValueOnce(true);
+      mockedPromptConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
       await runBuiltCommand(buildInitCommand, []);
 
@@ -138,11 +158,11 @@ describe("cli", () => {
     it("offers vector search setup on rerun when search is still unset", async () => {
       Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
       vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
-      mockedPromptConfirm.mockResolvedValueOnce(false);
+      mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
       await runBuiltCommand(buildInitCommand, []);
 
-      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Set up vector search now?",
         default: true,
       });
@@ -158,13 +178,18 @@ describe("cli", () => {
         vectorStore: { type: "vectra" },
       };
       await saveConfig(config);
+      mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
       const { stdout } = await runBuiltCommand(buildInitCommand, []);
 
       expect(stdout).toContain("Warning: Vector search is already configured.");
-      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Re-run vector search setup?",
         default: false,
+      });
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(2, {
+        message: "Set up MCP integration now?",
+        default: true,
       });
       expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
     });
@@ -178,25 +203,122 @@ describe("cli", () => {
         vectorStore: { type: "vectra" },
       };
       await saveConfig(config);
-      mockedPromptConfirm.mockResolvedValueOnce(true);
+      mockedPromptConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
       await runBuiltCommand(buildInitCommand, []);
 
-      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Re-run vector search setup?",
         default: false,
       });
       expect(mockedRunSearchInitCommand).toHaveBeenCalledTimes(1);
     });
 
+    it("can set up MCP integration from init", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      mockedPromptSelect.mockResolvedValueOnce("codex");
+      mockExecFileSuccess();
+
+      const { stdout } = await runBuiltCommand(buildInitCommand, []);
+
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(2, {
+        message: "Set up MCP integration now?",
+        default: true,
+      });
+      expect(mockedPromptSelect).toHaveBeenCalledWith({
+        message: "Which MCP client should clog set up?",
+        choices: expect.any(Array),
+        default: "both",
+      });
+      expect(stdout).toContain("Codex CLI MCP integration configured");
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "codex",
+        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        expect.any(Function),
+      );
+    });
+
     it("skips the global pre-action hook for init but not ordinary commands", () => {
       expect(shouldSkipPreAction("init")).toBe(true);
       expect(shouldSkipPreAction("plunge")).toBe(true);
+      expect(shouldSkipPreAction("setup", "mcp")).toBe(true);
       expect(shouldSkipPreAction("status")).toBe(false);
     });
 
     it("registers setup as an alias for init", () => {
       expect(buildInitCommand().aliases()).toContain("setup");
+    });
+  });
+
+  describe("mcp", () => {
+    it("configures Codex CLI MCP integration", async () => {
+      mockExecFileSuccess();
+
+      const { stdout } = await runBuiltCommand(buildMcpCommand, ["setup", "codex"]);
+
+      expect(stdout).toContain("Codex CLI MCP integration configured");
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "codex",
+        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        expect.any(Function),
+      );
+    });
+
+    it("configures both clients when requested", async () => {
+      mockExecFileSuccess();
+
+      const { stdout } = await runBuiltCommand(buildMcpCommand, ["setup", "both"]);
+
+      expect(stdout).toContain("Claude Code MCP integration configured");
+      expect(stdout).toContain("Codex CLI MCP integration configured");
+      expect(mockedExecFile).toHaveBeenNthCalledWith(
+        1,
+        "claude",
+        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        expect.any(Function),
+      );
+      expect(mockedExecFile).toHaveBeenNthCalledWith(
+        2,
+        "codex",
+        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        expect.any(Function),
+      );
+    });
+
+    it("replaces an existing Claude Code server automatically", async () => {
+      mockExecFileFailure("server already exists");
+      mockExecFileSuccess();
+      mockExecFileSuccess();
+
+      const { stdout } = await runBuiltCommand(buildMcpCommand, ["setup", "claude"]);
+
+      expect(stdout).toContain("Claude Code MCP integration replaced");
+      expect(mockedExecFile).toHaveBeenNthCalledWith(
+        2,
+        "claude",
+        ["mcp", "remove", "clog"],
+        expect.any(Function),
+      );
+    });
+
+    it("replaces an existing Codex CLI server automatically", async () => {
+      mockExecFileFailure("already exists");
+      mockExecFileSuccess();
+      mockExecFileSuccess();
+
+      const { stdout } = await runBuiltCommand(buildMcpCommand, ["setup", "codex"]);
+
+      expect(stdout).toContain("Codex CLI MCP integration replaced");
+    });
+
+    it("reports a missing client executable clearly", async () => {
+      mockExecFileMissing();
+
+      await expect(runBuiltCommand(buildMcpCommand, ["setup", "claude"])).rejects.toThrow(
+        /Claude Code is not installed or not on PATH/,
+      );
     });
   });
 
@@ -2411,6 +2533,35 @@ async function seedRemoteConversation(
     publishVersion: 1,
     ...overrides,
   });
+}
+
+function mockExecFileSuccess(stdout = "", stderr = ""): void {
+  mockedExecFile.mockImplementation(
+    ((command: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, stdout, stderr);
+      return {} as ReturnType<typeof childProcessModule.execFile>;
+    }) as typeof childProcessModule.execFile,
+  );
+}
+
+function mockExecFileFailure(message: string, stderr = message, stdout = ""): void {
+  mockedExecFile.mockImplementationOnce(
+    ((command: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      const error = Object.assign(new Error(message), { code: 1 });
+      callback(error, stdout, stderr);
+      return {} as ReturnType<typeof childProcessModule.execFile>;
+    }) as typeof childProcessModule.execFile,
+  );
+}
+
+function mockExecFileMissing(): void {
+  mockedExecFile.mockImplementationOnce(
+    ((command: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      const error = Object.assign(new Error(`${command} not found`), { code: "ENOENT" });
+      callback(error, "", "");
+      return {} as ReturnType<typeof childProcessModule.execFile>;
+    }) as typeof childProcessModule.execFile,
+  );
 }
 
 async function seedPublishedConversationWithRawMessages(

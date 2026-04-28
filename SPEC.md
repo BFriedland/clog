@@ -817,7 +817,7 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 ### 5.1 Command Reference
 
 ```
-clog init                  Re-run setup (alias: `clog setup`; runs automatically on first use; explicit init can confirm author and offer search setup)
+clog init                  Re-run setup (alias: `clog setup`; runs automatically on first use; explicit init can confirm author and offer search and MCP setup)
 clog status [--source] [--undiscoverable]  Show staged, modified, and discovered conversations + scan filter counts
 clog list [filters]        List conversations (default: staged + published)
 clog add [selectors...]    Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
@@ -844,6 +844,7 @@ clog drain <selector> --to <path>  Export one conversation to a file
 clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a directory
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
+clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
 clog rename-author <old> <new>  Rename author across local conversations
 
 # Phase 2 — Semantic Search (see §10 for details)
@@ -2016,8 +2017,13 @@ This allows agents to `@`-mention clog resources directly.
 
 ```bash
 # Register with Claude Code
-claude mcp add clog -- npx clog-mcp
+claude mcp add clog -- npx -y clog-mcp
+
+# Register with Codex CLI
+codex mcp add clog -- npx -y clog-mcp
 ```
+
+`clog mcp setup` wraps those commands and is the preferred setup path from the clog CLI. `clog mcp setup claude` registers Claude Code, `clog mcp setup codex` registers Codex CLI, and `clog mcp setup both` does both in sequence. If a server named `clog` already exists for a selected client, clog replaces it automatically.
 
 The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. The `clog_list_published` and `clog_browse` tools only expose **published** conversations. `clog_list_staged` and `clog_get`/`clog_update` also work on staged conversations to support agent-assisted curation.
 
