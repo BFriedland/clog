@@ -817,7 +817,7 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 ### 5.1 Command Reference
 
 ```
-clog init                  Initialize clog (runs automatically on first use)
+clog init                  Re-run setup (alias: `clog setup`; runs automatically on first use; explicit init can confirm author and offer search setup)
 clog status [--source] [--undiscoverable]  Show staged, modified, and discovered conversations + scan filter counts
 clog list [filters]        List conversations (default: staged + published)
 clog add [selectors...]    Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
@@ -2103,7 +2103,7 @@ Initialized clog at /Users/alice/.clog
 
 The prompt shows the OS username as the default (accepted by pressing Enter). In non-TTY contexts (e.g., the MCP server), the OS username is used automatically with no prompt.
 
-`clog init` can also be run explicitly at any time. It is idempotent — it creates anything that's missing without overwriting anything that exists. If `config.json` already exists, it skips the name prompt.
+`clog init` can also be run explicitly at any time. It is idempotent — it creates anything that's missing without overwriting anything that exists. On an interactive explicit run, it asks for the default author name, using the current configured author as the default when `config.json` already exists and the OS username otherwise. If search is not configured yet, it then offers to start vector search setup immediately. In non-TTY contexts, it keeps the existing configured author when present, or uses the OS username when bootstrapping a new config.
 
 **Health checks (every command):**
 
@@ -2137,7 +2137,7 @@ To keep scope clear, these are explicitly **not** in Phase 1:
 - Automatic redaction of secrets (users edit raw files directly if needed)
 - Support for non-built-in conversation sources (Claude.ai web, Cursor, etc.)
 - Message-level editing (users edit raw JSONL files directly if needed)
-- Interactive CLI prompts for routine operations — commands like `edit`, `tag`, `config` use flags, not step-through wizards. The exception is `clog init`, which uses a brief interactive prompt for first-time setup (asking the developer's name). The principle: don't make users step through an interactive flow when they just want to set one field.
+- Interactive CLI prompts for routine operations — commands like `edit`, `tag`, `config` use flags, not step-through wizards. The main exception is explicit interactive `clog init`, which acts as a short rerunnable setup flow: it confirms the default author and can then offer vector search setup. The principle: don't make users step through an interactive flow when they just want to set one field.
 
 ---
 
@@ -2330,7 +2330,7 @@ If a deindex operation fails after the database has already been updated, the co
 
 Phase 2 adds three commands:
 
-**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently published conversations immediately. This is the only interactive prompt flow in Phase 2.
+**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently published conversations immediately. Users can reach this flow either directly with `clog search --init` or by accepting the follow-up prompt during a fresh interactive `clog init`.
 
 **`clog search <query>`** — Semantic search across published conversations.
 

@@ -5,6 +5,10 @@ import path from "node:path";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@inquirer/prompts", () => ({
+  confirm: vi.fn(),
+}));
+
 vi.mock("../src/sync/staleness.js", async () => {
   const actual = await vi.importActual<typeof import("../src/sync/staleness.js")>(
     "../src/sync/staleness.js",
@@ -34,11 +38,22 @@ const mockedCheckStaleness = vi.mocked(stalenessModule.checkStaleness);
 const visibilityModule = await import("../src/sync/visibility.js");
 const mockedCheckVisibility = vi.mocked(visibilityModule.checkVisibility);
 
+vi.mock("../src/cli/search-init.js", () => ({
+  runSearchInitCommand: vi.fn(async () => {}),
+}));
+
+const promptsModule = await import("@inquirer/prompts");
+const mockedPromptConfirm = vi.mocked(promptsModule.confirm);
+
+const searchInitModule = await import("../src/cli/search-init.js");
+const mockedRunSearchInitCommand = vi.mocked(searchInitModule.runSearchInitCommand);
+
 import { buildConfigCommand } from "../src/cli/config.js";
 import { buildAddCommand } from "../src/cli/add.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
+import { buildInitCommand } from "../src/cli/init.js";
 import { buildListCommand } from "../src/cli/list.js";
 import { buildPathCommand } from "../src/cli/path.js";
 import { buildPublishCommand } from "../src/cli/publish.js";
@@ -52,6 +67,7 @@ import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnpublishCommand } from "../src/cli/unpublish.js";
 import { buildUntagCommand } from "../src/cli/untag.js";
 import { applyHeadTail } from "../src/cli/common.js";
+import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
@@ -59,9 +75,12 @@ import type { ConversationMeta } from "../src/models/conversation.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
+const initModule = await import("../src/config/init.js");
+
 describe("cli", () => {
   let tempDir: string;
   let sourceDir: string;
+  let originalIsTTY: boolean | undefined;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-cli-"));
@@ -69,17 +88,116 @@ describe("cli", () => {
     sourceDir = path.join(tempDir, "claude-sources");
     await fs.mkdir(sourceDir, { recursive: true });
     await ensureClogHome({ interactive: false });
+    originalIsTTY = process.stdin.isTTY;
 
     const config = getDefaultConfig("testuser");
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     await saveConfig(config);
+
+    mockedPromptConfirm.mockReset();
+    mockedRunSearchInitCommand.mockClear();
   });
 
   afterEach(async () => {
     delete process.env.CLOG_HOME;
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: originalIsTTY,
+      configurable: true,
+    });
     await fs.rm(tempDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  describe("init (SPEC §7.3, §10)", () => {
+    it("offers vector search setup after a fresh interactive init", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: true });
+      mockedPromptConfirm.mockResolvedValueOnce(false);
+
+      const { stdout } = await runBuiltCommand(buildInitCommand, []);
+
+      expect(stdout).toContain(`Initialized clog at ${tempDir}`);
+      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+        message: "Set up vector search now?",
+        default: true,
+      });
+      expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
+    });
+
+    it("runs search setup when the fresh interactive init prompt is accepted", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: true });
+      mockedPromptConfirm.mockResolvedValueOnce(true);
+
+      await runBuiltCommand(buildInitCommand, []);
+
+      expect(mockedRunSearchInitCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("offers vector search setup on rerun when search is still unset", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      mockedPromptConfirm.mockResolvedValueOnce(false);
+
+      await runBuiltCommand(buildInitCommand, []);
+
+      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+        message: "Set up vector search now?",
+        default: true,
+      });
+      expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
+    });
+
+    it("does not offer vector search setup when search is already configured", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+
+      const { stdout } = await runBuiltCommand(buildInitCommand, []);
+
+      expect(stdout).toContain("Warning: Vector search is already configured.");
+      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+        message: "Re-run vector search setup?",
+        default: false,
+      });
+      expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
+    });
+
+    it("re-runs search setup when the configured-search warning prompt is accepted", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+      mockedPromptConfirm.mockResolvedValueOnce(true);
+
+      await runBuiltCommand(buildInitCommand, []);
+
+      expect(mockedPromptConfirm).toHaveBeenCalledWith({
+        message: "Re-run vector search setup?",
+        default: false,
+      });
+      expect(mockedRunSearchInitCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips the global pre-action hook for init but not ordinary commands", () => {
+      expect(shouldSkipPreAction("init")).toBe(true);
+      expect(shouldSkipPreAction("plunge")).toBe(true);
+      expect(shouldSkipPreAction("status")).toBe(false);
+    });
+
+    it("registers setup as an alias for init", () => {
+      expect(buildInitCommand().aliases()).toContain("setup");
+    });
   });
 
   // ========================================

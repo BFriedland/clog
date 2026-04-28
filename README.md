@@ -93,7 +93,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog init` | Initialize `~/.clog` and create a default config |
+| `clog init` | Re-run setup, confirm the default author, and offer vector search setup (`clog setup` is an alias) |
 | `clog config [get\|set]` | View or edit configuration |
 
 ## MCP Server

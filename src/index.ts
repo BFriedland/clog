@@ -8,11 +8,12 @@ import { buildDiffCommand } from "./cli/diff.js";
 import { buildDrainCommand } from "./cli/drain.js";
 import { buildEditCommand } from "./cli/edit.js";
 import { buildExcludeCommand } from "./cli/exclude.js";
+import { buildInitCommand } from "./cli/init.js";
 import { runIndexCommand } from "./cli/index-cmd.js";
 import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
 import { buildPlungeCommand } from "./cli/plunge.js";
-import { preAction, runWithCliErrorHandling } from "./cli/prelude.js";
+import { preAction, runWithCliErrorHandling, shouldSkipPreAction } from "./cli/prelude.js";
 import { buildPublishCommand } from "./cli/publish.js";
 import { buildRefreshCommand } from "./cli/refresh.js";
 import { buildRemoveCommand } from "./cli/remove.js";
@@ -28,8 +29,6 @@ import { buildUnpublishCommand } from "./cli/unpublish.js";
 import { buildUntagCommand } from "./cli/untag.js";
 import { runSearchInitCommand } from "./cli/search-init.js";
 import { runSearchCommand } from "./cli/search.js";
-import { initializeClog } from "./config/init.js";
-import { getClogHome } from "./utils/paths.js";
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -40,22 +39,14 @@ async function main(): Promise<void> {
       "Discover, curate, and share AI coding agent conversations as a searchable knowledge base",
     )
     .hook("preAction", async (_thisCommand, actionCommand) => {
-      if (actionCommand.name() === "plunge") {
+      if (shouldSkipPreAction(actionCommand.name())) {
         return;
       }
 
       await preAction({ interactive: Boolean(process.stdin.isTTY) });
     });
 
-  program
-    .command("init")
-    .description("Initialize clog")
-    .action(async () => {
-      const result = await initializeClog({ interactive: Boolean(process.stdin.isTTY) });
-      if (result.createdConfig) {
-        process.stdout.write(`Initialized clog at ${getClogHome()}\n`);
-      }
-    });
+  program.addCommand(buildInitCommand());
 
   program.addCommand(buildStatusCommand());
   program.addCommand(buildListCommand());

@@ -1,6 +1,12 @@
 import { ClogError } from "../utils/errors.js";
 import { ensureClogHome } from "../config/init.js";
 
+const PRE_ACTION_EXCLUDED_COMMANDS = new Set(["init", "plunge"]);
+
+export function shouldSkipPreAction(commandName: string): boolean {
+  return PRE_ACTION_EXCLUDED_COMMANDS.has(commandName);
+}
+
 export async function preAction({ interactive }: { interactive: boolean }): Promise<void> {
   await ensureClogHome({ interactive });
 }

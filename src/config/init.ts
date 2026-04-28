@@ -21,18 +21,35 @@ async function promptForAuthor(defaultAuthor: string): Promise<string> {
   }
 }
 
-export async function initializeClog({ interactive }: { interactive: boolean }): Promise<{
+export async function initializeClog(input: {
+  interactive: boolean;
+  forcePromptAuthor?: boolean;
+}): Promise<{
   createdConfig: boolean;
 }> {
+  const { interactive, forcePromptAuthor = false } = input;
   const configPath = getConfigPath();
   const hasConfig = await pathExists(configPath);
+  const osDefaultAuthor = os.userInfo().username;
 
   if (hasConfig) {
-    await loadConfig();
+    const config = await loadConfig();
+
+    if (!interactive || !forcePromptAuthor) {
+      return { createdConfig: false };
+    }
+
+    const defaultAuthor = config.author.trim() || osDefaultAuthor;
+    const author = await promptForAuthor(defaultAuthor);
+    await saveConfig({
+      ...config,
+      author,
+    });
+
     return { createdConfig: false };
   }
 
-  const defaultAuthor = os.userInfo().username;
+  const defaultAuthor = osDefaultAuthor;
   const author = interactive ? await promptForAuthor(defaultAuthor) : defaultAuthor;
 
   await saveConfig(getDefaultConfig(author));
