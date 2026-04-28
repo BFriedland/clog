@@ -212,7 +212,7 @@ export function renderWarnings(warnings: ClogWarning[]): void {
       warning.source ? `source=${warning.source}` : null,
       warning.path ? `path=${warning.path}` : null,
       warning.paths ? `paths=${warning.paths.join(", ")}` : null,
-      warning.guidance ? `guidance=${warning.guidance}` : null,
+      warning.guidance ? `hint: ${warning.guidance}` : null,
     ].filter(Boolean);
 
     const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";

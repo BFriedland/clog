@@ -889,7 +889,7 @@ describe("e2e", () => {
     expect(stderr).toContain(
       "warning: Skipped 2 conversation(s): project path missing: these conversation files have no cwd metadata.",
     );
-    expect(stderr).toContain('guidance=Run "clog status --undiscoverable" for details.');
+    expect(stderr).toContain('hint: Run "clog status --undiscoverable" for details.');
     expect(stderr).not.toContain(`${firstId}.jsonl`);
     expect(stderr).not.toContain(`${secondId}.jsonl`);
   });
