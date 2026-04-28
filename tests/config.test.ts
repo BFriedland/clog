@@ -33,11 +33,11 @@ describe("config", () => {
     expect(config.sources["codex-cli"].paths).toEqual(["~/.codex/sessions/"]);
   });
 
-  it("creates base clog directories and excluded file", async () => {
+  it("creates base clog directories and clogignore", async () => {
     await ensureClogHomeDirs();
 
     await expect(fs.stat(getClogHome())).resolves.toBeTruthy();
-    await expect(fs.readFile(path.join(tempDir, "excluded"), "utf8")).resolves.toBe("");
+    await expect(fs.readFile(path.join(tempDir, "clogignore"), "utf8")).resolves.toBe("");
   });
 
   it("round-trips a saved config", async () => {

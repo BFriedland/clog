@@ -1,7 +1,8 @@
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { deleteConversation, updateConversation } from "../db/index.js";
+import { deleteConversation, listConversations, updateConversation } from "../db/index.js";
+import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { ClogError } from "../utils/errors.js";
 import { nowIso } from "../utils/time.js";
@@ -11,49 +12,54 @@ import {
   getScanWarningsForCommand,
   pathExists,
   renderWarnings,
-  resolveManyConversationsOrFail,
 } from "./common.js";
+import { collectProjectAddTargets } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildAddCommand(): Command {
   return new Command("add")
     .description("Stage or refresh conversations")
-    .argument("[ids...]", "Conversation IDs")
+    .argument("[selectors...]", "Conversation IDs or project selectors")
     .option("--all")
-    .option("--project <name>")
-    .action(async (ids: string[], options) => {
+    .action(async (selectors: string[], options) => {
       const config = await loadConfig();
+      const preScanCandidates = selectors.length > 0 ? await listConversations() : [];
+      const scanResult = await scanLocalSources(config);
+      renderWarnings(getScanWarningsForCommand(scanResult));
 
-      let conversations: Awaited<ReturnType<typeof resolveManyConversationsOrFail>> = [];
+      let conversations: ConversationMeta[] = [];
 
-      if (ids.length > 0) {
+      if (selectors.length > 0) {
         try {
-          conversations = await resolveManyConversationsOrFail(ids);
-        } catch {
-          const scanResult = await scanLocalSources(config);
-          renderWarnings(getScanWarningsForCommand(scanResult));
-          try {
-            conversations = await resolveManyConversationsOrFail(ids);
-          } catch (err) {
-            if (err instanceof ClogError && err.message.startsWith("No conversation matches")) {
-              throw new ClogError(
-                `${err.message}\nhint: pass a conversation ID prefix (4+ chars), or --project <name> to stage a whole project`,
+          conversations = resolveConversationSelectors({
+            commandName: "clog add",
+            tokens: selectors,
+            idCandidates: await listConversations(),
+            projectCandidates: await collectProjectAddTargets(),
+          });
+        } catch (error) {
+          if (
+            error instanceof ClogError &&
+            (error.message.startsWith("No conversation") || error.message.startsWith("No project"))
+          ) {
+            const missingSourceTarget = await findMissingSourceTarget(preScanCandidates, selectors);
+            if (missingSourceTarget) {
+              throw new Error(
+                `Source file is missing for ${missingSourceTarget.id}. Run "clog status" to refresh discovery.`,
               );
             }
-            throw err;
           }
+
+          throw error;
         }
       }
 
-      if (options.all || options.project) {
-        const scanResult = await scanLocalSources(config);
-        renderWarnings(getScanWarningsForCommand(scanResult));
-        conversations = await import("../db/index.js").then(({ listConversations }) =>
-          listConversations({
-            states: ["discovered"],
-            projectName: options.project,
-          }),
-        );
+      if (options.all) {
+        conversations = await listConversations({
+          states: ["discovered"],
+          origin: "local",
+        });
       }
 
       if (conversations.length === 0) {
@@ -63,7 +69,7 @@ export function buildAddCommand(): Command {
 
       let changed = 0;
       const warnings: ClogWarning[] = [];
-      const isScanDrivenSelection = Boolean(options.all || options.project);
+      const isScanDrivenSelection = true;
 
       for (const conversation of conversations) {
         if (!(await pathExists(conversation.sourcePath))) {
@@ -107,4 +113,42 @@ export function buildAddCommand(): Command {
       renderWarnings(warnings);
       process.stdout.write(`Added ${changed} conversation${changed === 1 ? "" : "s"}\n`);
     });
+}
+
+async function findMissingSourceTarget(
+  candidates: ConversationMeta[],
+  selectors: string[],
+): Promise<ConversationMeta | null> {
+  for (const token of selectors) {
+    if (token.startsWith("project:")) {
+      continue;
+    }
+
+    const trimmed = token.trim();
+    const [rawPrefix, rawSource] = trimmed.split("@", 2);
+    const prefix = rawPrefix.toLowerCase();
+    const source = rawSource?.toLowerCase();
+
+    if (prefix.length < 4) {
+      continue;
+    }
+
+    const matches = candidates.filter((conversation) => {
+      if (source && conversation.source.toLowerCase() !== source) {
+        return false;
+      }
+
+      return conversation.id.toLowerCase().startsWith(prefix);
+    });
+
+    if (matches.length !== 1) {
+      continue;
+    }
+
+    if (!(await pathExists(matches[0].sourcePath))) {
+      return matches[0];
+    }
+  }
+
+  return null;
 }

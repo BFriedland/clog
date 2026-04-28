@@ -146,7 +146,7 @@ describe("e2e", () => {
     expect(stdout).not.toContain("Tagged debugging");
   });
 
-  it("list warns about invalid excluded entries but still succeeds", async () => {
+  it("list ignores the legacy excluded file and still succeeds", async () => {
     await fs.mkdir(clogHome, { recursive: true });
     await fs.writeFile(path.join(clogHome, "excluded"), "not-valid\n", "utf8");
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
@@ -155,7 +155,7 @@ describe("e2e", () => {
     const { stdout, stderr } = await run(["list"]);
 
     expect(stdout).toContain("No staged or published conversations.");
-    expect(stderr).toContain("warning: Invalid excluded-file entry at line 1.");
+    expect(stderr).toBe("");
   });
 
   it("list supports explicit columns", async () => {
@@ -224,7 +224,7 @@ describe("e2e", () => {
     await expect(run(["drain", "deadbeef"])).rejects.toMatchObject({
       code: 1,
       stderr: expect.stringContaining(
-        `No conversation matches "deadbeef". Run 'clog list' or 'clog status' to find available IDs.`,
+        `No conversation matches "deadbeef". Run 'clog list' or 'clog status' to inspect available conversations and projects.`,
       ),
     });
   });
@@ -561,7 +561,7 @@ describe("e2e", () => {
     expect(stdout).toContain("Refreshed into raw.");
   });
 
-  it("targeted add fails clearly when the stored source path is missing", async () => {
+  it("targeted add fails clearly when the conversation disappears during refresh", async () => {
     const id = "24242424-2424-2424-2424-242424242424";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
     await writeClaudeConversation(filePath, "Targeted add missing source");
@@ -572,7 +572,7 @@ describe("e2e", () => {
     await fs.rm(filePath);
 
     await expect(run(["add", id.slice(0, 7)])).rejects.toMatchObject({
-      stderr: expect.stringContaining('Source file is missing for 24242424-2424-2424-2424-242424242424. Run "clog status" to refresh discovery.'),
+      stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
     });
   });
 
@@ -592,6 +592,29 @@ describe("e2e", () => {
     const { stdout } = await run(["list", "--state", "discovered"]);
     expect(stdout).toContain("8888888");
     expect(stdout).toContain("discovered");
+  });
+
+  it("reset with no args resets every staged conversation", async () => {
+    const firstId = "89898989-8989-8989-8989-898989898989";
+    const secondId = "8a8a8a8a-8a8a-8a8a-8a8a-8a8a8a8a8a8a";
+    await writeClaudeConversation(
+      path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
+      "Reset staged conversation one",
+    );
+    await writeClaudeConversation(
+      path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
+      "Reset staged conversation two",
+    );
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["status"]);
+    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
+    await run(["reset"]);
+
+    const { stdout } = await run(["list", "--state", "discovered"]);
+    expect(stdout).toContain("8989898");
+    expect(stdout).toContain("8a8a8a8");
   });
 
   it("reset rejects conversations that are not staged", async () => {
@@ -628,7 +651,32 @@ describe("e2e", () => {
     expect(stdout).toContain("State:   staged");
   });
 
-  it("exclude removes a conversation and unexclude allows rediscovery", async () => {
+  it("unpublish with no args unstages every published conversation", async () => {
+    const firstId = "9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a";
+    const secondId = "9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
+    await writeClaudeConversation(
+      path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
+      "Unpublish one",
+    );
+    await writeClaudeConversation(
+      path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
+      "Unpublish two",
+    );
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["status"]);
+    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
+    await run(["publish"]);
+    await run(["unpublish"]);
+
+    const first = await run(["show", firstId.slice(0, 7)]);
+    const second = await run(["show", secondId.slice(0, 7)]);
+    expect(first.stdout).toContain("State:   staged");
+    expect(second.stdout).toContain("State:   staged");
+  });
+
+  it("exclude writes clogignore and unexclude removes the exact rule again", async () => {
     const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -648,7 +696,7 @@ describe("e2e", () => {
     expect(afterUnexclude.stdout).toContain("Exclude and unexclude");
   });
 
-  it("list --all shows excluded conversations that are still discoverable", async () => {
+  it("list --all shows ignored conversations that are still discoverable", async () => {
     const id = "dddddddd-dddd-dddd-dddd-dddddddddddd";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -661,42 +709,37 @@ describe("e2e", () => {
     await run(["exclude", id.slice(0, 7)]);
 
     const { stdout } = await run(["list", "--all"]);
-    expect(stdout).toContain("excluded");
+    expect(stdout).toContain("ignored");
     expect(stdout).toContain("Excluded but still on disk");
   });
 
-  it("exclude fails when the excluded file has invalid lines", async () => {
+  it("exclude rejects project selector syntax", async () => {
     const id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Broken excluded file",
+      "Reject project selector",
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await fs.mkdir(clogHome, { recursive: true });
-    await fs.writeFile(path.join(clogHome, "excluded"), "not-valid\n", "utf8");
 
-    await expect(run(["exclude", id.slice(0, 7)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("Excluded file is invalid."),
+    await expect(run(["exclude", "project:api-service"])).rejects.toMatchObject({
+      stderr: expect.stringContaining("does not accept project selectors"),
     });
   });
 
-  it("unexclude fails when the excluded file has duplicate entries", async () => {
+  it("unexclude removes exact matching lines without using selector semantics", async () => {
     await fs.mkdir(clogHome, { recursive: true });
     await fs.writeFile(
-      path.join(clogHome, "excluded"),
-      [
-        "ffffffff-ffff-ffff-ffff-ffffffffffff@claude-code",
-        "ffffffff-ffff-ffff-ffff-ffffffffffff@claude-code",
-      ].join("\n"),
+      path.join(clogHome, "clogignore"),
+      ["fffffff", "other", "fffffff"].join("\n"),
       "utf8",
     );
 
-    await expect(run(["unexclude", "fffffff"])).rejects.toMatchObject({
-      stderr: expect.stringContaining("Excluded file is invalid."),
-    });
+    await run(["unexclude", "fffffff"]);
+
+    await expect(fs.readFile(path.join(clogHome, "clogignore"), "utf8")).resolves.toBe("other\n");
   });
 
   it("status reports published source changes as changes not staged for publishing", async () => {
@@ -731,7 +774,7 @@ describe("e2e", () => {
     expect(stdout).toContain("bbbbbbb");
   });
 
-  it("status warns about invalid excluded entries but still succeeds", async () => {
+  it("status ignores the legacy excluded file and still succeeds", async () => {
     await fs.mkdir(clogHome, { recursive: true });
     await fs.writeFile(path.join(clogHome, "excluded"), "not-valid\n", "utf8");
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
@@ -740,8 +783,7 @@ describe("e2e", () => {
     const { stdout, stderr } = await run(["status"]);
 
     expect(stdout).toContain("No conversations pending publication.");
-    expect(stderr).toContain("warning: Invalid excluded-file entry at line 1.");
-    expect(stderr).toContain('guidance=Expected "sourceId@source".');
+    expect(stderr).toBe("");
   });
 
   it("status --undiscoverable shows details without repeating the hint", async () => {

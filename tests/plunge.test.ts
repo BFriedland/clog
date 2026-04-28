@@ -11,7 +11,7 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import * as dbModule from "../src/db/index.js";
 import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { getClogDbPath, getClogIgnorePath, getConfigPath, getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { getClogDbPath, getClogIgnorePath, getConfigPath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("plunge", () => {
@@ -86,7 +86,7 @@ describe("plunge", () => {
     expect(report.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          check: 17,
+          check: 15,
           severity: "fatal",
           subsystem: "config",
         }),
@@ -218,34 +218,38 @@ describe("plunge", () => {
     const report = await generatePlungeReport();
 
     expect(report.exitCode).toBe(0);
-    expect(findCheck(report, 18)?.severity).toBe("info");
+    expect(findCheck(report, 16)?.severity).toBe("info");
   });
 
-  it("reports malformed excluded entries", async () => {
+  it("accepts supported literal clogignore rules", async () => {
     await seedConfig();
-    await fs.writeFile(getExcludedPath(), "not-valid\n", "utf8");
+    await fs.writeFile(
+      getClogIgnorePath(),
+      ["myapp", "12345678-1234-1234-1234-123456789abc.jsonl", "~/personal/"].join("\n"),
+      "utf8",
+    );
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 13)?.message).toContain("Invalid excluded entry");
+    expect(findCheck(report, 13)).toBeUndefined();
+    expect(findCheck(report, 14)).toBeUndefined();
   });
 
-  it("reports malformed clogignore rules and dates", async () => {
+  it("reports unsupported clogignore rule syntax", async () => {
     await seedConfig();
-    await fs.writeFile(getClogIgnorePath(), "wat\nbefore:not-a-date\n", "utf8");
+    await fs.writeFile(getClogIgnorePath(), "before:not-a-date\n", "utf8");
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 15)?.message).toContain("Unrecognized clogignore rule");
-    expect(findCheck(report, 16)).toBeUndefined();
+    expect(findCheck(report, 14)?.message).toContain("Unsupported clogignore rule");
   });
 
-  it("reports unreadable excluded as a read error instead of a fake line number", async () => {
+  it("reports unreadable clogignore as a read error instead of a fake line number", async () => {
     await seedConfig();
     const originalReadFile = fs.readFile.bind(fs);
     const readFileSpy = vi.spyOn(fs, "readFile");
     readFileSpy.mockImplementation(async (filePath, ...args) => {
-      if (String(filePath) === getExcludedPath()) {
+      if (String(filePath) === getClogIgnorePath()) {
         const error = new Error("permission denied") as NodeJS.ErrnoException;
         error.code = "EACCES";
         throw error;
@@ -256,13 +260,13 @@ describe("plunge", () => {
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 13)?.message).toContain("excluded could not be read");
+    expect(findCheck(report, 13)?.message).toContain("clogignore could not be read");
     expect(findCheck(report, 13)?.message).not.toContain("line 0");
   });
 
   it("is deterministic apart from ranAt", async () => {
     await seedConfig();
-    await fs.writeFile(getExcludedPath(), "not-valid\n", "utf8");
+    await fs.writeFile(getClogIgnorePath(), "project:myapp\n", "utf8");
 
     const first = await generatePlungeReport();
     const second = await generatePlungeReport();

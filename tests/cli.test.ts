@@ -35,6 +35,7 @@ const visibilityModule = await import("../src/sync/visibility.js");
 const mockedCheckVisibility = vi.mocked(visibilityModule.checkVisibility);
 
 import { buildConfigCommand } from "../src/cli/config.js";
+import { buildAddCommand } from "../src/cli/add.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
@@ -55,7 +56,7 @@ import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("cli", () => {
@@ -782,6 +783,43 @@ describe("cli", () => {
   // ========================================
 
   describe("reset (SPEC §5.2.1)", () => {
+    it("prints a helpful message when called with no args and nothing is staged", async () => {
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+      expect(stdout).toContain("No staged conversations");
+    });
+
+    it("explains when only modified published conversations remain", async () => {
+      const convId = "32323232-aaaa-bbbb-cccc-323232323232";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeJsonl(sourcePath, [
+        userLine("First prompt", "2026-02-01T10:00:00.000Z"),
+        assistantLine("First reply", "msg_01", "2026-02-01T10:00:01.000Z"),
+        userLine("Second prompt", "2026-02-01T10:00:02.000Z"),
+        assistantLine("Second reply", "msg_02", "2026-02-01T10:00:03.000Z"),
+      ]);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          filePath: rawPath,
+          state: "published",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+
+      expect(stdout).toContain("No added conversations to reset.");
+      expect(stdout).toContain('use "clog publish" to publish them');
+    });
+
     it("rejects a discovered conversation with a helpful message", async () => {
       const conv = await seedConversation("31313131-3131-3131-3131-313131313131", {
         state: "discovered",
@@ -789,6 +827,17 @@ describe("cli", () => {
       await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
         /not staged/i,
       );
+    });
+
+    it("resets all staged conversations when called with no args", async () => {
+      const first = await seedStagedConversation("30303030-3030-3030-3030-303030303030");
+      const second = await seedStagedConversation("31303030-3030-3030-3030-303030303030");
+
+      const { stdout } = await runBuiltCommand(buildResetCommand, []);
+
+      expect(stdout).toContain("Reset 2 conversation(s)");
+      expect((await getConversationById(first.id))?.state).toBe("discovered");
+      expect((await getConversationById(second.id))?.state).toBe("discovered");
     });
 
     it("refuses a remote conversation (SPEC §5.2.1, §11.1)", async () => {
@@ -804,6 +853,11 @@ describe("cli", () => {
   // ========================================
 
   describe("unpublish (SPEC §5.7)", () => {
+    it("prints a helpful message when called with no args and nothing is published", async () => {
+      const { stdout } = await runBuiltCommand(buildUnpublishCommand, []);
+      expect(stdout).toContain("No published conversations");
+    });
+
     it("moves a published conversation back to staged and clears indexedAt", async () => {
       const convId = "41414141-4141-4141-4141-414141414141";
       const rawPath = getRawConversationPath("claude-code", convId);
@@ -830,6 +884,25 @@ describe("cli", () => {
       // publishedAt / publishedMessageCount / publishVersion are preserved as the checkpoint.
       expect(reloaded?.publishedAt).toBe("2026-02-01T10:00:00.000Z");
       expect(reloaded?.publishVersion).toBe(1);
+    });
+
+    it("unpublishes all published conversations when called with no args", async () => {
+      const first = await seedPublishedConversationWithRawMessages(
+        "40404040-4040-4040-4040-404040404040",
+        1,
+        1,
+      );
+      const second = await seedPublishedConversationWithRawMessages(
+        "41404040-4040-4040-4040-404040404040",
+        1,
+        1,
+      );
+
+      const { stdout } = await runBuiltCommand(buildUnpublishCommand, []);
+
+      expect(stdout).toContain("Unpublished 2 conversation(s)");
+      expect((await getConversationById(first.id))?.state).toBe("staged");
+      expect((await getConversationById(second.id))?.state).toBe("staged");
     });
 
     it("throws when the conversation is not published", async () => {
@@ -942,6 +1015,211 @@ describe("cli", () => {
       expect(reloaded?.publishVersion).toBe(2);
       expect(reloaded?.publishedAt).not.toBe("2026-02-01T10:00:00.000Z");
       expect(reloaded?.modifiedAt).toBe(reloaded?.publishedAt);
+    });
+  });
+
+  describe("project-aware selectors", () => {
+    it("stages discovered conversations by bare project name", async () => {
+      const firstId = "71111111-1111-1111-1111-111111111111";
+      const secondId = "72222222-2222-2222-2222-222222222222";
+      const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
+      const secondSource = claudeDiscoveredSourcePath(sourceDir, "api-service", secondId);
+      await writeMinimalClaudeJsonl(firstSource, "API one");
+      await writeMinimalClaudeJsonl(secondSource, "API two");
+
+      await seedConversation(firstId, {
+        sourcePath: firstSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(secondId, {
+        sourcePath: secondSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation("73333333-3333-3333-3333-333333333333", {
+        projectName: "webapp",
+      });
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+
+      expect(stdout).toContain("Added 2 conversations");
+      expect((await getConversationById(firstId))?.state).toBe("staged");
+      expect((await getConversationById(secondId))?.state).toBe("staged");
+      expect((await getConversationById("73333333-3333-3333-3333-333333333333"))?.state).toBe(
+        "discovered",
+      );
+    });
+
+    it("scans before resolving a project selector so newly discovered project conversations are included", async () => {
+      const existingId = "7bbbbbbb-1111-1111-1111-111111111111";
+      const newId = "7ccccccc-2222-2222-2222-222222222222";
+      const existingSource = claudeDiscoveredSourcePath(sourceDir, "api-service", existingId);
+      const newSource = claudeDiscoveredSourcePath(sourceDir, "api-service", newId);
+      await writeMinimalClaudeJsonl(existingSource, "Existing API");
+      await writeMinimalClaudeJsonl(newSource, "New API");
+
+      await seedConversation(existingId, {
+        sourcePath: existingSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+
+      expect(stdout).toContain("Added 2 conversations");
+      expect((await getConversationById(existingId))?.state).toBe("staged");
+      expect((await getConversationById(newId))?.state).toBe("staged");
+    });
+
+    it("refreshes published conversations by project selector", async () => {
+      const convId = "7aaaaaaa-1111-2222-3333-444444444444";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", convId);
+      await writeMinimalClaudeJsonl(sourcePath, "Initial prompt");
+
+      await seedConversation(convId, {
+        sourcePath,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildAddCommand, [convId]);
+      await runBuiltCommand(buildPublishCommand, [convId]);
+
+      const firstPublished = await getConversationById(convId);
+      expect(firstPublished?.state).toBe("published");
+      const firstModifiedAt = firstPublished?.modifiedAt;
+      const firstPublishedAt = firstPublished?.publishedAt;
+      const firstPublishVersion = firstPublished?.publishVersion;
+      const firstPublishedMessageCount = firstPublished?.publishedMessageCount;
+
+      await writeJsonl(sourcePath, [
+        userLine("Initial prompt"),
+        assistantLine("Response", "msg_01"),
+        userLine("Follow-up", "2026-02-01T10:05:00.000Z"),
+        assistantLine("Updated response", "msg_02", "2026-02-01T10:05:01.000Z"),
+      ]);
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+      expect(stdout).toContain("Added 1 conversation");
+
+      const refreshed = await getConversationById(convId);
+      expect(refreshed?.state).toBe("published");
+      expect(refreshed?.modifiedAt).not.toBe(firstModifiedAt);
+      expect(refreshed?.publishedAt).toBe(firstPublishedAt);
+      expect(refreshed?.publishVersion).toBe(firstPublishVersion);
+      expect(refreshed?.publishedMessageCount).toBe(firstPublishedMessageCount);
+
+      const rawContent = await fs.readFile(refreshed!.filePath!, "utf8");
+      const sourceContent = await fs.readFile(sourcePath, "utf8");
+      expect(rawContent).toBe(sourceContent);
+    });
+
+    it("reports ambiguity when a bare selector matches both an id prefix and a project", async () => {
+      const sourcePath = claudeDiscoveredSourcePath(
+        sourceDir,
+        "other-project",
+        "webapp0000-1111-1111-1111-111111111111",
+      );
+      await writeMinimalClaudeJsonl(sourcePath, "Collision");
+
+      await seedConversation("webapp0000-1111-1111-1111-111111111111", {
+        sourcePath,
+        projectName: "other-project",
+      });
+      const webappSource = claudeDiscoveredSourcePath(
+        sourceDir,
+        "webapp",
+        "74444444-4444-4444-4444-444444444444",
+      );
+      await writeMinimalClaudeJsonl(webappSource, "Project row");
+      await seedConversation("74444444-4444-4444-4444-444444444444", {
+        sourcePath: webappSource,
+        projectName: "webapp",
+        projectPath: "/Users/testuser/projects/webapp",
+      });
+
+      await expect(runBuiltCommand(buildAddCommand, ["webapp"])).rejects.toThrow(/ambiguous/i);
+    });
+
+    it("resets staged conversations by project selector", async () => {
+      const first = await seedStagedConversation("75555555-5555-5555-5555-555555555555", {
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      const second = await seedStagedConversation("76666666-6666-6666-6666-666666666666", {
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildResetCommand, ["api-service"]);
+
+      expect((await getConversationById(first.id))?.state).toBe("discovered");
+      expect((await getConversationById(second.id))?.state).toBe("discovered");
+    });
+
+    it("publishes and unpublishes by project selector", async () => {
+      const firstId = "77777777-7777-7777-7777-777777777771";
+      const secondId = "77777777-7777-7777-7777-777777777772";
+      const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
+      const secondSource = claudeDiscoveredSourcePath(sourceDir, "api-service", secondId);
+      await writeMinimalClaudeJsonl(firstSource, "Publish one");
+      await writeMinimalClaudeJsonl(secondSource, "Publish two");
+
+      await seedConversation(firstId, {
+        sourcePath: firstSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(secondId, {
+        sourcePath: secondSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      await runBuiltCommand(buildPublishCommand, ["project:api-service"]);
+      expect((await getConversationById(firstId))?.state).toBe("published");
+      expect((await getConversationById(secondId))?.state).toBe("published");
+
+      await runBuiltCommand(buildUnpublishCommand, ["api-service"]);
+      expect((await getConversationById(firstId))?.state).toBe("staged");
+      expect((await getConversationById(secondId))?.state).toBe("staged");
+    });
+
+    it("resolves drain project selectors against the filtered candidate set", async () => {
+      const aliceId = "78888888-8888-8888-8888-888888888888";
+      const bobId = "79999999-9999-9999-9999-999999999999";
+      const aliceRaw = getRawConversationPath("claude-code", aliceId);
+      const bobRaw = getRawConversationPath("claude-code", bobId);
+      await writeMinimalClaudeJsonl(aliceRaw, "Alice API");
+      await writeMinimalClaudeJsonl(bobRaw, "Bob API");
+
+      await seedConversation(aliceId, {
+        state: "staged",
+        filePath: aliceRaw,
+        author: "alice",
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(bobId, {
+        state: "staged",
+        filePath: bobRaw,
+        author: "bob",
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildDrainCommand, ["api-service", "--author", "alice"]);
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.id).toBe(aliceId);
+    });
+
+    it("rejects project selectors on singular commands", async () => {
+      await expect(runBuiltCommand(buildShowCommand, ["project:api-service"])).rejects.toThrow(
+        /only accepts conversation IDs/i,
+      );
     });
   });
 
@@ -1336,7 +1614,7 @@ describe("cli", () => {
       expect(stdout).toContain("Author-less local");
     });
 
-    it("--all rediscovers excluded conversations from the source adapter (SPEC §5.3)", async () => {
+    it("--all rediscovers ignored conversations from the source adapter (SPEC §5.3)", async () => {
       const convId = "bb000000-0000-0000-0000-000000000002";
       const sourcePath = path.join(sourceDir, "-Users-alice-proj", `${convId}.jsonl`);
       await writeJsonl(sourcePath, [
@@ -1344,15 +1622,15 @@ describe("cli", () => {
           type: "user",
           timestamp: "2026-02-01T10:00:00.000Z",
           cwd: "/Users/alice/proj",
-          message: { role: "user", content: "To be excluded" },
+          message: { role: "user", content: "To be ignored" },
         },
       ]);
 
-      await fs.writeFile(getExcludedPath(), `${convId}@claude-code\n`, "utf8");
+      await fs.writeFile(getClogIgnorePath(), `${convId}\n`, "utf8");
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
       expect(stdout).toContain(convId.slice(0, 7));
-      expect(stdout).toContain("excluded");
+      expect(stdout).toContain("ignored");
     });
 
     it("--all renders the display table including staged and published rows", async () => {
@@ -1436,6 +1714,7 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Staged change");
       expect(stdout).toContain("added:");
+      expect(stdout).toContain('use "clog reset <id>" to unstage');
     });
 
     it("shows a discovered conversation under 'Untracked conversations:'", async () => {
@@ -1482,6 +1761,8 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Published with refreshed raw copy");
       expect(stdout).toContain("modified:");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
+      expect(stdout).not.toContain('use "clog reset <id>" to unstage');
     });
 
     it("--source adds the source column after the short id", async () => {
@@ -1540,6 +1821,7 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Checkpoint lag");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
     });
 
     it("marks a published conversation as ready when metadata changed after publish", async () => {
@@ -1570,6 +1852,39 @@ describe("cli", () => {
       expect(stdout).toContain("Conversations to be published:");
       expect(stdout).toContain("Metadata changed");
       expect(stdout).toContain("modified:");
+      expect(stdout).toContain('use "clog publish" to publish these modified conversations');
+    });
+
+    it("uses a mixed hint when added and modified conversations are both present", async () => {
+      await seedStagedConversation("c7878787-7878-7878-7878-787878787878", {
+        title: "Added conversation",
+      });
+
+      const convId = "c7979797-7979-7979-7979-797979797979";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("First"),
+        assistantLine("Reply", "msg_01"),
+      ]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Modified published conversation",
+          state: "published",
+          filePath: rawPath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
+          modifiedAt: "2026-02-01T10:05:00.000Z",
+          publishedAt: "2026-02-01T10:00:00.000Z",
+          publishedMessageCount: 2,
+          publishVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain('use "clog publish" to publish everything here; "clog reset <id>" only unstages added conversations');
     });
 
     it("shows unindexed published conversations in a search section without requiring a remote", async () => {
@@ -2026,7 +2341,7 @@ async function seedStagedConversationWithMessages(
 
 async function writeMinimalClaudeJsonl(filePath: string, userText: string): Promise<void> {
   await writeJsonl(filePath, [
-    userLine(userText),
+    userLine(userText, "2026-02-01T10:00:00.000Z", deriveClaudeCwd(filePath)),
     assistantLine("Response", "msg_01"),
   ]);
 }
@@ -2034,11 +2349,13 @@ async function writeMinimalClaudeJsonl(filePath: string, userText: string): Prom
 function userLine(
   content: string,
   timestamp = "2026-02-01T10:00:00.000Z",
+  cwd = "/Users/testuser/projects/webapp",
 ): Record<string, unknown> {
   return {
     type: "user",
     message: { role: "user", content },
     timestamp,
+    cwd,
   };
 }
 
@@ -2059,4 +2376,12 @@ function assistantLine(
     },
     timestamp,
   };
+}
+
+function claudeDiscoveredSourcePath(root: string, projectName: string, id: string): string {
+  return path.join(root, projectName, `${id}.jsonl`);
+}
+
+function deriveClaudeCwd(filePath: string): string {
+  return `/Users/testuser/projects/${path.basename(path.dirname(filePath))}`;
 }

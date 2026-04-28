@@ -14,19 +14,18 @@ import {
   getClogHome,
   getClogIgnorePath,
   getConfigPath,
-  getExcludedPath,
   getRawConversationPath,
   normalizeUserPath,
 } from "../utils/paths.js";
 import { pathExists } from "../utils/fs.js";
 import { nowIso } from "../utils/time.js";
 import { formatForSingleLine } from "./common.js";
+import { isRecognizedClogIgnoreRule } from "./clogignore.js";
 
 type PlungeSubsystem =
   | "database"
   | "raw"
   | "checkpoints"
-  | "excluded"
   | "clogignore"
   | "config";
 
@@ -99,14 +98,8 @@ interface RawConversationRow {
   origin: unknown;
 }
 
-interface ExcludedLine {
-  id: string;
-  source: string;
-  lineNumber: number;
-}
-
 interface ClogIgnoreLine {
-  kind: "project" | "before" | "after" | "invalid";
+  kind: "literal";
   value: string;
   lineNumber: number;
   raw: string;
@@ -116,7 +109,6 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
   "database",
   "raw",
   "checkpoints",
-  "excluded",
   "clogignore",
   "config",
 ];
@@ -219,7 +211,6 @@ async function generatePlungeReportInternal(): Promise<PlungeV1ReportInternal> {
     });
   }
 
-  findings.push(...(await inspectExcludedFile()));
   findings.push(...(await inspectClogIgnoreFile()));
 
   if (configAvailable) {
@@ -267,7 +258,7 @@ async function inspectConfig(): Promise<{
         config: null,
         findings: [
           {
-            check: 17,
+            check: 15,
             subsystem: "config",
             severity: "fatal",
             message: "config.json is missing.",
@@ -283,7 +274,7 @@ async function inspectConfig(): Promise<{
       config: null,
       findings: [
         {
-          check: 17,
+          check: 15,
           subsystem: "config",
           severity: "fatal",
           message: `config.json could not be read: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -301,7 +292,7 @@ async function inspectConfig(): Promise<{
 
     if (!parsed.author.trim()) {
       findings.push({
-        check: 18,
+        check: 16,
         subsystem: "config",
         severity: "info",
         message: "config.author is empty.",
@@ -321,7 +312,7 @@ async function inspectConfig(): Promise<{
       config: null,
       findings: [
         {
-          check: 17,
+          check: 15,
           subsystem: "config",
           severity: "fatal",
           message: detail,
@@ -389,10 +380,6 @@ async function inspectDatabase(
 
   const rows = getConversationRows(db);
   const localRows = rows.filter((row) => row.origin == null);
-  const localKeysBySourceId = new Set(
-    localRows.map((row) => `${row.source_id}@${row.source}`),
-  );
-
   for (const row of localRows) {
     if (!BUILTIN_SOURCE_SET.has(row.source)) {
       findings.push(conversationFinding(row, {
@@ -601,51 +588,7 @@ async function inspectDatabase(
     }
   }
 
-  const excludedEntries = await readExcludedEntriesForPlunge();
-  for (const entry of excludedEntries.validEntries) {
-    if (localKeysBySourceId.has(`${entry.id}@${entry.source}`)) {
-      findings.push({
-        check: 14,
-        subsystem: "excluded",
-        severity: "corruption",
-        message: `Excluded entry ${entry.id}@${entry.source} is still present among local DB rows.`,
-        recovery: `Run "clog exclude ${entry.id}" or "clog unexclude ${entry.id}".`,
-        paths: [getExcludedPath()],
-        conversation: { id: entry.id, source: entry.source },
-        sortKey: `${entry.source}:${entry.id}:${String(entry.lineNumber).padStart(6, "0")}`,
-      });
-    }
-  }
-
   return findings;
-}
-
-async function inspectExcludedFile(): Promise<PlungeFindingInternal[]> {
-  const result = await readExcludedEntriesForPlunge();
-
-  if (result.readError) {
-    return [
-      {
-        check: 13,
-        subsystem: "excluded",
-        severity: "corruption",
-        message: `excluded could not be read: ${result.readError}`,
-        recovery: `Manually inspect ${getExcludedPath()}.`,
-        paths: [getExcludedPath()],
-        sortKey: getExcludedPath(),
-      },
-    ];
-  }
-
-  return result.invalidLines.map((line) => ({
-    check: 13,
-    subsystem: "excluded",
-    severity: "corruption",
-    message: `Invalid excluded entry at line ${line.lineNumber}: ${JSON.stringify(line.raw)}.`,
-    recovery: `Manually edit ${getExcludedPath()}.`,
-    paths: [getExcludedPath()],
-    sortKey: `${String(line.lineNumber).padStart(6, "0")}`,
-  }));
 }
 
 async function inspectClogIgnoreFile(): Promise<PlungeFindingInternal[]> {
@@ -661,7 +604,7 @@ async function inspectClogIgnoreFile(): Promise<PlungeFindingInternal[]> {
 
     return [
       {
-        check: 15,
+        check: 13,
         subsystem: "clogignore",
         severity: "corruption",
         message: `clogignore could not be read: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -675,25 +618,12 @@ async function inspectClogIgnoreFile(): Promise<PlungeFindingInternal[]> {
   const findings: PlungeFindingInternal[] = [];
 
   for (const rule of parseClogIgnoreLines(raw)) {
-    if (rule.kind === "invalid") {
+    if (!isRecognizedClogIgnoreRule(rule.value)) {
       findings.push({
-        check: 15,
+        check: 14,
         subsystem: "clogignore",
         severity: "corruption",
-        message: `Unrecognized clogignore rule at line ${rule.lineNumber}: ${JSON.stringify(rule.raw)}.`,
-        recovery: `Manually edit ${filePath}.`,
-        paths: [filePath],
-        sortKey: `${String(rule.lineNumber).padStart(6, "0")}`,
-      });
-      continue;
-    }
-
-    if ((rule.kind === "before" || rule.kind === "after") && !isValidClogIgnoreDate(rule.value)) {
-      findings.push({
-        check: 16,
-        subsystem: "clogignore",
-        severity: "corruption",
-        message: `Invalid ${rule.kind}: date at line ${rule.lineNumber}: ${JSON.stringify(rule.value)}.`,
+        message: `Unsupported clogignore rule at line ${rule.lineNumber}: ${JSON.stringify(rule.value)}.`,
         recovery: `Manually edit ${filePath}.`,
         paths: [filePath],
         sortKey: `${String(rule.lineNumber).padStart(6, "0")}`,
@@ -721,7 +651,7 @@ async function inspectConfigPaths(
       const normalized = normalizePath(candidatePath);
       if (!(await pathExists(normalized))) {
         findings.push({
-          check: 19,
+          check: 17,
           subsystem: "config",
           severity: "info",
           message: `Configured path does not exist for ${source}: ${normalized}`,
@@ -831,8 +761,6 @@ function humanSubsystemLabel(subsystem: PlungeSubsystem): string {
       return "Raw files";
     case "checkpoints":
       return "Publish checkpoints";
-    case "excluded":
-      return "Excluded file";
     case "clogignore":
       return "clogignore";
     case "config":
@@ -994,53 +922,6 @@ function parseComparableInstant(value: unknown): {
   return { valid: true, instant };
 }
 
-async function readExcludedEntriesForPlunge(): Promise<{
-  validEntries: ExcludedLine[];
-  invalidLines: Array<{ lineNumber: number; raw: string }>;
-  readError?: string;
-}> {
-  const filePath = getExcludedPath();
-  let raw = "";
-
-  try {
-    raw = await fs.readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { validEntries: [], invalidLines: [] };
-    }
-
-    return {
-      validEntries: [],
-      invalidLines: [],
-      readError: error instanceof Error ? error.message : "unknown error",
-    };
-  }
-
-  const validEntries: ExcludedLine[] = [];
-  const invalidLines: Array<{ lineNumber: number; raw: string }> = [];
-
-  for (const [index, line] of raw.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const atIndex = trimmed.lastIndexOf("@");
-    if (atIndex <= 0 || atIndex === trimmed.length - 1) {
-      invalidLines.push({ lineNumber: index + 1, raw: line });
-      continue;
-    }
-
-    validEntries.push({
-      id: trimmed.slice(0, atIndex),
-      source: trimmed.slice(atIndex + 1),
-      lineNumber: index + 1,
-    });
-  }
-
-  return { validEntries, invalidLines };
-}
-
 function parseClogIgnoreLines(raw: string): ClogIgnoreLine[] {
   const rules: ClogIgnoreLine[] = [];
 
@@ -1050,38 +931,8 @@ function parseClogIgnoreLines(raw: string): ClogIgnoreLine[] {
       continue;
     }
 
-    if (trimmed.startsWith("project:")) {
-      rules.push({
-        kind: "project",
-        value: trimmed.slice("project:".length),
-        lineNumber: index + 1,
-        raw: line,
-      });
-      continue;
-    }
-
-    if (trimmed.startsWith("before:")) {
-      rules.push({
-        kind: "before",
-        value: trimmed.slice("before:".length),
-        lineNumber: index + 1,
-        raw: line,
-      });
-      continue;
-    }
-
-    if (trimmed.startsWith("after:")) {
-      rules.push({
-        kind: "after",
-        value: trimmed.slice("after:".length),
-        lineNumber: index + 1,
-        raw: line,
-      });
-      continue;
-    }
-
     rules.push({
-      kind: "invalid",
+      kind: "literal",
       value: trimmed,
       lineNumber: index + 1,
       raw: line,
@@ -1089,10 +940,6 @@ function parseClogIgnoreLines(raw: string): ClogIgnoreLine[] {
   }
 
   return rules;
-}
-
-function isValidClogIgnoreDate(value: string): boolean {
-  return value.length > 0;
 }
 
 function rawRecoveryForRow(row: RawConversationRow): string {

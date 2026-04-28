@@ -10,21 +10,26 @@ import {
   defaultPublishFilePath,
   ensureRawCopy,
   getPublishCandidate,
-  isPublishedReadyForRepublish,
   parseConversationMessages,
   parseConversationMessagesFromPath,
-  resolveManyConversationsOrFail,
 } from "./common.js";
+import { collectBarePublishTargets, collectProjectPublishTargets } from "./project-targets.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildPublishCommand(): Command {
   return new Command("publish")
     .description("Publish conversations")
-    .argument("[ids...]")
-    .action(async (ids: string[]) => {
+    .argument("[selectors...]")
+    .action(async (selectors: string[]) => {
       const config = await loadConfig();
       const conversations =
-        ids.length > 0
-          ? await resolveManyConversationsOrFail(ids)
+        selectors.length > 0
+          ? resolveConversationSelectors({
+              commandName: "clog publish",
+              tokens: selectors,
+              idCandidates: await listConversations(),
+              projectCandidates: await collectProjectPublishTargets(),
+            })
           : await collectBarePublishTargets();
 
       if (conversations.length === 0) {
@@ -37,7 +42,12 @@ export function buildPublishCommand(): Command {
       const publishedConversations: ConversationMeta[] = [];
 
       for (const conversation of conversations) {
-        if (ids.length > 0 && conversation.state !== "discovered" && conversation.state !== "staged" && conversation.state !== "published") {
+        if (
+          selectors.length > 0 &&
+          conversation.state !== "discovered" &&
+          conversation.state !== "staged" &&
+          conversation.state !== "published"
+        ) {
           throw new Error(`Conversation ${conversation.id} is not publishable.`);
         }
 
@@ -100,16 +110,4 @@ function resolveFilePathOrFallback(
   fallback: string,
 ): string {
   return conversation.filePath ?? fallback;
-}
-
-async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
-  const staged = await listConversations({ states: ["staged"], origin: "local" });
-  const published = await listConversations({ states: ["published"], origin: "local" });
-  const readyPublished: ConversationMeta[] = [];
-  for (const conversation of published) {
-    if (await isPublishedReadyForRepublish(conversation)) {
-      readyPublished.push(conversation);
-    }
-  }
-  return [...staged, ...readyPublished];
 }

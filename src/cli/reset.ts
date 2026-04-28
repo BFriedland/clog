@@ -1,18 +1,49 @@
 import { Command } from "commander";
 
-import { updateConversation } from "../db/index.js";
+import { listConversations, updateConversation } from "../db/index.js";
 import {
   assertNoneRemote,
+  isPublishedReadyForRepublish,
   removeRawCopyIfPresent,
-  resolveManyConversationsOrFail,
 } from "./common.js";
+import { collectBareResetTargets, collectProjectResetTargets } from "./project-targets.js";
+import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildResetCommand(): Command {
   return new Command("reset")
     .description("Unstage conversations back to discovered")
-    .argument("<ids...>")
-    .action(async (ids: string[]) => {
-      const conversations = await resolveManyConversationsOrFail(ids);
+    .argument("[selectors...]")
+    .action(async (selectors: string[]) => {
+      const conversations =
+        selectors.length > 0
+          ? resolveConversationSelectors({
+              commandName: "clog reset",
+              tokens: selectors,
+              idCandidates: await listConversations(),
+              projectCandidates: await collectProjectResetTargets(),
+            })
+          : await collectBareResetTargets();
+
+      if (conversations.length === 0) {
+        const published = await listConversations({ states: ["published"], origin: "local" });
+        let modifiedPublishedCount = 0;
+        for (const conversation of published) {
+          if (await isPublishedReadyForRepublish(conversation)) {
+            modifiedPublishedCount += 1;
+          }
+        }
+
+        if (modifiedPublishedCount > 0) {
+          process.stdout.write(
+            `No added conversations to reset. ${modifiedPublishedCount} published conversation(s) still have unpublished changes; use "clog publish" to publish them.\n`,
+          );
+          return;
+        }
+
+        process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
+        return;
+      }
+
       assertNoneRemote(conversations, "clog reset");
 
       for (const conversation of conversations) {

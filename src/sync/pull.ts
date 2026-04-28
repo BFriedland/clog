@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { getAdapter } from "../adapters/registry.js";
-import { readExcludedEntries, isExcluded } from "../cli/excluded.js";
+import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "../cli/clogignore.js";
 import type { Config } from "../config/schema.js";
 import {
   deleteConversationInDb,
@@ -81,15 +81,24 @@ export async function reconcileRemote(
     }
   }
 
-  const excluded = await readExcludedEntries();
   const validatedAfterExclude = validated.filter((pair) => {
-    if (isExcluded(excluded.entries, pair.id, pair.source)) {
+    return true;
+  });
+  const clogIgnoreRules = await readClogIgnoreRules();
+  const validatedAfterIgnore = validatedAfterExclude.filter((pair) => {
+    if (
+      clogIgnoreRules.some((rule) =>
+        matchesRemoteClogIgnoreRule(rule, {
+          sourceId: pair.id,
+          projectName: pair.meta.projectName,
+        }),
+      )
+    ) {
       stats.skipped += 1;
       return false;
     }
     return true;
   });
-  stats.warnings.push(...excluded.warnings);
 
   await withDb((db) => {
     const existing = listConversationsInDb(db, {
@@ -106,7 +115,7 @@ export async function reconcileRemote(
 
     const seenKeys = new Set<string>();
 
-    for (const pair of validatedAfterExclude) {
+    for (const pair of validatedAfterIgnore) {
       const key = sourceIdentityKey(pair.source, pair.id);
       if (seenKeys.has(key)) {
         stats.skipped += 1;

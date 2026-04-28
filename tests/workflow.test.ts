@@ -9,6 +9,7 @@ import { buildAddCommand } from "../src/cli/add.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildExcludeCommand } from "../src/cli/exclude.js";
 import { buildPublishCommand } from "../src/cli/publish.js";
+import { buildRemoveCommand } from "../src/cli/remove.js";
 import { buildResetCommand } from "../src/cli/reset.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
@@ -17,7 +18,7 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { getExcludedPath, getRawConversationPath } from "../src/utils/paths.js";
+import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("workflow", () => {
@@ -46,7 +47,7 @@ describe("workflow", () => {
 
   it("progresses through add → edit → tag → publish (SPEC §5.2)", async () => {
     const convId = "aaaaaaaa-1111-2222-3333-444444444444";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Help me debug this");
 
     await insertConversation(makeDiscoveredConversation({ sourcePath }));
@@ -76,7 +77,7 @@ describe("workflow", () => {
 
   it("add copies the source file into ~/.clog/raw/<source>/<id>.jsonl (SPEC §5.5)", async () => {
     const convId = "bbbbbbbb-2222-3333-4444-555555555555";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Copy me");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -157,7 +158,7 @@ describe("workflow", () => {
 
   it("publish increments publishVersion on republish (SPEC §5.6)", async () => {
     const convId = "eeeeeeee-5555-6666-7777-888888888888";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "v1");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -178,7 +179,7 @@ describe("workflow", () => {
 
   it("add refreshes a published raw copy while preserving state=published (SPEC §5.5)", async () => {
     const convId = "11111111-2222-3333-4444-555555555555";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -221,7 +222,7 @@ describe("workflow", () => {
 
   it("bare publish republishes a ready published conversation after clog add (SPEC §5.4)", async () => {
     const convId = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -253,7 +254,7 @@ describe("workflow", () => {
 
   it("status and bare publish agree on metadata-only republish readiness", async () => {
     const convId = "abababab-1234-5678-9abc-def012345678";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -284,7 +285,7 @@ describe("workflow", () => {
 
   it("add on an unchanged published raw copy is a content no-op (SPEC §5.5)", async () => {
     const convId = "22222222-3333-4444-5555-666666666666";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Unchanged");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -315,7 +316,7 @@ describe("workflow", () => {
 
   it("explicit publish <id> pushthrough on a modified published source (SPEC §5.6)", async () => {
     const convId = "33333333-4444-5555-6666-777777777777";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
@@ -343,7 +344,7 @@ describe("workflow", () => {
     expect(republished?.publishedAt).not.toBe(firstPublish?.publishedAt);
   });
 
-  it("exclude → unexclude round-trip updates the excluded file", async () => {
+  it("exclude → unexclude round-trip updates clogignore without removing current DB rows", async () => {
     const convId = "44444444-5555-6666-7777-888888888888";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Exclude me");
@@ -353,74 +354,92 @@ describe("workflow", () => {
     await runBuiltCommand(buildExcludeCommand, [convId]);
 
     const afterExclude = await getConversationById(convId);
-    expect(afterExclude).toBeNull();
+    expect(afterExclude).not.toBeNull();
 
-    const excludedContent = await fs.readFile(getExcludedPath(), "utf8");
-    expect(excludedContent).toContain(`${convId}@claude-code`);
+    const clogIgnoreContent = await fs.readFile(getClogIgnorePath(), "utf8");
+    expect(clogIgnoreContent).toContain(convId);
 
-    await runBuiltCommand(buildUnexcludeCommand, [`${convId}@claude-code`]);
+    await runBuiltCommand(buildUnexcludeCommand, [convId]);
 
-    const afterUnexclude = await fs.readFile(getExcludedPath(), "utf8");
+    const afterUnexclude = await fs.readFile(getClogIgnorePath(), "utf8");
     expect(afterUnexclude).not.toContain(convId);
   });
 
-  it("exclude fails when the excluded file has invalid lines (SPEC §5.10)", async () => {
-    const convId = "55555555-6666-7777-8888-999999999999";
+  it("exclude suggests rerunning remove with the same literal rule text", async () => {
+    const convId = "44444444-5555-6666-7777-999999999999";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Exclude fails on invalid");
+    await writeClaudeJsonl(sourcePath, "Exclude guidance");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    // Write an invalid line into the excluded file.
-    await fs.writeFile(getExcludedPath(), "not-a-valid-entry\n", "utf8");
+    const { stdout } = await runBuiltCommand(buildExcludeCommand, [convId]);
 
-    await expect(runBuiltCommand(buildExcludeCommand, [convId])).rejects.toThrow(
-      /Excluded file is invalid/,
-    );
-
-    // The conversation is NOT removed when the mutation fails.
-    const still = await getConversationById(convId);
-    expect(still).not.toBeNull();
+    expect(stdout).toContain("currently in clog's database match this rule");
+    expect(stdout).toContain(`Use 'clog remove ${convId}'`);
   });
 
-  it("unexclude reports ambiguity with copy-pasteable candidates (SPEC §5.10)", async () => {
-    // Two excluded entries that share a prefix.
-    const excludedContent = [
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-      "abcd2222-2222-2222-2222-222222222222@claude-code",
-    ].join("\n");
-    await fs.writeFile(getExcludedPath(), `${excludedContent}\n`, "utf8");
+  it("exclude rejects project selector syntax", async () => {
+    const convId = "55555555-6666-7777-8888-999999999999";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Exclude rejects project selector");
 
-    await expect(runBuiltCommand(buildUnexcludeCommand, ["abcd"])).rejects.toThrow(
-      /ambiguous/i,
+    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
+
+    await expect(runBuiltCommand(buildExcludeCommand, ["project:myapp"])).rejects.toThrow(
+      /does not accept project selectors/i,
     );
   });
 
-  it("exclude rejects a file that contains duplicate entries (SPEC §5.10)", async () => {
-    // Mutation commands (exclude/unexclude) fail without changing the file when any
-    // invalid or duplicate line is present. Blanks and comments are still tolerated.
-    const existing = [
-      "# existing exclusions",
-      "",
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-      "abcd1111-1111-1111-1111-111111111111@claude-code",
-    ].join("\n");
-    await fs.writeFile(getExcludedPath(), `${existing}\n`, "utf8");
+  it("exclude rejects unsupported date-rule syntax", async () => {
+    await expect(runBuiltCommand(buildExcludeCommand, ["before:2025-06-01"])).rejects.toThrow(
+      /does not accept unsupported ignore-rule syntax/i,
+    );
+  });
 
+  it("remove rejects blank rules", async () => {
+    await expect(runBuiltCommand(buildRemoveCommand, [""])).rejects.toThrow(
+      /Ignore rules cannot be blank\./,
+    );
+  });
+
+  it("remove rejects unsupported date-rule syntax", async () => {
+    await expect(runBuiltCommand(buildRemoveCommand, ["after:2025-06-01"])).rejects.toThrow(
+      /does not accept unsupported ignore-rule syntax/i,
+    );
+  });
+
+  it("unexclude removes all exact matching lines", async () => {
+    const clogIgnoreContent = ["myapp", "other", "myapp"].join("\n");
+    await fs.writeFile(getClogIgnorePath(), `${clogIgnoreContent}\n`, "utf8");
+
+    await runBuiltCommand(buildUnexcludeCommand, ["myapp"]);
+
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).resolves.toBe("other\n");
+  });
+
+  it("unexclude leaves clogignore absent when no exact rule matches", async () => {
+    await fs.rm(getClogIgnorePath(), { force: true });
+
+    await runBuiltCommand(buildUnexcludeCommand, ["myapp"]);
+
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("remove deletes current DB rows without editing clogignore", async () => {
     const convId = "66666666-7777-8888-9999-aaaaaaaaaaaa";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Added to existing excluded file");
+    await writeClaudeJsonl(sourcePath, "Remove current match");
     await insertConversation(
       makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
     );
+    await fs.writeFile(getClogIgnorePath(), "myapp\n", "utf8");
 
-    await expect(runBuiltCommand(buildExcludeCommand, [convId])).rejects.toThrow(
-      /Excluded file is invalid/,
-    );
+    await runBuiltCommand(buildRemoveCommand, [convId]);
 
-    // The conversation is NOT removed when the mutation fails.
-    const still = await getConversationById(convId);
-    expect(still).not.toBeNull();
+    await expect(getConversationById(convId)).resolves.toBeNull();
+    await expect(fs.readFile(getClogIgnorePath(), "utf8")).resolves.toBe("myapp\n");
   });
 });
 
@@ -491,7 +510,7 @@ function makeDiscoveredConversation(
 
 async function writeClaudeJsonl(filePath: string, userMessage: string): Promise<void> {
   await writeJsonl(filePath, [
-    userMessageLine(userMessage),
+    userMessageLine(userMessage, "2026-02-01T10:00:00.000Z", deriveClaudeCwd(filePath)),
     assistantTextLine("I can help with that", "msg_01"),
   ]);
 }
@@ -499,11 +518,13 @@ async function writeClaudeJsonl(filePath: string, userMessage: string): Promise<
 function userMessageLine(
   content: string,
   timestamp = "2026-02-01T10:00:00.000Z",
+  cwd = "/Users/testuser/projects/webapp",
 ): Record<string, unknown> {
   return {
     type: "user",
     message: { role: "user", content },
     timestamp,
+    cwd,
   };
 }
 
@@ -524,4 +545,12 @@ function assistantTextLine(
     },
     timestamp,
   };
+}
+
+function claudeDiscoveredSourcePath(root: string, projectName: string, id: string): string {
+  return path.join(root, projectName, `${id}.jsonl`);
+}
+
+function deriveClaudeCwd(filePath: string): string {
+  return `/Users/testuser/projects/${path.basename(path.dirname(filePath))}`;
 }

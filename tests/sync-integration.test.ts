@@ -213,7 +213,7 @@ describeIfGit("sync integration (requires git)", () => {
     expect(output).toContain("Nothing to push");
   });
 
-  it("does not import excluded conversations on pull", async () => {
+  it("does not import conversations ignored by clogignore on pull", async () => {
     const id = "a4444444-4444-4444-4444-444444444444";
     const bobDir = path.join(externalCheckout, "bob", "claude-code");
     await fs.mkdir(bobDir, { recursive: true });
@@ -255,8 +255,8 @@ describeIfGit("sync integration (requires git)", () => {
     runInCheckout(externalCheckout, `git push origin main`);
 
     await fs.writeFile(
-      path.join(process.env.CLOG_HOME!, "excluded"),
-      `${id}@claude-code\n`,
+      path.join(process.env.CLOG_HOME!, "clogignore"),
+      `${id}\n`,
       "utf8",
     );
 

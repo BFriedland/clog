@@ -11,7 +11,7 @@ import {
 } from "../db/index.js";
 import type { ConversationMeta, Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
-import { ClogError } from "../utils/errors.js";
+import { ClogError, UsageError } from "../utils/errors.js";
 import { getRawConversationPath, getRawSourceDir } from "../utils/paths.js";
 import { getAdapter } from "../adapters/registry.js";
 import { colorizeStateLabel, colorizeUserMessage } from "./colors.js";
@@ -40,6 +40,12 @@ export type DisplayColumnKey =
 export async function resolveConversationOrFail(
   inputId: string,
 ): Promise<ConversationMeta> {
+  if (inputId.startsWith("project:")) {
+    throw new UsageError(
+      `This command only accepts conversation IDs. Project selectors like "${inputId}" are not allowed here.`,
+    );
+  }
+
   const resolved = await resolveConversationId(inputId);
   const conversation = await getConversationById(resolved.id);
 

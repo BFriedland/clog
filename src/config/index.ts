@@ -7,9 +7,9 @@ import { ClogError } from "../utils/errors.js";
 import {
   BUILTIN_SOURCES,
   getClogHome,
+  getClogIgnorePath,
   getConfigPath,
   getDefaultSourcePaths,
-  getExcludedPath,
   getRawRoot,
   normalizeUserPath,
 } from "../utils/paths.js";
@@ -79,8 +79,8 @@ export async function ensureClogHomeDirs(): Promise<void> {
   await fs.mkdir(getClogHome(), { recursive: true });
   await fs.mkdir(getRawRoot(), { recursive: true });
 
-  const excludedPath = getExcludedPath();
-  if (!(await pathExists(excludedPath))) {
-    await fs.writeFile(excludedPath, "", "utf8");
+  const clogIgnorePath = getClogIgnorePath();
+  if (!(await pathExists(clogIgnorePath))) {
+    await fs.writeFile(clogIgnorePath, "", "utf8");
   }
 }
