@@ -47,7 +47,7 @@ export function buildSyncCommand(): Command {
 
   sync
     .command("push")
-    .description("Push locally-published conversations to the remote")
+    .description("Push locally-saved conversations to the remote")
     .action(async () => {
       await runSyncPush();
     });
@@ -110,7 +110,7 @@ async function printPostPullIndexNudge(stats: PullStats): Promise<void> {
   }
 
   const unindexed = (
-    await listConversations({ states: ["published"], indexed: false })
+    await listConversations({ states: ["saved"], indexed: false })
   ).length;
 
   if (unindexed === 0) {
@@ -120,7 +120,7 @@ async function printPostPullIndexNudge(stats: PullStats): Promise<void> {
   process.stdout.write("\n");
   process.stdout.write(chalk.yellow("Search index needs attention:\n"));
   process.stdout.write(
-    `  ${unindexed} published conversation(s) are not indexed.\n`,
+    `  ${unindexed} saved conversation(s) are not indexed.\n`,
   );
   process.stdout.write(
     "  Run `clog index` to index new conversations, or `clog index --rebuild` to rebuild everything.\n",
@@ -183,7 +183,7 @@ export async function runSyncPush(): Promise<void> {
 
   if (!(await gitHasChanges(getRemoteRoot()))) {
     process.stdout.write(
-      "Nothing to push — all published conversations are already synced.\n",
+      "Nothing to push — all saved conversations are already synced.\n",
     );
     return;
   }

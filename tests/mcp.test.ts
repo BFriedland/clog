@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   handleBrowse,
   handleGet,
-  handleListPublished,
+  handleListSaved,
   handleListStaged,
   handleSearch,
   handleUpdate,
@@ -77,10 +77,10 @@ describe("mcp handlers", () => {
       createdAt: "2026-02-01T10:00:00.000Z",
       discoveredAt: "2026-02-01T10:00:00.000Z",
       modifiedAt: "2026-02-01T10:00:00.000Z",
-      state: "published",
-      publishedAt: "2026-02-01T10:00:02.000Z",
-      publishedMessageCount: 2,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: "2026-02-01T10:00:02.000Z",
+      savedMessageCount: 2,
+      saveVersion: 1,
       sourcePath: filePath,
       filePath,
       sourceMtime: null,
@@ -94,8 +94,8 @@ describe("mcp handlers", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("lists published conversations", async () => {
-    const result = await handleListPublished({});
+  it("lists saved conversations", async () => {
+    const result = await handleListSaved({});
     expect(result.totalCount).toBe(1);
     expect(result.conversations[0]?.source).toBe("claude-code");
   });
@@ -176,7 +176,7 @@ describe("mcp handlers", () => {
     expect(result.totalCount).toBe(0);
   });
 
-  it("filters clog_list_published by origin", async () => {
+  it("filters clog_list_saved by origin", async () => {
     // Add a remote-origin row so we have one of each.
     await insertConversation({
       id: "def45678-1234-1234-1234-123456789012",
@@ -192,10 +192,10 @@ describe("mcp handlers", () => {
       createdAt: "2026-02-02T10:00:00.000Z",
       discoveredAt: "2026-02-02T10:00:00.000Z",
       modifiedAt: "2026-02-02T10:00:00.000Z",
-      state: "published",
-      publishedAt: "2026-02-02T10:00:00.000Z",
-      publishedMessageCount: 1,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: "2026-02-02T10:00:00.000Z",
+      savedMessageCount: 1,
+      saveVersion: 1,
       sourcePath: "/tmp/remote.jsonl",
       filePath: "/tmp/remote.jsonl",
       sourceMtime: null,
@@ -203,14 +203,14 @@ describe("mcp handlers", () => {
       origin: "git@github.com:myorg/clog-team.git",
     });
 
-    const all = await handleListPublished({});
+    const all = await handleListSaved({});
     expect(all.totalCount).toBe(2);
 
-    const local = await handleListPublished({ origin: "local" });
+    const local = await handleListSaved({ origin: "local" });
     expect(local.totalCount).toBe(1);
     expect(local.conversations[0]?.title).toBe("Debug auth flow");
 
-    const remote = await handleListPublished({ origin: "remote" });
+    const remote = await handleListSaved({ origin: "remote" });
     expect(remote.totalCount).toBe(1);
     expect(remote.conversations[0]?.title).toBe("From remote");
   });
@@ -220,74 +220,74 @@ describe("mcp handlers", () => {
   // ============================================================
 
   it("filters by tags (OR semantics)", async () => {
-    await insertOtherPublished("b1111111-1111-1111-1111-111111111111", {
+    await insertOtherSaved("b1111111-1111-1111-1111-111111111111", {
       title: "Has rate-limit",
       tags: ["rate-limiting"],
     });
 
-    const hits = await handleListPublished({ tags: ["auth"] });
+    const hits = await handleListSaved({ tags: ["auth"] });
     expect(hits.totalCount).toBe(1);
     expect(hits.conversations[0]?.title).toBe("Debug auth flow");
 
-    const multi = await handleListPublished({ tags: ["rate-limiting", "auth"] });
+    const multi = await handleListSaved({ tags: ["rate-limiting", "auth"] });
     expect(multi.totalCount).toBe(2);
   });
 
   it("filters by project and author", async () => {
-    await insertOtherPublished("b2222222-2222-2222-2222-222222222222", {
+    await insertOtherSaved("b2222222-2222-2222-2222-222222222222", {
       title: "Other service",
       author: "bob",
       projectName: "other-service",
     });
 
-    const byProject = await handleListPublished({ project: "api-service" });
+    const byProject = await handleListSaved({ project: "api-service" });
     expect(byProject.totalCount).toBe(1);
     expect(byProject.conversations[0]?.projectName).toBe("api-service");
 
-    const byAuthor = await handleListPublished({ author: "bob" });
+    const byAuthor = await handleListSaved({ author: "bob" });
     expect(byAuthor.totalCount).toBe(1);
     expect(byAuthor.conversations[0]?.author).toBe("bob");
   });
 
   it("filters by grep against title and summary", async () => {
-    await insertOtherPublished("b3333333-3333-3333-3333-333333333333", {
+    await insertOtherSaved("b3333333-3333-3333-3333-333333333333", {
       title: "Unrelated chat",
       summary: "JWT token refresh discussion",
     });
 
-    const byTitle = await handleListPublished({ grep: "debug auth" });
+    const byTitle = await handleListSaved({ grep: "debug auth" });
     expect(byTitle.conversations.map((c) => c.title)).toContain("Debug auth flow");
 
-    const bySummary = await handleListPublished({ grep: "jwt" });
+    const bySummary = await handleListSaved({ grep: "jwt" });
     expect(bySummary.conversations.map((c) => c.title)).toContain("Unrelated chat");
   });
 
   it("supports limit and offset pagination", async () => {
     for (let i = 0; i < 5; i++) {
-      await insertOtherPublished(`b4${i}${i}${i}${i}${i}${i}${i}-4444-4444-4444-444444444444`, {
+      await insertOtherSaved(`b4${i}${i}${i}${i}${i}${i}${i}-4444-4444-4444-444444444444`, {
         title: `Row ${i}`,
       });
     }
 
-    const first = await handleListPublished({ limit: 3, offset: 0 });
+    const first = await handleListSaved({ limit: 3, offset: 0 });
     expect(first.conversations).toHaveLength(3);
     expect(first.totalCount).toBe(6); // the original + 5 new
 
-    const second = await handleListPublished({ limit: 3, offset: 3 });
+    const second = await handleListSaved({ limit: 3, offset: 3 });
     expect(second.conversations).toHaveLength(3);
   });
 
-  it("lists staged conversations separately from published", async () => {
-    await insertOtherPublished("b5555555-5555-5555-5555-555555555555", {
+  it("lists staged conversations separately from saved", async () => {
+    await insertOtherSaved("b5555555-5555-5555-5555-555555555555", {
       title: "A staged one",
       state: "staged",
     });
 
-    const published = await handleListPublished({});
+    const saved = await handleListSaved({});
     const staged = await handleListStaged({});
 
-    expect(published.totalCount).toBe(1);
-    expect(published.conversations[0]?.title).toBe("Debug auth flow");
+    expect(saved.totalCount).toBe(1);
+    expect(saved.conversations[0]?.title).toBe("Debug auth flow");
     expect(staged.totalCount).toBe(1);
     expect(staged.conversations[0]?.title).toBe("A staged one");
   });
@@ -297,11 +297,11 @@ describe("mcp handlers", () => {
   // ============================================================
 
   it("clog_get throws on a discovered conversation", async () => {
-    await insertOtherPublished("b6666666-6666-6666-6666-666666666666", {
+    await insertOtherSaved("b6666666-6666-6666-6666-666666666666", {
       state: "discovered",
     });
     await expect(handleGet({ id: "b6666666" })).rejects.toThrow(
-      /staged or published/,
+      /staged or saved/,
     );
   });
 
@@ -314,17 +314,17 @@ describe("mcp handlers", () => {
   // ============================================================
 
   it("clog_update throws on a discovered conversation", async () => {
-    await insertOtherPublished("b7777777-7777-7777-7777-777777777777", {
+    await insertOtherSaved("b7777777-7777-7777-7777-777777777777", {
       state: "discovered",
     });
 
     await expect(
       handleUpdate({ id: "b7777777", title: "New title" }),
-    ).rejects.toThrow(/staged or published/);
+    ).rejects.toThrow(/staged or saved/);
   });
 
   it("clog_update refuses a remote conversation (SPEC §11.1)", async () => {
-    await insertOtherPublished("bb000000-0000-0000-0000-000000000002", {
+    await insertOtherSaved("bb000000-0000-0000-0000-000000000002", {
       origin: "git@example.com:team/repo.git",
     });
 
@@ -334,7 +334,7 @@ describe("mcp handlers", () => {
   });
 
   it("clog_update removeTags removes matching tags and bumps modifiedAt", async () => {
-    await insertOtherPublished("b8888888-8888-8888-8888-888888888888", {
+    await insertOtherSaved("b8888888-8888-8888-8888-888888888888", {
       tags: ["bug", "urgent", "frontend"],
     });
 
@@ -350,7 +350,7 @@ describe("mcp handlers", () => {
   // ============================================================
 
   it("browses projects", async () => {
-    await insertOtherPublished("b9999999-9999-9999-9999-999999999999", {
+    await insertOtherSaved("b9999999-9999-9999-9999-999999999999", {
       projectName: "other-project",
     });
     const result = await handleBrowse({ by: "projects" });
@@ -378,7 +378,7 @@ describe("mcp handlers", () => {
     });
 
     // The seeded conversation has indexedAt set, but we'll add an unindexed one.
-    await insertOtherPublished("ba000000-0000-0000-0000-000000000001", {
+    await insertOtherSaved("ba000000-0000-0000-0000-000000000001", {
       title: "Not indexed",
       indexedAt: null,
     });
@@ -438,7 +438,7 @@ describe("mcp handlers", () => {
   });
 });
 
-async function insertOtherPublished(
+async function insertOtherSaved(
   id: string,
   overrides: Partial<ConversationMeta> = {},
 ): Promise<void> {
@@ -456,10 +456,10 @@ async function insertOtherPublished(
     createdAt: "2026-02-01T10:00:00.000Z",
     discoveredAt: "2026-02-01T10:00:00.000Z",
     modifiedAt: "2026-02-01T10:00:00.000Z",
-    state: "published",
-    publishedAt: "2026-02-01T10:00:00.000Z",
-    publishedMessageCount: 1,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: "2026-02-01T10:00:00.000Z",
+    savedMessageCount: 1,
+    saveVersion: 1,
     sourcePath: "/tmp/other.jsonl",
     filePath: "/tmp/other.jsonl",
     sourceMtime: null,

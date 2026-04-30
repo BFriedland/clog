@@ -10,7 +10,7 @@ import { scanLocalSources } from "../cli/scan.js";
 import {
   handleBrowse,
   handleGet,
-  handleListPublished,
+  handleListSaved,
   handleSearch,
   handleListStaged,
   handleUpdate,
@@ -29,9 +29,9 @@ export async function startMcpServer(): Promise<void> {
   });
 
   server.registerTool(
-    "clog_list_published",
+    "clog_list_saved",
     {
-      description: "List published conversations with optional filters.",
+      description: "List saved conversations with optional filters.",
       inputSchema: {
         tags: z.array(z.string()).optional(),
         project: z.string().optional(),
@@ -42,7 +42,7 @@ export async function startMcpServer(): Promise<void> {
         offset: z.number().int().nonnegative().optional(),
       },
     },
-    async (input) => toToolResult(await handleListPublished(input), "Listed published conversations."),
+    async (input) => toToolResult(await handleListSaved(input), "Listed saved conversations."),
   );
 
   server.registerTool(
@@ -64,7 +64,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_get",
     {
-      description: "Get staged or published conversation content.",
+      description: "Get staged or saved conversation content.",
       inputSchema: {
         id: z.string(),
         maxMessages: z.number().int().positive().max(200).optional(),
@@ -76,7 +76,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_update",
     {
-      description: "Update staged or published conversation metadata.",
+      description: "Update staged or saved conversation metadata.",
       inputSchema: {
         id: z.string(),
         title: z.string().optional(),
@@ -91,7 +91,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_search",
     {
-      description: "Semantic search across published conversations.",
+      description: "Semantic search across saved conversations.",
       inputSchema: {
         query: z.string(),
         tags: z.array(z.string()).optional(),
@@ -101,13 +101,13 @@ export async function startMcpServer(): Promise<void> {
         limit: z.number().int().positive().max(50).optional(),
       },
     },
-    async (input) => toToolResult(await handleSearch(input), "Searched published conversations."),
+    async (input) => toToolResult(await handleSearch(input), "Searched saved conversations."),
   );
 
   server.registerTool(
     "clog_browse",
     {
-      description: "Browse published tags, projects, or authors.",
+      description: "Browse saved tags, projects, or authors.",
       inputSchema: {
         by: z.enum(["tags", "projects", "authors"]),
       },
@@ -122,7 +122,7 @@ export async function startMcpServer(): Promise<void> {
     }),
     {
       title: "clog conversation",
-      description: "A staged or published clog conversation resource.",
+      description: "A staged or saved clog conversation resource.",
       mimeType: "application/json",
     },
     async (_uri, variables) => {

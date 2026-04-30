@@ -108,15 +108,15 @@ export async function runSearchInitCommand(): Promise<void> {
   process.stdout.write(`  Vector store: ${vectorStoreProviders[vectorStoreType].name}\n\n`);
 
   if (installCompleted) {
-    const publishedCount = await getPublishedConversationCount();
-    if (publishedCount === 0) {
-      process.stdout.write("No published conversations are available to index right now.\n");
+    const savedCount = await getSavedConversationCount();
+    if (savedCount === 0) {
+      process.stdout.write("No saved conversations are available to index right now.\n");
       return;
     }
 
     const indexAccepted = await confirm({
-      message: `Index all ${publishedCount} published conversation${
-        publishedCount === 1 ? "" : "s"
+      message: `Index all ${savedCount} saved conversation${
+        savedCount === 1 ? "" : "s"
       } now?`,
       default: true,
     });
@@ -127,7 +127,7 @@ export async function runSearchInitCommand(): Promise<void> {
       return;
     }
 
-    process.stdout.write('\nRun "clog index" whenever you want to index published conversations.\n');
+    process.stdout.write('\nRun "clog index" whenever you want to index saved conversations.\n');
   }
 }
 
@@ -220,8 +220,8 @@ async function warmConfiguredEmbeddingModel(searchConfig: NonNullable<SearchConf
   }
 }
 
-async function getPublishedConversationCount(): Promise<number> {
-  const conversations = await listConversations({ states: ["published"] });
+async function getSavedConversationCount(): Promise<number> {
+  const conversations = await listConversations({ states: ["saved"] });
   return conversations.length;
 }
 

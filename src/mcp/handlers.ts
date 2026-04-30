@@ -46,9 +46,9 @@ const searchInputSchema = z.object({
   limit: z.number().int().positive().max(50).default(10),
 });
 
-export async function handleListPublished(input: unknown) {
+export async function handleListSaved(input: unknown) {
   const parsed = listInputSchema.parse(input ?? {});
-  return listConversationsForState("published", parsed);
+  return listConversationsForState("saved", parsed);
 }
 
 export async function handleListStaged(input: unknown) {
@@ -62,7 +62,7 @@ export async function handleGet(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "discovered") {
-    throw new Error("clog_get only works on staged or published conversations.");
+    throw new Error("clog_get only works on staged or saved conversations.");
   }
 
   const messages = await parseConversationMessages(config, conversation);
@@ -93,7 +93,7 @@ export async function handleUpdate(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "discovered") {
-    throw new Error("clog_update only works on staged or published conversations.");
+    throw new Error("clog_update only works on staged or saved conversations.");
   }
 
   if (conversation.origin != null) {
@@ -129,7 +129,7 @@ export async function handleUpdate(input: unknown) {
     modifiedAt: nowIso(),
   };
   const finalConversation =
-    conversation.state === "published" &&
+    conversation.state === "saved" &&
     (
       updated.title !== conversation.title ||
       updated.summary !== conversation.summary
@@ -159,8 +159,8 @@ export async function handleBrowse(input: unknown) {
 export async function handleSearch(input: unknown) {
   const parsed = searchInputSchema.parse(input);
   const { embedding, vectorStore } = await requireSearchProviders();
-  let published = await listConversations({
-    states: ["published"],
+  let saved = await listConversations({
+    states: ["saved"],
     projectName: parsed.project,
     author: parsed.author,
     origin: parsed.origin,
@@ -168,13 +168,13 @@ export async function handleSearch(input: unknown) {
 
   if (parsed.tags && parsed.tags.length > 0) {
     const tags = new Set(normalizeTags(parsed.tags));
-    published = published.filter((conversation) =>
+    saved = saved.filter((conversation) =>
       conversation.tags.some((tag) => tags.has(tag)),
     );
   }
 
   const searchableIds = new Set(
-    published
+    saved
       .filter((conversation) => isConversationSearchable(conversation))
       .map((conversation) => conversation.id),
   );
@@ -185,7 +185,7 @@ export async function handleSearch(input: unknown) {
       totalCount: 0,
       indexCoverage: {
         indexed: 0,
-        published: published.length,
+        saved: saved.length,
       },
     };
   }
@@ -199,7 +199,7 @@ export async function handleSearch(input: unknown) {
   });
 
   const conversationsById = new Map(
-    published.map((conversation) => [conversation.id, conversation] as const),
+    saved.map((conversation) => [conversation.id, conversation] as const),
   );
   const results = hits
     .map((hit) => {
@@ -228,14 +228,14 @@ export async function handleSearch(input: unknown) {
     totalCount: results.length,
     indexCoverage: {
       indexed: searchableIds.size,
-      published: published.length,
+      saved: saved.length,
     },
     warning,
   };
 }
 
 async function listConversationsForState(
-  state: "staged" | "published",
+  state: "staged" | "saved",
   input: z.infer<typeof listInputSchema>,
 ) {
   let conversations = await listConversations({

@@ -73,7 +73,7 @@ describeIfGit("sync integration (requires git)", () => {
   it("pushes a local conversation and pulls it back on another machine", async () => {
     await runSyncPull();
 
-    await insertLocalPublished({
+    await insertLocalSaved({
       id: "a1111111-1111-1111-1111-111111111111",
       title: "Fix auth",
       author: "alice",
@@ -102,8 +102,8 @@ describeIfGit("sync integration (requires git)", () => {
     ).resolves.toBeTruthy();
   });
 
-  it("pulls a conversation published by a teammate", async () => {
-    // Teammate publishes via the external checkout directly.
+  it("pulls a conversation saved by a teammate", async () => {
+    // Teammate savees via the external checkout directly.
     const bobDir = path.join(externalCheckout, "bob", "claude-code");
     await fs.mkdir(bobDir, { recursive: true });
     const id = "a2222222-2222-2222-2222-222222222222";
@@ -117,7 +117,7 @@ describeIfGit("sync integration (requires git)", () => {
           tags: [],
           author: "bob",
           projectName: null,
-          publishedAt: "2026-02-01T10:00:00.000Z",
+          savedAt: "2026-02-01T10:00:00.000Z",
           modifiedAt: "2026-02-01T10:00:00.000Z",
           source: "claude-code",
           createdAt: "2026-02-01T10:00:00.000Z",
@@ -140,7 +140,7 @@ describeIfGit("sync integration (requires git)", () => {
     runInCheckout(externalCheckout, `git add -A`);
     runInCheckout(
       externalCheckout,
-      `git -c user.email=b@b.b -c user.name=bob commit -m "bob's publish"`,
+      `git -c user.email=b@b.b -c user.name=bob commit -m "bob's save"`,
     );
     runInCheckout(externalCheckout, `git push origin main`);
 
@@ -157,7 +157,7 @@ describeIfGit("sync integration (requires git)", () => {
     await runSyncPull();
 
     const id = "a3333333-3333-3333-3333-333333333333";
-    await insertLocalPublished({ id, title: "To be retracted", author: "alice" });
+    await insertLocalSaved({ id, title: "To be retracted", author: "alice" });
 
     runInCheckout(
       getRemoteRoot(),
@@ -166,7 +166,7 @@ describeIfGit("sync integration (requires git)", () => {
 
     await runSyncPush();
 
-    // Now unpublish (delete the local row) and push again — retraction expected.
+    // Now unsave (delete the local row) and push again — retraction expected.
     const { deleteConversation } = await import("../src/db/index.js");
     await deleteConversation(id);
 
@@ -227,7 +227,7 @@ describeIfGit("sync integration (requires git)", () => {
           tags: [],
           author: "bob",
           projectName: null,
-          publishedAt: "2026-02-01T10:00:00.000Z",
+          savedAt: "2026-02-01T10:00:00.000Z",
           modifiedAt: "2026-02-01T10:00:00.000Z",
           source: "claude-code",
           createdAt: "2026-02-01T10:00:00.000Z",
@@ -250,7 +250,7 @@ describeIfGit("sync integration (requires git)", () => {
     runInCheckout(externalCheckout, `git add -A`);
     runInCheckout(
       externalCheckout,
-      `git -c user.email=b@b.b -c user.name=bob commit -m "publish"`,
+      `git -c user.email=b@b.b -c user.name=bob commit -m "save"`,
     );
     runInCheckout(externalCheckout, `git push origin main`);
 
@@ -299,7 +299,7 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return chunks.join("");
 }
 
-async function insertLocalPublished(options: {
+async function insertLocalSaved(options: {
   id: string;
   title: string;
   author: string;
@@ -330,10 +330,10 @@ async function insertLocalPublished(options: {
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "published",
-    publishedAt: timestamp,
-    publishedMessageCount: 1,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: timestamp,
+    savedMessageCount: 1,
+    saveVersion: 1,
     sourcePath: rawPath,
     filePath: rawPath,
     sourceMtime: null,

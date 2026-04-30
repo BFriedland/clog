@@ -45,10 +45,10 @@ describe("sync pull reconciliation", () => {
     const rows = await listConversations({ origin: "remote" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.title).toBe("Fix auth");
-    expect(rows[0]?.publishedMessageCount).toBe(2);
+    expect(rows[0]?.savedMessageCount).toBe(2);
     expect(rows[0]?.origin).toBe(REMOTE_URL);
     expect(rows[0]?.author).toBe("alice");
-    expect(rows[0]?.state).toBe("published");
+    expect(rows[0]?.state).toBe("saved");
   });
 
   it("updates existing rows when metadata changes and clears indexed_at on search-visible changes", async () => {
@@ -201,10 +201,10 @@ describe("sync pull reconciliation", () => {
       createdAt: timestamp,
       discoveredAt: timestamp,
       modifiedAt: timestamp,
-      state: "published",
-      publishedAt: timestamp,
-      publishedMessageCount: 2,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 2,
+      saveVersion: 1,
       sourcePath: "/tmp/local.jsonl",
       filePath: "/tmp/local.jsonl",
       sourceMtime: null,
@@ -213,7 +213,7 @@ describe("sync pull reconciliation", () => {
     });
 
     await writeRemotePair("bob", "claude-code", id, {
-      title: "Bob's published copy",
+      title: "Bob's saved copy",
       messageCount: 2,
     });
 
@@ -278,10 +278,10 @@ describe("sync pull reconciliation", () => {
       createdAt: timestamp,
       discoveredAt: timestamp,
       modifiedAt: timestamp,
-      state: "published",
-      publishedAt: timestamp,
-      publishedMessageCount: 2,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 2,
+      saveVersion: 1,
       sourcePath: "/tmp/unreachable.jsonl",
       filePath: "/tmp/unreachable.jsonl",
       sourceMtime: null,
@@ -331,7 +331,7 @@ async function writeRemotePair(
 
   const createdAt = "2026-02-01T10:00:00.000Z";
   const modifiedAt = "2026-02-01T10:00:05.000Z";
-  const publishedAt = "2026-02-01T10:00:03.000Z";
+  const savedAt = "2026-02-01T10:00:03.000Z";
 
   const meta = {
     id,
@@ -340,7 +340,7 @@ async function writeRemotePair(
     tags: [],
     author,
     projectName: null,
-    publishedAt,
+    savedAt,
     modifiedAt,
     source,
     createdAt,

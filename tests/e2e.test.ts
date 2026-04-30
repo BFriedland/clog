@@ -101,9 +101,9 @@ describe("e2e", () => {
 
     const { stdout } = await run(["status"]);
 
-    expect(stdout).toContain("No conversations pending publication.");
-    expect(stdout).not.toContain("Conversations to be published:");
-    expect(stdout).not.toContain("Changes not staged for publishing:");
+    expect(stdout).toContain("Nothing to save.");
+    expect(stdout).not.toContain("Conversations to be saved:");
+    expect(stdout).not.toContain("Changes not staged for saving:");
     expect(stdout).not.toContain("Untracked conversations:");
   });
 
@@ -155,7 +155,7 @@ describe("e2e", () => {
 
     const { stdout, stderr } = await run(["list"]);
 
-    expect(stdout).toContain("No staged or published conversations.");
+    expect(stdout).toContain("No staged or saved conversations.");
     expect(stderr).toBe("");
   });
 
@@ -195,7 +195,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
     await run(["edit", secondId.slice(0, 7), "--author", "bob"]);
 
     const { stdout } = await run(["list"]);
@@ -244,7 +244,7 @@ describe("e2e", () => {
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
 
-  it("add then publish then show works for a discovered conversation", async () => {
+  it("add then save then show works for a discovered conversation", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -255,11 +255,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
     const { stdout } = await run(["show", id.slice(0, 7)]);
     expect(stdout).toContain("Debug auth flow");
-    expect(stdout).toContain("State:   published");
+    expect(stdout).toContain("State:   saved");
   });
 
   it("edit with no flags prints help instead of failing", async () => {
@@ -368,7 +368,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
     const head = await run(["show", id.slice(0, 7), "--first", "2"]);
     const tail = await run(["show", id.slice(0, 7), "--last", "2"]);
@@ -396,28 +396,28 @@ describe("e2e", () => {
     expect(stdout).not.toContain("Agent report:\n\n1. First item");
   });
 
-  it("explicit publish works from discovered state", async () => {
+  it("explicit save works from discovered state", async () => {
     const id = "55555555-5555-5555-5555-555555555555";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Publish from discovered",
+      "Save from discovered",
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["publish", id.slice(0, 7)]);
+    await run(["save", id.slice(0, 7)]);
 
     const { stdout } = await run(["show", id.slice(0, 7)]);
-    expect(stdout).toContain("State:   published");
-    expect(stdout).toContain("Publish from discovered");
+    expect(stdout).toContain("State:   saved");
+    expect(stdout).toContain("Save from discovered");
   });
 
-  it("unpublish rejects conversations that are not published", async () => {
+  it("unsave rejects conversations that are not saved", async () => {
     const id = "23232323-2323-2323-2323-232323232323";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Unpublish wrong state",
+      "Unsave wrong state",
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
@@ -425,12 +425,12 @@ describe("e2e", () => {
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
 
-    await expect(run(["unpublish", id.slice(0, 7)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not published"),
+    await expect(run(["unsave", id.slice(0, 7)])).rejects.toMatchObject({
+      stderr: expect.stringContaining("is not saved"),
     });
   });
 
-  it("diff uses newer source content for published conversations before add", async () => {
+  it("diff uses newer source content for saved conversations before add", async () => {
     const id = "66666666-6666-6666-6666-666666666666";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
@@ -440,7 +440,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
     await writeClaudeConversation(filePath, "Diff source growth", [
       {
@@ -510,11 +510,11 @@ describe("e2e", () => {
     await run(["add", id.slice(0, 7)]);
 
     await expect(run(["diff", id.slice(0, 7)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not published"),
+      stderr: expect.stringContaining("is not saved"),
     });
   });
 
-  it("diff --staged rejects published conversations", async () => {
+  it("diff --staged rejects saved conversations", async () => {
     const id = "20202020-2020-2020-2020-202020202020";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -525,26 +525,26 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
     await expect(run(["diff", "--staged", id.slice(0, 7)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not staged"),
     });
   });
 
-  it("add refreshes a published raw copy without changing state", async () => {
+  it("add refreshes a saved raw copy without changing state", async () => {
     const id = "77777777-7777-7777-7777-777777777777";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
-    await writeClaudeConversation(filePath, "Refresh published raw copy");
+    await writeClaudeConversation(filePath, "Refresh saved raw copy");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
-    await writeClaudeConversation(filePath, "Refresh published raw copy", [
+    await writeClaudeConversation(filePath, "Refresh saved raw copy", [
       {
         type: "assistant",
         timestamp: "2026-02-01T10:00:02.000Z",
@@ -558,7 +558,7 @@ describe("e2e", () => {
 
     await run(["add", id.slice(0, 7)]);
     const { stdout } = await run(["show", id.slice(0, 7)]);
-    expect(stdout).toContain("State:   published");
+    expect(stdout).toContain("State:   saved");
     expect(stdout).toContain("Refreshed into raw.");
   });
 
@@ -634,42 +634,42 @@ describe("e2e", () => {
     });
   });
 
-  it("unpublish preserves the conversation as staged", async () => {
+  it("unsave preserves the conversation as staged", async () => {
     const id = "99999999-9999-9999-9999-999999999999";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Unpublish conversation",
+      "Unsave conversation",
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
-    await run(["unpublish", id.slice(0, 7)]);
+    await run(["save"]);
+    await run(["unsave", id.slice(0, 7)]);
 
     const { stdout } = await run(["show", id.slice(0, 7)]);
     expect(stdout).toContain("State:   staged");
   });
 
-  it("unpublish with no args unstages every published conversation", async () => {
+  it("unsave with no args unstages every saved conversation", async () => {
     const firstId = "9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a";
     const secondId = "9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
-      "Unpublish one",
+      "Unsave one",
     );
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
-      "Unpublish two",
+      "Unsave two",
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
-    await run(["publish"]);
-    await run(["unpublish"]);
+    await run(["save"]);
+    await run(["unsave"]);
 
     const first = await run(["show", firstId.slice(0, 7)]);
     const second = await run(["show", secondId.slice(0, 7)]);
@@ -743,34 +743,34 @@ describe("e2e", () => {
     await expect(fs.readFile(path.join(clogHome, "clogignore"), "utf8")).resolves.toBe("other\n");
   });
 
-  it("status reports published source changes as changes not staged for publishing", async () => {
+  it("status reports saved source changes as changes not staged for saving", async () => {
     const id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
-    await writeClaudeConversation(filePath, "Status modified published");
+    await writeClaudeConversation(filePath, "Status modified saved");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["add", id.slice(0, 7)]);
-    await run(["publish"]);
+    await run(["save"]);
 
-    await writeClaudeConversation(filePath, "Status modified published", [
+    await writeClaudeConversation(filePath, "Status modified saved", [
       {
         type: "assistant",
         timestamp: "2026-02-01T10:00:02.000Z",
         message: {
           id: "msg_2",
           role: "assistant",
-          content: [{ type: "text", text: "Changed after publish." }],
+          content: [{ type: "text", text: "Changed after save." }],
         },
       },
     ]);
 
     const { stdout } = await run(["status"]);
-    expect(stdout).toContain("Changes not staged for publishing:");
+    expect(stdout).toContain("Changes not staged for saving:");
     expect(stdout).toContain(
-      'use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly',
+      'use "clog add <id>" to refresh the curated copy, or "clog save <id>" to save directly',
     );
     expect(stdout).toContain("api-service");
     expect(stdout).toContain("1 modified");
@@ -784,7 +784,7 @@ describe("e2e", () => {
 
     const { stdout, stderr } = await run(["status"]);
 
-    expect(stdout).toContain("No conversations pending publication.");
+    expect(stdout).toContain("Nothing to save.");
     expect(stderr).toBe("");
   });
 

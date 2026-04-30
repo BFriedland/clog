@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   browseValues,
-  clearPublishedIndexedAt,
+  clearSavedIndexedAt,
   deleteConversation,
   getConversationById,
   getConversationBySourceIdentityInDb,
@@ -80,13 +80,13 @@ describe("db", () => {
       makeConversation({
         id: "b2345678-1234-1234-1234-123456789012",
         sourceId: "b2345678-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         projectName: "api-service",
       }),
     );
 
-    const published = await listConversations({ states: ["published"] });
-    expect(published).toHaveLength(1);
+    const saved = await listConversations({ states: ["saved"] });
+    expect(saved).toHaveLength(1);
 
     const byProject = await listConversations({ projectName: "api-service" });
     expect(byProject).toHaveLength(2);
@@ -132,10 +132,10 @@ describe("db", () => {
     });
   });
 
-  it("browses published authors and tags", async () => {
+  it("browses saved authors and tags", async () => {
     await insertConversation(
       makeConversation({
-        state: "published",
+        state: "saved",
         tags: ["auth", "debugging"],
       }),
     );
@@ -143,7 +143,7 @@ describe("db", () => {
       makeConversation({
         id: "c2345678-1234-1234-1234-123456789012",
         sourceId: "c2345678-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         author: "bob",
         tags: ["auth"],
       }),
@@ -169,18 +169,18 @@ describe("db", () => {
   });
 
   it("round-trips origin and filters by local/remote/URL", async () => {
-    const local = makeConversation({ state: "published" });
+    const local = makeConversation({ state: "saved" });
     const remote1 = makeConversation({
       id: "e1234567-1234-1234-1234-123456789012",
       sourceId: "e1234567-1234-1234-1234-123456789012",
-      state: "published",
+      state: "saved",
       author: "bob",
       origin: "git@github.com:myorg/clog-team.git",
     });
     const remote2 = makeConversation({
       id: "f1234567-1234-1234-1234-123456789012",
       sourceId: "f1234567-1234-1234-1234-123456789012",
-      state: "published",
+      state: "saved",
       author: "carol",
       origin: "git@example.com:other/repo.git",
     });
@@ -200,12 +200,12 @@ describe("db", () => {
   });
 
   it("applies curatedDefault filter (author OR origin IS NULL)", async () => {
-    await insertConversation(makeConversation({ state: "published" }));
+    await insertConversation(makeConversation({ state: "saved" }));
     await insertConversation(
       makeConversation({
         id: "e1234567-1234-1234-1234-123456789012",
         sourceId: "e1234567-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         author: "alice",
         origin: "git@example.com:repo.git",
       }),
@@ -214,14 +214,14 @@ describe("db", () => {
       makeConversation({
         id: "f1234567-1234-1234-1234-123456789012",
         sourceId: "f1234567-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         author: "bob",
         origin: "git@example.com:repo.git",
       }),
     );
 
     const curated = await listConversations({
-      states: ["published"],
+      states: ["saved"],
       curatedDefault: { author: "alice" },
     });
     expect(curated).toHaveLength(2);
@@ -261,19 +261,19 @@ describe("db", () => {
       makeConversation({
         id: "a3456789-1234-1234-1234-123456789012",
         sourceId: "a3456789-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
       }),
     );
 
-    const curated = await listConversations({ states: ["staged", "published"] });
+    const curated = await listConversations({ states: ["staged", "saved"] });
     expect(curated).toHaveLength(2);
-    expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["staged", "published"]));
+    expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["staged", "saved"]));
   });
 
   it("filters by indexed (null vs non-null indexed_at)", async () => {
     await insertConversation(
       makeConversation({
-        state: "published",
+        state: "saved",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
@@ -281,33 +281,33 @@ describe("db", () => {
       makeConversation({
         id: "b1111111-1234-1234-1234-123456789012",
         sourceId: "b1111111-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         indexedAt: null,
       }),
     );
 
-    const indexed = await listConversations({ states: ["published"], indexed: true });
+    const indexed = await listConversations({ states: ["saved"], indexed: true });
     expect(indexed).toHaveLength(1);
     expect(indexed[0]?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
 
-    const unindexed = await listConversations({ states: ["published"], indexed: false });
+    const unindexed = await listConversations({ states: ["saved"], indexed: false });
     expect(unindexed).toHaveLength(1);
     expect(unindexed[0]?.indexedAt).toBeNull();
   });
 
   it("curatedDefault: null applies no additional author/origin filter", async () => {
-    await insertConversation(makeConversation({ state: "published", author: "alice" }));
+    await insertConversation(makeConversation({ state: "saved", author: "alice" }));
     await insertConversation(
       makeConversation({
         id: "c1111111-1234-1234-1234-123456789012",
         sourceId: "c1111111-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         author: "bob",
         origin: "git@example.com:repo.git",
       }),
     );
 
-    const all = await listConversations({ states: ["published"], curatedDefault: null });
+    const all = await listConversations({ states: ["saved"], curatedDefault: null });
     expect(all).toHaveLength(2);
   });
 
@@ -374,7 +374,7 @@ describe("db", () => {
 
   it("setConversationIndexedAt sets and clears indexed_at without touching other fields", async () => {
     const conversation = makeConversation({
-      state: "published",
+      state: "saved",
       indexedAt: null,
     });
     await insertConversation(conversation);
@@ -389,21 +389,21 @@ describe("db", () => {
     expect(reloaded?.indexedAt).toBeNull();
   });
 
-  it("listConversationsNeedingIndex returns only published conversations with null indexed_at", async () => {
-    // Published + null → needs index
+  it("listConversationsNeedingIndex returns only saved conversations with null indexed_at", async () => {
+    // Saved + null → needs index
     await insertConversation(
-      makeConversation({ state: "published", indexedAt: null }),
+      makeConversation({ state: "saved", indexedAt: null }),
     );
-    // Published + already indexed → excluded
+    // Saved + already indexed → excluded
     await insertConversation(
       makeConversation({
         id: "d1111111-1234-1234-1234-123456789012",
         sourceId: "d1111111-1234-1234-1234-123456789012",
-        state: "published",
+        state: "saved",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
-    // Staged + null → excluded (only published is searchable)
+    // Staged + null → excluded (only saved is searchable)
     await insertConversation(
       makeConversation({
         id: "d2222222-1234-1234-1234-123456789012",
@@ -418,10 +418,10 @@ describe("db", () => {
     expect(needing[0]?.id).toBe("a1234567-1234-1234-1234-123456789012");
   });
 
-  it("clearPublishedIndexedAt bulk-clears only published rows", async () => {
+  it("clearSavedIndexedAt bulk-clears only saved rows", async () => {
     await insertConversation(
       makeConversation({
-        state: "published",
+        state: "saved",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
@@ -434,11 +434,11 @@ describe("db", () => {
       }),
     );
 
-    await clearPublishedIndexedAt();
+    await clearSavedIndexedAt();
 
-    const published = await getConversationById("a1234567-1234-1234-1234-123456789012");
+    const saved = await getConversationById("a1234567-1234-1234-1234-123456789012");
     const staged = await getConversationById("d3333333-1234-1234-1234-123456789012");
-    expect(published?.indexedAt).toBeNull();
+    expect(saved?.indexedAt).toBeNull();
     expect(staged?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
   });
 });
@@ -470,9 +470,9 @@ function baseConversation() {
     discoveredAt: timestamp,
     modifiedAt: timestamp,
     state: "discovered" as const,
-    publishedAt: null,
-    publishedMessageCount: null,
-    publishVersion: 0,
+    savedAt: null,
+    savedMessageCount: null,
+    saveVersion: 0,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: null,

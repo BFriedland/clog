@@ -77,7 +77,7 @@ Phase 2 should touch Phase 1 in only these places:
 
 - add schema migration version 2 with `indexed_at`
 - expose helpers for:
-  - listing published conversations needing indexing
+  - listing saved conversations needing indexing
   - clearing `indexed_at`
   - updating `indexed_at`
 
@@ -87,14 +87,14 @@ Phase 2 should touch Phase 1 in only these places:
 
 ### CLI Lifecycle Hooks
 
-- `publish`
+- `save`
   Best-effort auto-index if search is configured and dependencies are
   available.
 - `edit`, `tag`, `untag`
-  Immediate best-effort reindex for published conversations when embedded
+  Immediate best-effort reindex for saved conversations when embedded
   search content changes, specifically title/summary edits. Tag changes stay
   DB-only and do not reindex because tags are not embedded.
-- `unpublish`, `exclude`
+- `unsave`, `exclude`
   Best-effort delete vectors for conversations leaving the searchable set.
 
 ### MCP
@@ -110,7 +110,7 @@ Phase 2 should touch Phase 1 in only these places:
 4. Implement chunker and indexing/search orchestration
 5. Implement default providers: transformers embedding and Vectra vector store
 6. Add CLI commands: `search --init`, `search`, `index`
-7. Integrate lifecycle hooks into publish/edit/tag/untag/unpublish/exclude and
+7. Integrate lifecycle hooks into save/edit/tag/untag/unsave/exclude and
    MCP update/search
 8. Add tests and update architecture documentation
 
@@ -134,7 +134,7 @@ Fresh-user search UX should be linear:
 5. setup shows the exact package-install command and asks for confirmation
 6. package installation runs visibly in the same terminal
 7. setup initializes the embedding provider so any model download happens here
-8. setup offers to index all currently published conversations immediately
+8. setup offers to index all currently saved conversations immediately
 9. if the user accepts, indexing runs during setup; otherwise the user runs `clog index` later
 10. user runs `clog search ...` successfully
 

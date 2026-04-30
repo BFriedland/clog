@@ -178,8 +178,8 @@ Owns:
 - `untag`
 - `exclude`
 - `unexclude`
-- `publish`
-- `unpublish`
+- `save`
+- `unsave`
 - `diff`
 - `show`
 - `path`
@@ -190,7 +190,7 @@ Exit criteria:
 - the full Phase 1 CLI workflow works end to end
 - curated raw-file handling follows the spec
 - content path resolution is centralized
-- published-message checkpoint behavior is implemented
+- saved-message checkpoint behavior is implemented
 
 Notes:
 
@@ -209,7 +209,7 @@ Owns:
 
 Exit criteria:
 
-- `clog_list_published`
+- `clog_list_saved`
 - `clog_list_staged`
 - `clog_get`
 - `clog_update`
@@ -266,7 +266,7 @@ Risk:
 CLI commands could absorb DB, parsing, or scan policy and become hard to extend.
 
 Response:
-Centralize scan, ID resolution, content-path resolution, and publish-candidate logic.
+Centralize scan, ID resolution, content-path resolution, and save-candidate logic.
 
 ### Phase 3 coupling surprises
 

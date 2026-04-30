@@ -90,9 +90,9 @@ interface RawConversationRow {
   state: string;
   tags_json: unknown;
   modified_at: unknown;
-  published_at: unknown;
-  published_message_count: unknown;
-  publish_version: unknown;
+  saved_at: unknown;
+  saved_message_count: unknown;
+  save_version: unknown;
   file_path: unknown;
   source_path: unknown;
   origin: unknown;
@@ -114,7 +114,7 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
 ];
 
 const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
-const VALID_STATES = new Set(["discovered", "staged", "published"]);
+const VALID_STATES = new Set(["discovered", "staged", "saved"]);
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
@@ -429,14 +429,14 @@ async function inspectDatabase(
     }
 
     const modifiedAt = parseComparableInstant(row.modified_at);
-    const publishedAt = parseComparableInstant(row.published_at);
+    const savedAt = parseComparableInstant(row.saved_at);
     const invalidTimestampParts: string[] = [];
 
     if (!modifiedAt.valid) {
       invalidTimestampParts.push("modified_at");
     }
-    if (row.published_at != null && !publishedAt.valid) {
-      invalidTimestampParts.push("published_at");
+    if (row.saved_at != null && !savedAt.valid) {
+      invalidTimestampParts.push("saved_at");
     }
 
     if (invalidTimestampParts.length > 0) {
@@ -450,14 +450,14 @@ async function inspectDatabase(
       }));
     } else if (
       modifiedAt.instant != null &&
-      publishedAt.instant != null &&
-      publishedAt.instant.getTime() > modifiedAt.instant.getTime()
+      savedAt.instant != null &&
+      savedAt.instant.getTime() > modifiedAt.instant.getTime()
     ) {
       findings.push(conversationFinding(row, {
         check: 12,
         subsystem: "checkpoints",
         severity: "corruption",
-        message: "published_at is later than modified_at when parsed as instants.",
+        message: "saved_at is later than modified_at when parsed as instants.",
         recovery: "Investigate this row manually. Do not rewrite history.",
         sortKey: row.id,
       }));
@@ -467,16 +467,16 @@ async function inspectDatabase(
   for (const row of rows.filter((candidate) => candidate.state === "discovered")) {
     const hasDirtyCurationFields =
       row.file_path != null ||
-      row.published_at != null ||
-      row.published_message_count != null ||
-      Number(row.publish_version ?? 0) !== 0;
+      row.saved_at != null ||
+      row.saved_message_count != null ||
+      Number(row.save_version ?? 0) !== 0;
 
     if (hasDirtyCurationFields) {
       findings.push(conversationFinding(row, {
         check: 10,
         subsystem: "checkpoints",
         severity: "corruption",
-        message: "Discovered row still has curation or publish checkpoint fields set.",
+        message: "Discovered row still has curation or save checkpoint fields set.",
         recovery: "Investigate this row manually.",
         sortKey: row.id,
       }));
@@ -488,7 +488,7 @@ async function inspectDatabase(
       continue;
     }
 
-    if (row.state !== "staged" && row.state !== "published") {
+    if (row.state !== "staged" && row.state !== "saved") {
       continue;
     }
 
@@ -541,43 +541,43 @@ async function inspectDatabase(
       continue;
     }
 
-    if (row.state === "published") {
-      const publishMetadataProblems: string[] = [];
-      const publishedMessageCount = toFiniteNumber(row.published_message_count);
-      const publishVersion = toFiniteNumber(row.publish_version);
+    if (row.state === "saved") {
+      const saveMetadataProblems: string[] = [];
+      const savedMessageCount = toFiniteNumber(row.saved_message_count);
+      const saveVersion = toFiniteNumber(row.save_version);
 
-      if (row.published_at == null) {
-        publishMetadataProblems.push("published_at is null");
+      if (row.saved_at == null) {
+        saveMetadataProblems.push("saved_at is null");
       }
-      if (row.published_message_count == null) {
-        publishMetadataProblems.push("published_message_count is null");
+      if (row.saved_message_count == null) {
+        saveMetadataProblems.push("saved_message_count is null");
       }
-      if (publishVersion == null || publishVersion < 1) {
-        publishMetadataProblems.push(`publish_version is ${String(row.publish_version)}`);
+      if (saveVersion == null || saveVersion < 1) {
+        saveMetadataProblems.push(`save_version is ${String(row.save_version)}`);
       }
 
-      if (publishMetadataProblems.length > 0) {
+      if (saveMetadataProblems.length > 0) {
         findings.push(conversationFinding(row, {
           check: 11,
           subsystem: "checkpoints",
           severity: "corruption",
-          message: publishMetadataProblems.join("; "),
-          recovery: `Run "clog publish ${row.id}" after verifying the conversation with "clog show ${row.id}".`,
+          message: saveMetadataProblems.join("; "),
+          recovery: `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`,
           sortKey: row.id,
         }));
       }
 
-      if (publishedMessageCount != null) {
+      if (savedMessageCount != null) {
         try {
           const adapter = getAdapter(row.source, options.configForParsing);
           const parsedMessages = await adapter.parseMessages(verifiedFilePath);
-          if (parsedMessages.length < publishedMessageCount) {
+          if (parsedMessages.length < savedMessageCount) {
             findings.push(conversationFinding(row, {
               check: 9,
               subsystem: "checkpoints",
               severity: "info",
-              message: `Current parsed message count is ${parsedMessages.length}, below published_message_count ${publishedMessageCount}.`,
-              recovery: `Run "clog show ${row.id}" and then "clog publish ${row.id}" after verification to refresh the stored message-count checkpoint.`,
+              message: `Current parsed message count is ${parsedMessages.length}, below saved_message_count ${savedMessageCount}.`,
+              recovery: `Run "clog show ${row.id}" and then "clog save ${row.id}" after verification to refresh the stored message-count checkpoint.`,
               sortKey: row.id,
             }));
           }
@@ -760,7 +760,7 @@ function humanSubsystemLabel(subsystem: PlungeSubsystem): string {
     case "raw":
       return "Raw files";
     case "checkpoints":
-      return "Publish checkpoints";
+      return "Save checkpoints";
     case "clogignore":
       return "clogignore";
     case "config":
@@ -840,9 +840,9 @@ function getConversationRows(db: Database): RawConversationRow[] {
         state,
         tags_json,
         modified_at,
-        published_at,
-        published_message_count,
-        publish_version,
+        saved_at,
+        saved_message_count,
+        save_version,
         file_path,
         source_path,
         origin
@@ -875,9 +875,9 @@ function getConversationRows(db: Database): RawConversationRow[] {
       state: String(record.state ?? ""),
       tags_json: record.tags_json,
       modified_at: record.modified_at,
-      published_at: record.published_at,
-      published_message_count: record.published_message_count,
-      publish_version: record.publish_version,
+      saved_at: record.saved_at,
+      saved_message_count: record.saved_message_count,
+      save_version: record.save_version,
       file_path: record.file_path,
       source_path: record.source_path,
       origin: record.origin,
@@ -943,8 +943,8 @@ function parseClogIgnoreLines(raw: string): ClogIgnoreLine[] {
 }
 
 function rawRecoveryForRow(row: RawConversationRow): string {
-  if (row.state === "published") {
-    return `Run "clog publish ${row.id}" after verifying the conversation with "clog show ${row.id}".`;
+  if (row.state === "saved") {
+    return `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`;
   }
 
   return `Run "clog add ${row.id}" to recreate the curated raw file.`;

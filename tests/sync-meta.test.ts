@@ -24,7 +24,7 @@ describe("sync meta", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("serializes a published conversation, stripping local-only fields", () => {
+  it("serializes a saved conversation, stripping local-only fields", () => {
     const meta = conversationToRemoteMeta(makeConversation());
 
     expect(meta).toEqual({
@@ -34,7 +34,7 @@ describe("sync meta", () => {
       tags: ["auth", "debugging"],
       author: "alice",
       projectName: "api-service",
-      publishedAt: "2026-02-20T10:00:00.000Z",
+      savedAt: "2026-02-20T10:00:00.000Z",
       modifiedAt: "2026-02-21T15:00:00.000Z",
       source: "claude-code",
       createdAt: "2026-02-19T09:15:00.000Z",
@@ -47,7 +47,7 @@ describe("sync meta", () => {
     const parsed = JSON.parse(serialized);
     expect(parsed).not.toHaveProperty("projectPath");
     expect(parsed).not.toHaveProperty("origin");
-    expect(parsed).not.toHaveProperty("publishedMessageCount");
+    expect(parsed).not.toHaveProperty("savedMessageCount");
     expect(parsed).not.toHaveProperty("state");
     expect(parsed).not.toHaveProperty("filePath");
     expect(parsed).not.toHaveProperty("sourcePath");
@@ -86,11 +86,11 @@ describe("sync meta", () => {
   it("rejects meta with non-ISO timestamps", () => {
     const baseline = conversationToRemoteMeta(makeConversation());
     const result = parseRemoteMeta(
-      JSON.stringify({ ...baseline, publishedAt: "not-a-date" }),
+      JSON.stringify({ ...baseline, savedAt: "not-a-date" }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toMatch(/publishedAt/);
+      expect(result.reason).toMatch(/savedAt/);
     }
   });
 
@@ -98,7 +98,7 @@ describe("sync meta", () => {
     const baseline = conversationToRemoteMeta(makeConversation());
 
     const dateOnly = parseRemoteMeta(
-      JSON.stringify({ ...baseline, publishedAt: "2026-02-20" }),
+      JSON.stringify({ ...baseline, savedAt: "2026-02-20" }),
     );
     expect(dateOnly.ok).toBe(false);
 
@@ -119,10 +119,10 @@ describe("sync meta", () => {
     }
   });
 
-  it("refuses to serialize a not-yet-published conversation", () => {
-    const notPublished = { ...makeConversation(), publishedAt: null };
-    expect(() => conversationToRemoteMeta(notPublished)).toThrow(
-      /publishedAt is null/,
+  it("refuses to serialize a not-yet-saved conversation", () => {
+    const notSaved = { ...makeConversation(), savedAt: null };
+    expect(() => conversationToRemoteMeta(notSaved)).toThrow(
+      /savedAt is null/,
     );
   });
 });
@@ -142,10 +142,10 @@ function makeConversation(): ConversationMeta {
     createdAt: "2026-02-19T09:15:00.000Z",
     discoveredAt: "2026-02-19T09:20:00.000Z",
     modifiedAt: "2026-02-21T15:00:00.000Z",
-    state: "published",
-    publishedAt: "2026-02-20T10:00:00.000Z",
-    publishedMessageCount: 42,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: "2026-02-20T10:00:00.000Z",
+    savedMessageCount: 42,
+    saveVersion: 1,
     sourcePath: "/tmp/source.jsonl",
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,

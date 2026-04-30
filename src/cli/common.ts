@@ -71,7 +71,7 @@ export function assertNotRemote(
   }
 
   throw new ClogError(
-    `${command} cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only. Edit it on the publishing author's machine.`,
+    `${command} cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only. Edit it on the original author's machine.`,
   );
 }
 
@@ -475,7 +475,7 @@ export async function rawCopyMatchesSource(conversation: ConversationMeta): Prom
   return compareFileContents(conversation.sourcePath, conversation.filePath);
 }
 
-export function defaultPublishFilePath(conversation: ConversationMeta): string {
+export function defaultSaveFilePath(conversation: ConversationMeta): string {
   return getRawConversationPath(conversation.source, conversation.id);
 }
 
@@ -521,12 +521,12 @@ function getTerminalWidth(): number {
   return 100;
 }
 
-export type PublishedDelta = "clean" | "ready" | "source_ahead";
+export type SavedDelta = "clean" | "ready" | "source_ahead";
 
-export async function classifyPublishedDelta(
+export async function classifySavedDelta(
   conversation: ConversationMeta,
-): Promise<PublishedDelta> {
-  if (conversation.state !== "published") {
+): Promise<SavedDelta> {
+  if (conversation.state !== "saved") {
     return "clean";
   }
 
@@ -549,52 +549,52 @@ export async function classifyPublishedDelta(
     }
   }
 
-  if (!conversation.publishedAt) {
+  if (!conversation.savedAt) {
     return "ready";
   }
 
-  if (conversation.publishedMessageCount == null) {
+  if (conversation.savedMessageCount == null) {
     return "ready";
   }
 
   const config = await loadConfig();
   const messages = await parseConversationMessages(config, conversation);
-  return messages.length > conversation.publishedMessageCount ? "ready" : "clean";
+  return messages.length > conversation.savedMessageCount ? "ready" : "clean";
 }
 
-export function isPublishedMetadataAhead(
+export function isSavedMetadataAhead(
   conversation: ConversationMeta,
 ): boolean {
-  if (conversation.state !== "published" || !conversation.publishedAt) {
+  if (conversation.state !== "saved" || !conversation.savedAt) {
     return false;
   }
 
   const modifiedAt = Date.parse(conversation.modifiedAt);
-  const publishedAt = Date.parse(conversation.publishedAt);
-  if (Number.isNaN(modifiedAt) || Number.isNaN(publishedAt)) {
+  const savedAt = Date.parse(conversation.savedAt);
+  if (Number.isNaN(modifiedAt) || Number.isNaN(savedAt)) {
     return false;
   }
 
-  return modifiedAt > publishedAt;
+  return modifiedAt > savedAt;
 }
 
-export async function isPublishedReadyForRepublish(
+export async function isSavedReadyForResave(
   conversation: ConversationMeta,
 ): Promise<boolean> {
-  return isPublishedReadyForRepublishWithDelta(
+  return isSavedReadyForResaveWithDelta(
     conversation,
-    await classifyPublishedDelta(conversation),
+    await classifySavedDelta(conversation),
   );
 }
 
-export function isPublishedReadyForRepublishWithDelta(
+export function isSavedReadyForResaveWithDelta(
   conversation: ConversationMeta,
-  delta: PublishedDelta,
+  delta: SavedDelta,
 ): boolean {
-  return delta === "ready" || (delta === "clean" && isPublishedMetadataAhead(conversation));
+  return delta === "ready" || (delta === "clean" && isSavedMetadataAhead(conversation));
 }
 
-export async function getPublishCandidate(conversation: ConversationMeta): Promise<{
+export async function getSaveCandidate(conversation: ConversationMeta): Promise<{
   path: string;
   shouldRefreshRawCopy: boolean;
 }> {

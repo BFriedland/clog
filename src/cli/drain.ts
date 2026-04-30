@@ -45,7 +45,7 @@ interface DrainExport {
   tags: string[];
   slug: string | null;
   createdAt: string;
-  publishedAt: string | null;
+  savedAt: string | null;
   state: ConversationState;
   messages: Message[];
 }
@@ -60,7 +60,7 @@ export function buildDrainCommand(): Command {
     .option("--raw", "Emit the exact underlying source file")
     .option("--force", "Overwrite an existing output file or directory entry")
     .option("--refresh", "Refresh local discovery before resolving the export set")
-    .option("-s, --state <state>", "Exact state filter: discovered, staged, or published")
+    .option("-s, --state <state>", "Exact state filter: discovered, staged, or saved")
     .option("-p, --project <name>", "Exact project metadata filter")
     .option("-a, --author <name>", "Exact author metadata filter")
     .option("-t, --tag <tag>", "Exact tag metadata filter")
@@ -148,7 +148,7 @@ function validateDrainOptions(
 
   if (options.state != null && !isConversationState(options.state)) {
     throw new UsageError(
-      `--state must be "discovered", "staged", or "published", got "${options.state}".`,
+      `--state must be "discovered", "staged", or "saved", got "${options.state}".`,
     );
   }
 
@@ -172,7 +172,7 @@ async function resolveDrainConversations(
   const states: ConversationState[] | undefined = stateFilter
     ? [stateFilter]
     : defaultScope
-      ? ["staged", "published"]
+      ? ["staged", "saved"]
       : undefined;
 
   const filteredConversations = hasFilters || defaultScope
@@ -371,7 +371,7 @@ async function buildDrainExport(
     tags: [...conversation.tags],
     slug: conversation.slug,
     createdAt: conversation.createdAt,
-    publishedAt: conversation.publishedAt,
+    savedAt: conversation.savedAt,
     state: conversation.state,
     messages,
   };
@@ -402,8 +402,8 @@ async function renderMarkdownExport(
     frontmatterLines.push(`slug: ${quoteYamlString(exported.slug)}`);
   }
   frontmatterLines.push(`created: ${quoteYamlString(exported.createdAt)}`);
-  if (exported.publishedAt != null) {
-    frontmatterLines.push(`published: ${quoteYamlString(exported.publishedAt)}`);
+  if (exported.savedAt != null) {
+    frontmatterLines.push(`saved: ${quoteYamlString(exported.savedAt)}`);
   }
   frontmatterLines.push(`state: ${quoteYamlString(exported.state)}`);
   frontmatterLines.push(`messages: ${exported.messages.length}`);
@@ -518,7 +518,7 @@ function canonicalizeJson(value: unknown): unknown {
             "tags",
             "slug",
             "createdAt",
-            "publishedAt",
+            "savedAt",
             "state",
             "messages",
           ]
@@ -630,5 +630,5 @@ function hasFilterOptions(options: DrainOptions): boolean {
 }
 
 function isConversationState(value: string): value is ConversationState {
-  return value === "discovered" || value === "staged" || value === "published";
+  return value === "discovered" || value === "staged" || value === "saved";
 }

@@ -73,7 +73,7 @@ clog is a local-first CLI tool and MCP server that lets developers discover, cur
 1. **Files as source of truth, database as index.** Conversation content lives in JSONL on disk; SQLite stores only metadata. (§2.1)
 2. **Source locations are read-only.** clog never writes to, modifies, or deletes files in source locations like `~/.claude/`. (§4.1)
 3. **Curation tool, not an observability tool.** clog helps developers share knowledge — not measure activity. No analytics, no dashboards, no per-author metrics. This boundary is intentional.
-4. **Author-only publishing.** A developer publishes their own conversations. No mechanism exists for publishing, unpublishing, or retracting on behalf of another author.
+4. **Author-only saving.** A developer saves their own conversations. No mechanism exists for saving, unsaving, or retracting on behalf of another author.
 5. **Git-like when the metaphor fits, not pretending to be Git.** Command vocabulary borrows from Git where natural, but clog's state model is its own. (§5)
 6. **Optional features are inert until configured.** Search and sync ship in the codebase but do nothing until the user opts in. No setup cost for features you don't use.
 7. **Missing things repair silently; corrupted things error clearly.** A deleted directory is recreated. Invalid JSON gets a descriptive error. (§7.3)
@@ -172,9 +172,9 @@ clog/
 │   │   ├── add.ts           # Add conversations to staging
 │   │   ├── reset.ts         # Unstage conversations back to discovered
 │   │   ├── edit.ts          # Edit conversation metadata
-│   │   ├── publish.ts       # Publish to knowledge base
-│   │   ├── unpublish.ts     # Unpublish conversations
-│   │   ├── diff.ts          # Show new messages since last publish
+│   │   ├── save.ts          # Save to knowledge base
+│   │   ├── unsave.ts        # Unsave conversations
+│   │   ├── diff.ts          # Show new messages since last save
 │   │   ├── status.ts        # Show current state
 │   │   ├── show.ts          # Display conversation content
 │   │   ├── path.ts          # Print raw file path
@@ -249,10 +249,10 @@ interface ConversationMeta {
   modifiedAt: string;            // Last metadata or content-change marker
 
   // State
-  state: "discovered" | "staged" | "published";
-  publishedAt: string | null;            // Last successful publish time, null until first publish
-  publishedMessageCount: number | null;  // Parser-sequence checkpoint, null until first publish
-  publishVersion: number;        // Increments on re-publish after edits
+  state: "discovered" | "staged" | "saved";
+  savedAt: string | null;        // Last successful save time, null until first save
+  savedMessageCount: number | null;  // Parser-sequence checkpoint, null until first save
+  saveVersion: number;           // Increments on re-save after edits
 
   // File references
   sourcePath: string;            // Original file path in source location (e.g., ~/.claude/...)
@@ -269,7 +269,7 @@ For the built-in Phase 1 sources, `id = sourceId`. Claude Code and Codex CLI bot
 
 This is intentional. clog does not use a composite key for the built-in sources because a single physical `id` keeps identity handling, file naming, CLI resolution, MCP retrieval, and sync reconciliation simpler and less bug-prone for the current sources. At clog's expected scale and with the built-in sources' UUID-shaped IDs, a cross-source collision is not a realistic design constraint for Phase 1.
 
-**Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` is the dirty/status marker for user-visible metadata or content-marker changes; `publishedAt` is the latest successful publish time and the baseline for cheap modified-since-publish checks; `publishedMessageCount` is the transcript diff boundary, not a timestamp; `sourceMtime` is the local source scan cache marker; Phase 2 `indexedAt` is the search cache freshness marker.
+**Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` is the dirty/status marker for user-visible metadata or content-marker changes; `savedAt` is the latest successful save time and the baseline for cheap modified-since-save checks; `savedMessageCount` is the transcript diff boundary, not a timestamp; `sourceMtime` is the local source scan cache marker; Phase 2 `indexedAt` is the search cache freshness marker.
 
 **Source-native metadata:** clog preserves source-provided metadata such as summaries and slugs when a source exposes them in a trusted native field. Phase 1 does not synthesize summary or slug values during discovery for sources that do not provide them.
 
@@ -292,7 +292,7 @@ interface Message {
 
 `Message[]` order is the canonical transcript order. Adapters must return messages in stable parser-derived order; downstream display, diff, MCP truncation, search chunking, and indexing must not re-sort messages by timestamp. `timestamp` is useful metadata only.
 
-Adapter parsing must be deterministic. For a given raw file, source adapter, adapter version, and parsing-relevant configuration, `parseMessages()` must return the same ordered `Message[]` every time. Parsing must not depend on scan state, database state, filesystem mtime, warning emission, partial-read timing, current time, locale, or which caller requested the parse (`show`, `diff`, MCP retrieval, search indexing, or publish).
+Adapter parsing must be deterministic. For a given raw file, source adapter, adapter version, and parsing-relevant configuration, `parseMessages()` must return the same ordered `Message[]` every time. Parsing must not depend on scan state, database state, filesystem mtime, warning emission, partial-read timing, current time, locale, or which caller requested the parse (`show`, `diff`, MCP retrieval, search indexing, or save).
 
 **Normalization from raw JSONL to Messages:** Source adapters project their native event formats into this shared shape. The projection is intentionally not lossless: raw JSONL files remain the source of truth for full detail, while `Message[]` is optimized for display, diff, MCP retrieval, and search.
 
@@ -353,10 +353,10 @@ CREATE TABLE conversations (
   discovered_at   TEXT NOT NULL,
   modified_at     TEXT NOT NULL,
   state           TEXT NOT NULL DEFAULT 'discovered'
-                  CHECK(state IN ('discovered','staged','published')),
-  published_at    TEXT,
-  published_message_count INTEGER,
-  publish_version INTEGER DEFAULT 0,
+                  CHECK(state IN ('discovered','staged','saved')),
+  saved_at    TEXT,
+  saved_message_count INTEGER,
+  save_version INTEGER DEFAULT 0,
   source_path     TEXT NOT NULL,       -- Original file path in source location
   file_path       TEXT,               -- Path to raw JSONL copy in ~/.clog/raw/ (null until add)
   source_mtime    TEXT,               -- ISO 8601 mtime of source file at last scan
@@ -377,11 +377,13 @@ Fresh installs create all tables with the latest schema and set the version to t
 | 1 | Initial schema (Phase 1) |
 | 2 | Add `indexed_at` for Phase 2 semantic search |
 | 3 | Add `origin` for Phase 3 team sharing |
+| 4 | Rename save checkpoint fields and the saved state value from the legacy publish terminology |
 
 Phase 2 (§10) adds: `indexed_at` column (migration version 2)
 Phase 3 (§11.4) adds: `origin` column (migration version 3)
+The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
 
-**What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in the JSONL files — at `file_path` (the `~/.clog/raw/` copy) for staged/published conversations, or at `source_path` (the original source location) for discovered conversations. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
+**What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in the JSONL files — at `file_path` (the `~/.clog/raw/` copy) for staged/saved conversations, or at `source_path` (the original source location) for discovered conversations. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
 
 ### 3.5 Storage Location
 
@@ -463,12 +465,12 @@ getAdapter(source: string, config: Config): SourceAdapter
 getEnabledAdapters(config: Config): SourceAdapter[]
 ```
 
-`getEnabledAdapters` respects the per-source discovery toggle and is used only for local discovery. `getAdapter(source, config)` ignores `sources.<name>.enabled` for supported sources and returns the adapter needed to parse already-tracked local, staged, published, or remotely imported conversations. Read paths such as `show`, `diff`, `publish`, MCP retrieval, indexing, and sync import/export choose the parser from `ConversationMeta.source`, never from a hardcoded default adapter. If `source` is unknown or unsupported, `getAdapter` fails with a clear unsupported-source error; it must not silently fall back to another adapter.
+`getEnabledAdapters` respects the per-source discovery toggle and is used only for local discovery. `getAdapter(source, config)` ignores `sources.<name>.enabled` for supported sources and returns the adapter needed to parse already-tracked local, staged, saved, or remotely imported conversations. Read paths such as `show`, `diff`, `save`, MCP retrieval, indexing, and sync import/export choose the parser from `ConversationMeta.source`, never from a hardcoded default adapter. If `source` is unknown or unsupported, `getAdapter` fails with a clear unsupported-source error; it must not silently fall back to another adapter.
 
 **Two-phase parsing design:**
 
 1. **Discovery (lightweight):** Scans JSONL files, extracts only metadata (title, summary, project name/path, dates, slug). Does NOT parse all messages or load full content into memory. This keeps discovery fast even with large files — it can stop reading after finding the first valid `cwd`, first human message, summary line, and other required metadata.
-2. **On-demand (full parse):** When `clog show`, `clog diff`, MCP `clog_get`, publish, or indexing needs full content, `parseMessages()` reads and parses the entire JSONL file. This is where source-specific deduplication, correlation, and message normalization happen.
+2. **On-demand (full parse):** When `clog show`, `clog diff`, MCP `clog_get`, save, or indexing needs full content, `parseMessages()` reads and parses the entire JSONL file. This is where source-specific deduplication, correlation, and message normalization happen.
 
 ### 4.2 Claude Code Adapter
 
@@ -629,7 +631,7 @@ During discovery (lightweight metadata extraction), the adapter will:
    g. Stop scanning early once all metadata is found — no need to parse the full file
 5. Use the filename (without `.jsonl`) as both the `sourceId` and the conversation `id` — this is a UUID (e.g., `"c7044ea5-c019-44d6-a77a-500036740f9a"`)
 
-In Phase 1, the parent Claude conversation is the only first-class clog conversation unit. Task subagent files do not get separate DB rows, separate publish units, or separate remote artifacts. Parent discovery and parsing rely on the parent JSONL file only; any parent-visible evidence of delegated work must come from canonical parent-file transcript records that survive the adapter's filtering rules.
+In Phase 1, the parent Claude conversation is the only first-class clog conversation unit. Task subagent files do not get separate DB rows, separate save units, or separate remote artifacts. Parent discovery and parsing rely on the parent JSONL file only; any parent-visible evidence of delegated work must come from canonical parent-file transcript records that survive the adapter's filtering rules.
 
 #### 4.2.7 Adapter Full Parse Behavior
 
@@ -819,7 +821,7 @@ The CLI is the primary interface for developers. The command vocabulary is delib
 ```
 clog init                  Re-run setup (alias: `clog setup`; runs automatically on first use; explicit init can confirm author and offer search and MCP setup)
 clog status [-c|--conversations] [--source] [--undiscoverable]  Show staged, modified, and discovered project summaries + scan filter counts
-clog list [filters]        List conversations (default: staged + published)
+clog list [filters]        List conversations (default: staged + saved)
 clog add [selectors...]    Stage or refresh conversation(s) (copies source file to ~/.clog/raw/)
 clog add --all             Add all discovered conversations
 clog reset [selectors...]  Unstage staged conversation(s) back to discovered
@@ -829,12 +831,12 @@ clog remove <rule...>      Remove current DB rows that match ignore-rule syntax
 clog edit <id> [flags]     Edit conversation metadata (--title, --summary, --author)
 clog tag <id> <tags...>    Add tags to a conversation
 clog untag <id> <tags...>  Remove tags from a conversation
-clog publish [selectors...] Publish conversations to the knowledge base
-clog unpublish [selectors...] Move published conversation(s) back to staged
-clog diff [id...]           Show new messages since last publish
+clog save [selectors...] Save conversations to the knowledge base
+clog unsave [selectors...] Move saved conversation(s) back to staged
+clog diff [id...]           Show new messages since last save
 clog diff --staged [id...]  Show full content of staged conversations
 clog show <id>             Display a conversation's content and metadata
-clog show <id> --path      Print the file path (raw copy if staged/published, source if discovered)
+clog show <id> --path      Print the file path (raw copy if staged/saved, source if discovered)
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
@@ -849,14 +851,14 @@ clog rename-author <old> <new>  Rename author across local conversations
 
 # Phase 2 — Semantic Search (see §10 for details)
 clog search --init         Set up semantic search
-clog search <query>        Semantic search across published conversations
-clog index [--rebuild]     Index published conversations for search
+clog search <query>        Semantic search across saved conversations
+clog index [--rebuild]     Index saved conversations for search
 
 # Phase 3 — Team Sharing (see §11 for details)
 clog remote add <url>      Configure a git remote for team sharing
 clog remote show           Show remote configuration and sync status
 clog remote remove         Remove remote and purge conversations from the configured remote
-clog sync push             Push published conversations to the remote
+clog sync push             Push saved conversations to the remote
 clog sync pull             Pull conversations from the remote
 clog refresh               Reconcile DB from git checkout without fetching
 ```
@@ -865,7 +867,7 @@ All commands that accept `<id>` also accept short prefixes (minimum 4 characters
 
 ### 5.1.1 Shared Selector Model
 
-`clog add`, `clog reset`, `clog publish`, `clog unpublish`, and selector-bearing `clog drain` share one project-aware selector model.
+`clog add`, `clog reset`, `clog save`, `clog unsave`, and selector-bearing `clog drain` share one project-aware selector model.
 
 For these commands, each positional token may resolve as either:
 
@@ -891,16 +893,16 @@ A typical session looks like:
 ```bash
 # 1. See what's new (scanning happens automatically)
 $ clog status
-Conversations to be published:
+Conversations to be saved:
   (use "clog reset <id>" to unstage)
     api-service  1 added     2026-02-18
 
-Changes not staged for publishing:
-  (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)
+Changes not staged for saving:
+  (use "clog add <id>" to refresh the curated copy, or "clog save <id>" to save directly)
     api-service  1 modified  2026-02-15
 
 Untracked conversations:
-  (use "clog add <id>" to stage for publishing)
+  (use "clog add <id>" to stage for saving)
     api-service  1 discovered  2026-02-18
     frontend     1 discovered  2026-02-17
 
@@ -924,11 +926,11 @@ $ clog tag d4e5f6 rate-limiting middleware
 # 5. Fix a title
 $ clog edit a1b2c3 --title "Debug JWT refresh race condition"
 
-# 6. Publish
-$ clog publish
-Publishing 2 conversations...
-Published a1b2c3 (v1): "Debug JWT refresh race condition"
-Published d4e5f6 (v1): "Add rate limiting middleware"
+# 6. Save
+$ clog save
+Saving 2 conversations...
+Saved a1b2c3 (v1): "Debug JWT refresh race condition"
+Saved d4e5f6 (v1): "Add rate limiting middleware"
 
 # 7. Get the raw file path for a conversation
 $ clog path a1b2c3
@@ -942,13 +944,13 @@ $ clog show a1b2c3
 
 `clog status` scans enabled local sources, refreshes discovery metadata, and shows the local projects that need attention, grouped like `git status`:
 
-- **Conversations to be published:** staged conversations and published conversations whose refreshed raw copy is ahead of the last published checkpoint. `clog publish` (no arguments) publishes everything in this group.
-- **Changes not staged for publishing:** published conversations whose source file has grown (or otherwise differs from) the curated raw copy. `clog add <id>` refreshes the raw copy and moves the row into the "to be published" group; `clog publish <id>` pushes the source change through directly.
+- **Conversations to be saved:** staged conversations and saved conversations whose refreshed raw copy is ahead of the last saved checkpoint. `clog save` (no arguments) saves everything in this group.
+- **Changes not staged for saving:** saved conversations whose source file has grown (or otherwise differs from) the curated raw copy. `clog add <id>` refreshes the raw copy and moves the row into the "to be saved" group; `clog save <id>` pushes the source change through directly.
 - **Untracked conversations:** discovered conversations not yet staged.
 
-By default, each non-empty section shows one row per project. A project row includes the project name, compact conversation counts for the statuses present in that section, and the newest conversation date in that project bucket. For example, a project with one staged conversation and two modified published conversations in "Conversations to be published" renders `1 added, 2 modified`. Projects are sorted by newest displayed bucket date first, with project name as the tie-breaker.
+By default, each non-empty section shows one row per project. A project row includes the project name, compact conversation counts for the statuses present in that section, and the newest conversation date in that project bucket. For example, a project with one staged conversation and two modified saved conversations in "Conversations to be saved" renders `1 added, 2 modified`. Projects are sorted by newest displayed bucket date first, with project name as the tie-breaker.
 
-When there is nothing pending publication, `clog status` prints the existing clean-state message instead of empty sections.
+When there is nothing pending saving, `clog status` prints the existing clean-state message instead of empty sections.
 
 `clog status` accepts an optional `--conversations` flag, with `-c` as a shorthand. When present, status shows the conversation-level row layout with short ID, date, project, and title.
 
@@ -960,7 +962,7 @@ Example shape with `--conversations --source`:
 
 ```text
 Untracked conversations:
-  (use "clog add <id>" to stage for publishing)
+  (use "clog add <id>" to stage for saving)
     discovered:    d4e5f6a  claude-code  2026-02-18  api-service Add rate limiting middleware
 ```
 
@@ -975,21 +977,21 @@ For each staged conversation, reset:
 1. Sets `state = "discovered"`
 2. Deletes the raw copy from `~/.clog/raw/<source>/<id>.jsonl` if it exists
 3. Sets `file_path = null`
-4. Clears active publish fields: `published_at = null`, `published_message_count = null`, and `publish_version = 0`
+4. Clears active save fields: `saved_at = null`, `saved_message_count = null`, and `save_version = 0`
 
-`clog reset` does not operate on published conversations. If the user tries to reset a published conversation, clog refuses and suggests `clog unpublish <id>` first. To move a published conversation back to discovered, the explicit sequence is `clog unpublish <id>` followed by `clog reset <id>`.
+`clog reset` does not operate on saved conversations. If the user tries to reset a saved conversation, clog refuses and suggests `clog unsave <id>` first. To move a saved conversation back to discovered, the explicit sequence is `clog unsave <id>` followed by `clog reset <id>`.
 
 `clog reset` does not operate on remote conversations. Remote conversations are read-only; use `clog exclude <rule>` to prevent future rediscovery or re-import, and `clog remove <rule>` if you also want the current local DB row removed.
 
 ### 5.3 The `list` Command
 
-`clog list` with no flags shows **staged + published** conversations — the curated set. This matches the mental model that `list` shows what you're working with, while `status` shows what needs attention.
+`clog list` with no flags shows **staged + saved** conversations — the curated set. This matches the mental model that `list` shows what you're working with, while `status` shows what needs attention.
 
 **Flags:**
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `published`) |
+| `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `saved`) |
 | `--all` | | Show all known conversations, plus ignored local source conversations that are still discoverable |
 | `--project <name>` | `-p` | Filter by project |
 | `--author <name>` | `-a` | Filter by author |
@@ -1011,7 +1013,7 @@ $ clog list -t debugging
 $ clog list -g "auth"
 
 # Combine filters
-$ clog list -s published -p api-service -g "token"
+$ clog list -s saved -p api-service -g "token"
 
 # Control which columns appear
 $ clog list --columns all
@@ -1063,7 +1065,7 @@ Tags are managed separately via `clog tag` / `clog untag`. Staging is managed vi
 
 If every supplied value already matches the current metadata, `clog edit` is a no-op: it does not update `modified_at` and reports that nothing changed.
 
-If an edit changes title, summary, or author, `modified_at` is set to the edit time. If the conversation is published and the changed field is search-visible, search invalidation follows §10.8.1.
+If an edit changes title, summary, or author, `modified_at` is set to the edit time. If the conversation is saved and the changed field is search-visible, search invalidation follows §10.8.1.
 
 **Message-level editing is not supported.** If a user needs to redact sensitive data from conversation content, they should edit the raw JSONL file directly:
 
@@ -1074,7 +1076,7 @@ $ clog path a1b2c3
 # User opens and edits the file with their preferred editor
 ```
 
-The raw JSONL copy is the curated content. Once a conversation has been added, no-argument `clog publish` publishes exactly the staged raw copy. For a published conversation whose source has grown, `clog add <id>` behaves like `git add`: it refreshes the curated raw copy from the source while leaving `state = "published"`. After the refresh, the raw copy contains more messages than the last published checkpoint, so `clog status` reports the conversation under "Conversations to be published:" (green `modified:`) and no-argument `clog publish` picks it up alongside regular staged conversations. Explicit `clog publish <id>` can also publish source changes directly without a separate add; see §5.6.
+The raw JSONL copy is the curated content. Once a conversation has been added, no-argument `clog save` saves exactly the staged raw copy. For a saved conversation whose source has grown, `clog add <id>` behaves like `git add`: it refreshes the curated raw copy from the source while leaving `state = "saved"`. After the refresh, the raw copy contains more messages than the last saved checkpoint, so `clog status` reports the conversation under "Conversations to be saved:" (green `modified:`) and no-argument `clog save` picks it up alongside regular staged conversations. Explicit `clog save <id>` can also save source changes directly without a separate add; see §5.6.
 
 ### 5.4.1 The `tag` and `untag` Commands
 
@@ -1098,7 +1100,7 @@ If every requested tag is already present, `clog tag` is a no-op: it does not up
 
 If none of the requested tags are present, `clog untag` is a no-op: it does not update `modified_at` and reports that no matching tags were found.
 
-When `clog tag` or `clog untag` actually changes the tag set, `modified_at` is set to the operation time. Published indexed conversations are marked stale for search according to §10.8.1.
+When `clog tag` or `clog untag` actually changes the tag set, `modified_at` is set to the operation time. Saved indexed conversations are marked stale for search according to §10.8.1.
 
 ### 5.5 Implicit Scanning
 
@@ -1115,9 +1117,9 @@ Scanning is idempotent. Each scan will:
 - Skip conversations whose source file hasn't changed (matched by `source + sourceId`, checked via `source_mtime`)
 - **Detect updated source files** for conversations in any state. When a source file's mtime has changed since last scan:
   - For `discovered` conversations: re-extract metadata (title, summary may change as the conversation grows)
-  - For `staged`/`published` conversations: preserve the stored metadata row and preserve the curated raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog add <id>` to refresh the curated raw copy explicitly, or `clog publish <id>` to publish the newer source content directly.
-- **Detect moved source files.** When a known conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `staged`/`published`, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
-- **Prune stale entries per source.** After discovery completes, remove `discovered`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Staged and published conversations are never pruned (they have their own copies in `~/.clog/raw/`). The scan reports a `pruned` count alongside other filter counts.
+  - For `staged`/`saved` conversations: preserve the stored metadata row and preserve the curated raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog add <id>` to refresh the curated raw copy explicitly, or `clog save <id>` to save the newer source content directly.
+- **Detect moved source files.** When a known conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `staged`/`saved`, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
+- **Prune stale entries per source.** After discovery completes, remove `discovered`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Staged and saved conversations are never pruned (they have their own copies in `~/.clog/raw/`). The scan reports a `pruned` count alongside other filter counts.
 
 **Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting. This includes `clog status`, `clog list`, `clog add --all`, selector-bearing `clog add`, and any other command path that refreshes the discovered corpus before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. The command exit code remains 0 unless the requested operation itself fails.
 
@@ -1164,11 +1166,11 @@ This structured warning contract applies to source discovery and remote reconcil
 
 `clog add` is the staging operation. For a discovered conversation, it copies the current source file to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, and changes `state` to `staged`. For an already staged local conversation, running `clog add <id>` again refreshes the staged raw copy from the current source file and leaves it staged.
 
-For a published local conversation, `clog add <id>` refreshes the curated raw copy from the current source file and leaves `state = "published"`. This is intentionally Git-like: adding a modified tracked conversation updates the publish candidate; it does not unpublish the conversation or move it back to `staged`. If the source content is byte-for-byte identical to the current raw copy, `clog add <id>` is a content no-op: it updates any source scan cache needed to stop reporting a source-mtime-only change, but it does not advance `modified_at` or touch publish fields. If the source content differs, `clog add <id>` copies the source file over the raw copy, updates `file_path` if needed, sets `modified_at = now`, and leaves `published_at`, `published_message_count`, and `publish_version` unchanged until the next publish.
+For a saved local conversation, `clog add <id>` refreshes the curated raw copy from the current source file and leaves `state = "saved"`. This is intentionally Git-like: adding a modified tracked conversation updates the save candidate; it does not unsave the conversation or move it back to `staged`. If the source content is byte-for-byte identical to the current raw copy, `clog add <id>` is a content no-op: it updates any source scan cache needed to stop reporting a source-mtime-only change, but it does not advance `modified_at` or touch save fields. If the source content differs, `clog add <id>` copies the source file over the raw copy, updates `file_path` if needed, sets `modified_at = now`, and leaves `saved_at`, `saved_message_count`, and `save_version` unchanged until the next save.
 
 `clog add` does not operate on remote conversations.
 
-**No file copying during scan.** Raw JSONL files are not copied to `~/.clog/raw/` during scanning. Before a conversation is curated, clog reads metadata from the source location directly (read-only). Content is copied only by explicit curation actions: `clog add <id>` or explicit `clog publish <id>` pushthrough. This avoids doubling disk usage for conversations the developer never intends to curate.
+**No file copying during scan.** Raw JSONL files are not copied to `~/.clog/raw/` during scanning. Before a conversation is curated, clog reads metadata from the source location directly (read-only). Content is copied only by explicit curation actions: `clog add <id>` or explicit `clog save <id>` pushthrough. This avoids doubling disk usage for conversations the developer never intends to curate.
 
 **Performance:** Scan results are cached in the database. Subsequent scans skip unchanged files (matched by `source + sourceId`, checked via `source_mtime`), keeping scanning fast even with hundreds of conversations. The adapter's early-stop strategy (read only the first valid `cwd`, first user message, summary line, and other required metadata, then skip the rest) keeps initial scans fast too. If scanning latency becomes an issue at thousands of conversations, this is an optimization target — but the mtime-based caching should handle typical scale well.
 
@@ -1181,90 +1183,90 @@ The config file supports `sources.<name>.includePaths` and `sources.<name>.exclu
 
 If a source cannot determine a conversation's `projectPath`, discovery fails closed for that conversation: skip it and emit an aggregated `path_filter_without_project` warning unless an earlier `clogignore` rule already suppressed it. The current user-facing copy is `project path missing: these conversation files have no cwd metadata`. This applies even when no `includePaths` or `excludePaths` are configured. clog treats unknown project paths as unsafe because project-path filtering is the primary privacy boundary for local discovery. The scan reports an `undiscoverable` count alongside the other filter counts. When the count is non-zero, `clog status` includes it in the dimmed filter summary line with a hint directing the user to `clog status --undiscoverable` for details.
 
-### 5.6 The `publish` Command
+### 5.6 The `save` Command
 
-Publishing is a local operation in Phase 1. It:
+Saving is a local operation in Phase 1. It:
 
-1. Changes or keeps the conversation's state as `published`
-2. Increments `publish_version`
+1. Changes or keeps the conversation's state as `saved`
+2. Increments `save_version`
 3. Ensures a raw curated file exists for the conversation
-4. Parses the publish candidate through the adapter selected by `source`
-5. Sets `published_at = now`
+4. Parses the save candidate through the adapter selected by `source`
+5. Sets `saved_at = now`
 6. Sets `modified_at = now`
-7. Sets `published_message_count` to the number of parsed messages included in this published version
+7. Sets `saved_message_count` to the number of parsed messages included in this saved version
 
 ```bash
-# Publish all staged
-$ clog publish
+# Save all staged
+$ clog save
 
-# Publish specific conversations or project-scoped batches (works from any local state)
-$ clog publish a1b2c3 d4e5f6
-$ clog publish api-service
-$ clog publish project:api-service
+# Save specific conversations or project-scoped batches (works from any local state)
+$ clog save a1b2c3 d4e5f6
+$ clog save api-service
+$ clog save project:api-service
 ```
 
-When called with no arguments, `clog publish` publishes all staged conversations. It does not implicitly publish modified published conversations; those require explicit IDs so republishing an existing knowledge-base entry is deliberate.
+When called with no arguments, `clog save` saves all staged conversations. It does not implicitly save modified saved conversations; those require explicit IDs so resaving an existing knowledge-base entry is deliberate.
 
-When called with explicit selectors, `clog publish [selectors...]` can publish discovered, staged, or already published local conversations.
+When called with explicit selectors, `clog save [selectors...]` can save discovered, staged, or already saved local conversations.
 
-Project selectors are only a batching mechanism here: `clog publish myapp` must behave like applying explicit `clog publish <id>` to each matching local conversation in project `myapp`, using the same per-conversation publish rules described below. This includes discovered, staged, and already published local rows when those rows are otherwise valid explicit publish targets.
+Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching local conversation in project `myapp`, using the same per-conversation save rules described below. This includes discovered, staged, and already saved local rows when those rows are otherwise valid explicit save targets.
 
-Per-conversation explicit publish behavior:
+Per-conversation explicit save behavior:
 
-- For a discovered conversation, explicit publish is a shortcut for `clog add <id>` followed by `clog publish <id>`: it verifies the source file exists, copies it to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, parses that raw copy, and publishes it.
-- For a staged conversation, explicit publish reads the staged raw copy at `file_path`; it does not refresh or overwrite that copy from `sourcePath`.
-- For a published conversation whose source file is unchanged or unavailable, explicit publish reads the existing raw copy at `file_path`.
-- For a published conversation whose source file exists and differs from the current raw copy, explicit publish refreshes the raw copy from `sourcePath` before parsing and publishing. This is the pushthrough workflow for users who prefer `clog publish <id>` over a separate `clog add <id>` step.
+- For a discovered conversation, explicit save is a shortcut for `clog add <id>` followed by `clog save <id>`: it verifies the source file exists, copies it to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, parses that raw copy, and saves it.
+- For a staged conversation, explicit save reads the staged raw copy at `file_path`; it does not refresh or overwrite that copy from `sourcePath`.
+- For a saved conversation whose source file is unchanged or unavailable, explicit save reads the existing raw copy at `file_path`.
+- For a saved conversation whose source file exists and differs from the current raw copy, explicit save refreshes the raw copy from `sourcePath` before parsing and saving. This is the pushthrough workflow for users who prefer `clog save <id>` over a separate `clog add <id>` step.
 
-If a source file needed for the discovered-conversation shortcut is unavailable, that conversation fails clearly. If a published conversation's source file is unavailable, explicit publish falls back to the existing raw copy. Publish never refreshes staged conversations from source; staged content is already the user's selected publish candidate.
+If a source file needed for the discovered-conversation shortcut is unavailable, that conversation fails clearly. If a saved conversation's source file is unavailable, explicit save falls back to the existing raw copy. Save never refreshes staged conversations from source; staged content is already the user's selected save candidate.
 
-`published_message_count` is `null` until the first successful publish. After first publish it is retained as the active last-publish checkpoint, including when a conversation is later unpublished back to `staged`. Every publish or republish replaces it with the current parsed message count. `clog reset` clears the active publish fields when moving a staged conversation back to `discovered`.
+`saved_message_count` is `null` until the first successful save. After first save it is retained as the active last-save checkpoint, including when a conversation is later unsaved back to `staged`. Every save or resave replaces it with the current parsed message count. `clog reset` clears the active save fields when moving a staged conversation back to `discovered`.
 
-When publish runs in an interactive terminal against more than one conversation, it renders single-line progress for each phase, updating in place as work completes:
+When save runs in an interactive terminal against more than one conversation, it renders single-line progress for each phase, updating in place as work completes:
 
 ```
-58/58 conversations published locally...
+58/58 conversations saved locally...
 58/58 conversations indexed for vector search...
-Published 58 conversation(s).
+Saved 58 conversation(s).
 ```
 
-The publish-loop line ticks once per conversation as the raw copy and DB row are written. The indexing line ticks once per conversation as embeddings are produced and upserted to the vector store, so the user sees real-time progress through the slow embedding step. Each phase terminates with a newline so the final counts persist on screen. In non-TTY contexts (pipes, redirected output) only the final summary is written.
+The save-loop line ticks once per conversation as the raw copy and DB row are written. The indexing line ticks once per conversation as embeddings are produced and upserted to the vector store, so the user sees real-time progress through the slow embedding step. Each phase terminates with a newline so the final counts persist on screen. In non-TTY contexts (pipes, redirected output) only the final summary is written.
 
-**Why `publish` and not `commit`?** This is intentional. Git `commit` creates a permanent, immutable snapshot with a hash. `clog publish` is a state change — conversations can be edited and re-published. Calling it `commit` would set wrong expectations about immutability, revert semantics, and diff history. `publish` communicates what actually happens: "this conversation is now visible to agents and (eventually) teammates."
+**Why `save` and not `commit`?** This is intentional. Git `commit` creates a permanent, immutable snapshot with a hash. `clog save` is a state change — conversations can be edited and re-saved. Calling it `commit` would set wrong expectations about immutability, revert semantics, and diff history. `save` communicates what actually happens: "this conversation is now visible to agents and (eventually) teammates."
 
-### 5.7 The `unpublish` Command
+### 5.7 The `unsave` Command
 
-`clog unpublish` moves published conversations back to the `staged` state. The raw file in `~/.clog/raw/` is preserved — the conversation is still tracked, just no longer visible to agents via the MCP server.
+`clog unsave` moves saved conversations back to the `staged` state. The raw file in `~/.clog/raw/` is preserved — the conversation is still tracked, just no longer visible to agents via the MCP server.
 
 ```bash
-# Unpublish all published conversations
-$ clog unpublish
+# Unsave all saved conversations
+$ clog unsave
 
-# Unpublish specific conversations or project-scoped batches
-$ clog unpublish a1b2c3 d4e5f6
-$ clog unpublish api-service
-Unpublished 2 conversations (moved to staging).
+# Unsave specific conversations or project-scoped batches
+$ clog unsave a1b2c3 d4e5f6
+$ clog unsave api-service
+Unsaved 2 conversations (moved to staging).
 ```
 
-This is a local state change. Phase 3 (§11.7) extends this: unpublishing a previously-synced conversation propagates as a retraction on the next `sync push`.
+This is a local state change. Phase 3 (§11.7) extends this: unsaving a previously-synced conversation propagates as a retraction on the next `sync push`.
 
-With no selectors, `clog unpublish` moves every local published conversation back to `staged`. With selectors, project selectors are again just batching: `clog unpublish myapp` behaves like applying `clog unpublish <id>` to each matching local published conversation in project `myapp`.
+With no selectors, `clog unsave` moves every local saved conversation back to `staged`. With selectors, project selectors are again just batching: `clog unsave myapp` behaves like applying `clog unsave <id>` to each matching local saved conversation in project `myapp`.
 
-Unpublish changes only curation state and search eligibility. It does not clear `published_at`, `published_message_count`, or `publish_version`; those fields remain the active last-publish checkpoint for display and later republish decisions. To remove that active publish checkpoint, reset the conversation after unpublishing it.
+Unsave changes only curation state and search eligibility. It does not clear `saved_at`, `saved_message_count`, or `save_version`; those fields remain the active last-save checkpoint for display and later resave decisions. To remove that active save checkpoint, reset the conversation after unsaving it.
 
-In an interactive terminal against more than one conversation, unpublish mirrors publish's progress output:
+In an interactive terminal against more than one conversation, unsave mirrors save's progress output:
 
 ```
-58/58 conversations unpublished locally...
+58/58 conversations unsaved locally...
 58/58 conversations removed from vector search...
-Unpublished 58 conversation(s) (moved to staging).
+Unsaved 58 conversation(s) (moved to staging).
 ```
 
 The first line ticks once per DB state transition; the second ticks once per vector-store deletion. Each phase terminates with a newline so the final counts persist. In non-TTY contexts only the final summary is written.
 
 ### 5.7.1 The `show` and `path` Commands
 
-`clog show <id>` displays conversation metadata followed by parsed messages. It works for staged and published conversations. Discovered conversations can be shown from the source file when the source file is still available.
+`clog show <id>` displays conversation metadata followed by parsed messages. It works for staged and saved conversations. Discovered conversations can be shown from the source file when the source file is still available.
 
 `clog show <id> --path` is path-output shorthand on the `show` command and is equivalent to `clog path <id>`.
 
@@ -1301,8 +1303,8 @@ Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects 
 
 - SQLite integrity and schema version
 - basic DB row invariants that should never be violated
-- curated raw-file presence and parseability for local staged/published rows
-- publish checkpoint sanity for local published rows
+- curated raw-file presence and parseability for local staged/saved rows
+- save checkpoint sanity for local saved rows
 - `clogignore`
 - `config.json`
 
@@ -1324,12 +1326,12 @@ The command currently checks:
 4. built-in-source `id == source_id`
 5. valid row `state`
 6. parseable `tags_json`
-7. expected raw-file path/presence for local staged/published rows
+7. expected raw-file path/presence for local staged/saved rows
 8. successful raw-file parsing through the selected adapter
-9. published parser-sequence checkpoint drift (`published_message_count`)
+9. saved parser-sequence checkpoint drift (`saved_message_count`)
 10. reset-cleared curation fields on discovered rows
-11. required publish metadata on published rows
-12. parseable timestamps and `published_at <= modified_at`
+11. required save metadata on saved rows
+12. parseable timestamps and `saved_at <= modified_at`
 13. readable `clogignore`
 14. supported `clogignore` rule syntax
 15. `config.json` parse/schema validity
@@ -1339,13 +1341,13 @@ The command currently checks:
 Notes:
 
 - If a row uses an unrecognized `source`, `plunge` reports that and does not emit additional adapter-dependent findings for that row.
-- Checkpoint drift where the current parsed message count is below `published_message_count` is informational, not corruption. This can happen when parser projection evolves without raw-file damage. The recovery path is to inspect the conversation and republish it so the stored checkpoint reflects the current parser output.
+- Checkpoint drift where the current parsed message count is below `saved_message_count` is informational, not corruption. This can happen when parser projection evolves without raw-file damage. The recovery path is to inspect the conversation and resave it so the stored checkpoint reflects the current parser output.
 
 Human-readable output is grouped in stable subsystem order:
 
 1. Database
 2. Raw files
-3. Publish checkpoints
+3. Save checkpoints
 4. clogignore
 5. Config
 
@@ -1396,7 +1398,7 @@ Like other DB-touching paths, `clog plunge` acquires the DB lock for the duratio
 ### 5.7.3 The `drain` Command
 
 `clog drain` exports conversations out of clog as portable files or stdout
-payloads. It is the inverse of curation: `add` and `publish` bring
+payloads. It is the inverse of curation: `add` and `save` bring
 conversations into clog's curated corpus; `drain` lets them flow back out.
 
 `clog drain` is read-only. It never modifies the database, raw files,
@@ -1521,7 +1523,7 @@ Drained 38 conversations to ./export/ (3 failed)
 | `--raw` | | Emit the exact underlying source file instead of parsed export data. Incompatible with `--format`. |
 | `--force` | | File and directory output modes only. Overwrite an existing target file or directory entry. |
 | `--refresh` | | Refresh local discovery before resolving the export set. This may update the discovered corpus and emit aggregated scan warnings to stderr. |
-| `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `published`). |
+| `--state <state>` | `-s` | Filter by state (`discovered`, `staged`, `saved`). |
 | `--project <name>` | `-p` | Filter by project name (same semantics as `clog list --project`). |
 | `--author <name>` | `-a` | Filter by author (same semantics as `clog list --author`). |
 | `--tag <tag>` | `-t` | Filter by tag (same semantics as `clog list --tag`). |
@@ -1592,7 +1594,7 @@ selectors, filters, or both; the format-specific match-count rules from
 `clog drain` can export any conversation whose content path resolves
 successfully:
 
-- **Published (local)** — reads from the curated raw copy at `filePath`
+- **Saved (local)** — reads from the curated raw copy at `filePath`
 - **Staged** — reads from the curated raw copy at `filePath`
 - **Discovered** — reads from `sourcePath` if the source file still exists
 - **Remote** — reads from the resolved remote checkout path, using the same
@@ -1636,9 +1638,9 @@ This order governs:
 The JSON export is a portable export object, not a dump of clog's internal
 database row. It includes user-facing metadata such as `id`, `source`,
 `title`, `summary`, `author`, `projectName`, `tags`, `slug`, `createdAt`,
-`publishedAt`, `state`, and parsed `messages`. It intentionally omits
+`savedAt`, `state`, and parsed `messages`. It intentionally omits
 local-only/internal fields such as `sourceId`, `projectPath`,
-`discoveredAt`, `modifiedAt`, `publishedMessageCount`, `publishVersion`,
+`discoveredAt`, `modifiedAt`, `savedMessageCount`, `saveVersion`,
 `sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, and `origin`.
 
 Markdown is a convenience rendering, not the canonical export contract.
@@ -1699,16 +1701,16 @@ number failed.
 
 ### 5.8 The `diff` Command
 
-`clog diff` shows what changed since last publish, mirroring `git diff`:
+`clog diff` shows what changed since last save, mirroring `git diff`:
 
 ```bash
-# Show new messages in all modified published conversations
+# Show new messages in all modified saved conversations
 $ clog diff
 
 # Show new messages in a specific conversation
 $ clog diff a1b2c3
 
-# Show full content of all staged conversations (what publish would publish)
+# Show full content of all staged conversations (what save would save)
 $ clog diff --staged
 
 # Show full content of a specific staged conversation
@@ -1721,9 +1723,9 @@ $ clog diff --first 5         # alias for --head
 $ clog diff --last 3          # alias for --tail
 ```
 
-`clog diff` works only on local conversations (`origin IS NULL`). Remote conversations are read-only published artifacts from another author, so clog does not compute local new-since-publish diffs for them. With no arguments, `clog diff` ignores remote conversations. If a user explicitly runs `clog diff <remote-id>`, clog returns a clear error explaining that diff is only available for local conversations and suggests `clog show <id>` to inspect the remote content.
+`clog diff` works only on local conversations (`origin IS NULL`). Remote conversations are read-only saved artifacts from another author, so clog does not compute local new-since-save diffs for them. With no arguments, `clog diff` ignores remote conversations. If a user explicitly runs `clog diff <remote-id>`, clog returns a clear error explaining that diff is only available for local conversations and suggests `clog show <id>` to inspect the remote content.
 
-**Default mode (no `--staged`):** Uses the published parser-sequence checkpoint to show only what was added since the last publish. `published_message_count` is the number of parsed messages included in the last published version. `clog diff` re-parses the current publish candidate and shows `messages.slice(publishedMessageCount)`. For a published conversation whose source file exists and differs from the current raw copy, the publish candidate is the source file, matching the explicit `clog publish <id>` pushthrough behavior. Otherwise, the publish candidate is the existing raw copy. Each conversation gets a header:
+**Default mode (no `--staged`):** Uses the saved parser-sequence checkpoint to show only what was added since the last save. `saved_message_count` is the number of parsed messages included in the last saved version. `clog diff` re-parses the current save candidate and shows `messages.slice(savedMessageCount)`. For a saved conversation whose source file exists and differs from the current raw copy, the save candidate is the source file, matching the explicit `clog save <id>` pushthrough behavior. Otherwise, the save candidate is the existing raw copy. Each conversation gets a header:
 
 ```
 --- a1b2c3d "Debug JWT refresh race condition" (3 new messages since v1)
@@ -1731,36 +1733,36 @@ $ clog diff --last 3          # alias for --tail
 
 With no arguments and no modified conversations, `clog diff` produces no output (like `git diff` on a clean tree).
 
-If `published_message_count` is `null`, the published baseline is treated as empty and the full parsed conversation is shown. If the current parsed message count is less than the stored checkpoint, clog reports a clear error for that conversation because the raw file was edited, truncated, or parsed differently than the version that was published.
+If `saved_message_count` is `null`, the saved baseline is treated as empty and the full parsed conversation is shown. If the current parsed message count is less than the stored checkpoint, clog reports a clear error for that conversation because the raw file was edited, truncated, or parsed differently than the version that was saved.
 
-The checkpoint assumes source conversations are append-only and adapter parsing is deterministic. `published_message_count` detects obvious boundary breakage when the current parsed message count is less than the stored checkpoint. It cannot detect every edit before the published boundary when the current count remains greater than or equal to the checkpoint; in that case the count may no longer point to the same logical message. This is accepted behavior for direct raw-file editing; the recovery path is to review and re-publish the conversation so the checkpoint reflects the edited file.
+The checkpoint assumes source conversations are append-only and adapter parsing is deterministic. `saved_message_count` detects obvious boundary breakage when the current parsed message count is less than the stored checkpoint. It cannot detect every edit before the saved boundary when the current count remains greater than or equal to the checkpoint; in that case the count may no longer point to the same logical message. This is accepted behavior for direct raw-file editing; the recovery path is to review and re-save the conversation so the checkpoint reflects the edited file.
 
-**Modified-since-publish model:** A published conversation is considered modified when any of these are true:
+**Modified-since-save model:** A saved conversation is considered modified when any of these are true:
 
-- user-visible metadata changed after the last publish
+- user-visible metadata changed after the last save
 - a local source file mtime changed during scan
-- a local raw copy exists and its file mtime is newer than `published_at`
-- the current parsed message count is greater than `published_message_count`
+- a local raw copy exists and its file mtime is newer than `saved_at`
+- the current parsed message count is greater than `saved_message_count`
 - remote reconciliation changed search-visible metadata or the derived content path
 
-Status and list coloring use this same model. `publishedAt` remains display/history metadata; it is not the primary cutoff for new transcript content. `modified_at > published_at` is sufficient to mark a published conversation as modified, but it is not sufficient to compute transcript diff content.
+Status and list coloring use this same model. `savedAt` remains display/history metadata; it is not the primary cutoff for new transcript content. `modified_at > saved_at` is sufficient to mark a saved conversation as modified, but it is not sufficient to compute transcript diff content.
 
-`clog status` may use mtime and metadata timestamps as cheap dirty signals. A changed local source mtime means newer source content is available either to stage with `clog add <id>` or to publish directly with `clog publish <id>`. To determine whether a dirty published conversation has new projected transcript messages, clog parses the same publish candidate that explicit publish would use: the current source file when it differs from the raw copy, otherwise the raw copy. For remote reconciliation changes, it parses the remote content path. It then compares the current parsed message count to `published_message_count`. It does not need to parse every published conversation on every status run.
+`clog status` may use mtime and metadata timestamps as cheap dirty signals. A changed local source mtime means newer source content is available either to stage with `clog add <id>` or to save directly with `clog save <id>`. To determine whether a dirty saved conversation has new projected transcript messages, clog parses the same save candidate that explicit save would use: the current source file when it differs from the raw copy, otherwise the raw copy. For remote reconciliation changes, it parses the remote content path. It then compares the current parsed message count to `saved_message_count`. It does not need to parse every saved conversation on every status run.
 
-`clog diff` is transcript-only. Metadata-only changes can make `clog status` show a published conversation as modified while `clog diff` shows no messages for that conversation. If the source or raw file changed but the projected message count did not, status may still show the conversation as modified because the publish candidate changed, while diff shows no new projected messages.
+`clog diff` is transcript-only. Metadata-only changes can make `clog status` show a saved conversation as modified while `clog diff` shows no messages for that conversation. If the source or raw file changed but the projected message count did not, status may still show the conversation as modified because the save candidate changed, while diff shows no new projected messages.
 
 **`--head`/`--first` and `--tail`/`--last`:** Limit the number of messages shown per conversation. `--head N` shows the first N messages, `--tail N` shows the last N. `--first` and `--last` are aliases. Cannot be combined. The header indicates when output is truncated (e.g., "showing 5 of 23 new messages").
 
-**`--staged` mode:** Shows the full conversation content for staged conversations — a preview of what `clog publish` would publish. With no arguments, shows all staged conversations.
+**`--staged` mode:** Shows the full conversation content for staged conversations — a preview of what `clog save` would save. With no arguments, shows all staged conversations.
 
 ### 5.9 CLI Coloring
 
 CLI output uses coloring to communicate state at a glance:
 
-- **Green** — conversations ready to publish: staged (added) conversations, and published conversations whose refreshed raw copy is ahead of the last published checkpoint
-- **Red** — untracked (discovered) conversations, and published conversations whose source file has grown but has not yet been refreshed into the curated raw copy
+- **Green** — conversations ready to save: staged (added) conversations, and saved conversations whose refreshed raw copy is ahead of the last saved checkpoint
+- **Red** — untracked (discovered) conversations, and saved conversations whose source file has grown but has not yet been refreshed into the curated raw copy
 - **Dim** — ignored local source conversations rediscovered for `clog list --all`
-- Default (no color) — published conversations with nothing pending
+- Default (no color) — saved conversations with nothing pending
 
 This applies to `clog status`, `clog list`, and any other command that displays conversation state.
 
@@ -1883,7 +1885,7 @@ Continue? [y/N]
 
 This command only modifies the local DB (`UPDATE conversations SET author = 'new' WHERE author = 'old' AND origin IS NULL`). It does not modify config.
 
-Note: `clog config set author` only changes the config value. It does NOT rename conversations in the DB. It affects only future local discoveries. Published conversations use the stored `author` on the conversation row; `clog publish` does not restamp author from config. `rename-author` is the explicit migration tool.
+Note: `clog config set author` only changes the config value. It does NOT rename conversations in the DB. It affects only future local discoveries. Saved conversations use the stored `author` on the conversation row; `clog save` does not restamp author from config. `rename-author` is the explicit migration tool.
 
 Phase 3 (§11.6) extends the confirmation prompt with additional sync context.
 
@@ -1902,8 +1904,8 @@ Phase 1 provides browsing, retrieval, and curation. Semantic search is added in 
 MCP tools that accept a conversation ID use the same resolver grammar as CLI commands (§3.3): full UUID, 4+ character prefix, or source-qualified `prefix@source` / `uuid@source`. Source-qualified IDs restrict resolution to the named source; ambiguous unqualified prefixes return copy-pasteable `id@source` candidates.
 
 ```typescript
-// List published conversations with optional filters
-tool: "clog_list_published"
+// List saved conversations with optional filters
+tool: "clog_list_saved"
 input: {
   tags?: string[];         // Filter by tags (OR — conversations with at least one matching tag)
   project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
@@ -1927,13 +1929,13 @@ returns: {
   warnings?: ClogWarning[];
 }
 
-// List staged conversations (same schema as clog_list_published)
+// List staged conversations (same schema as clog_list_saved)
 tool: "clog_list_staged"
-// Same input/output as clog_list_published, scoped to staged conversations.
+// Same input/output as clog_list_saved, scoped to staged conversations.
 // Useful for agents helping curate — find conversations that need summaries or tags.
 
 // Get conversation content (parses raw JSONL on demand, truncated by default)
-// Only works on staged or published conversations — returns an error for discovered.
+// Only works on staged or saved conversations — returns an error for discovered.
 tool: "clog_get"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
@@ -1968,7 +1970,7 @@ returns: {
 // small. The truncation note in the response makes it easy for
 // agents to request more when needed.
 
-// Edit metadata on a staged or published conversation
+// Edit metadata on a staged or saved conversation
 tool: "clog_update"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
@@ -2002,7 +2004,7 @@ input: {
 returns: {
   items: Array<{
     name: string;
-    count: number;          // Number of published conversations
+    count: number;          // Number of saved conversations
   }>;
 }
 ```
@@ -2029,7 +2031,7 @@ codex mcp add clog -- npx -y clog-mcp
 
 `clog mcp setup` wraps those commands and is the preferred setup path from the clog CLI. `clog mcp setup claude` registers Claude Code, `clog mcp setup codex` registers Codex CLI, and `clog mcp setup both` does both in sequence. If a server named `clog` already exists for a selected client, clog replaces it automatically.
 
-The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. The `clog_list_published` and `clog_browse` tools only expose **published** conversations. `clog_list_staged` and `clog_get`/`clog_update` also work on staged conversations to support agent-assisted curation.
+The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. The `clog_list_saved` and `clog_browse` tools only expose **saved** conversations. `clog_list_staged` and `clog_get`/`clog_update` also work on staged conversations to support agent-assisted curation.
 
 MCP handlers that parse messages dispatch by `ConversationMeta.source`. Responses include the canonical source key, not a separate display label. List-style responses include `source` on each conversation summary object. Get-style responses include `source` on the top-level conversation object. Parsed messages preserve adapter output order.
 
@@ -2083,9 +2085,9 @@ Phase 3 (§11.5) adds: `remote` block
 
 **Source path overrides:** Source locations are configured only through `sources.<name>.paths`. `CLOG_HOME` overrides clog's data directory; there is no environment-variable override for source paths.
 
-**Default source enablement:** Built-in sources are enabled by default so `clog status` discovers Claude Code and Codex CLI conversations without extra setup. Discovery is local-only: it stores metadata in the local clog database and does not publish, sync, or copy raw content. Users can disable local discovery for a source with `sources.<name>.enabled = false`, or narrow discovery with `includePaths` / `excludePaths`.
+**Default source enablement:** Built-in sources are enabled by default so `clog status` discovers Claude Code and Codex CLI conversations without extra setup. Discovery is local-only: it stores metadata in the local clog database and does not save, sync, or copy raw content. Users can disable local discovery for a source with `sources.<name>.enabled = false`, or narrow discovery with `includePaths` / `excludePaths`.
 
-**Local discovery toggle:** `enabled: false` means clog does not scan local files for that source. The source remains supported for parsing staged, published, or remotely imported conversations already present in clog state. A remote-only configuration may set all built-in sources to `enabled: false`; local scan commands then find no local conversations, while sync pull, remote browsing, and MCP access to imported conversations continue to work.
+**Local discovery toggle:** `enabled: false` means clog does not scan local files for that source. The source remains supported for parsing staged, saved, or remotely imported conversations already present in clog state. A remote-only configuration may set all built-in sources to `enabled: false`; local scan commands then find no local conversations, while sync pull, remote browsing, and MCP access to imported conversations continue to work.
 
 **Path filtering rules:** `includePaths` and `excludePaths` match against the stored `projectPath` associated with the conversation. Claude Code derives this from the first `cwd` found in the main conversation JSONL. Codex CLI derives it from `session_meta.payload.cwd`, falling back to the first valid `turn_context.payload.cwd` found in source-file order. If `includePaths` is set and non-empty, a conversation must match at least one include path. If `excludePaths` is set, any matching conversation is skipped regardless of include paths.
 
@@ -2156,10 +2158,10 @@ To keep scope clear, these are explicitly **not** in Phase 1:
 Phase 1 is successful if:
 
 1. A developer can run `clog status` and see their Claude Code and Codex CLI conversations listed
-2. They can add, edit metadata, tag, and publish conversations via the CLI
+2. They can add, edit metadata, tag, and save conversations via the CLI
 3. `clog show` displays full conversation content parsed from raw JSONL files
 4. `clog path` returns correct file paths to raw JSONL files
-5. A coding agent with the MCP server configured can browse and retrieve published conversations
+5. A coding agent with the MCP server configured can browse and retrieve saved conversations
 6. The entire tool runs locally with no network dependencies
 7. The SQLite database stays small (metadata only) regardless of conversation size
 
@@ -2173,8 +2175,8 @@ Phase 1 implementation work includes:
 - `src/cli/add.ts` — copy raw files into `raw/<source>/` and implement targeted-add discovery retry
 - `src/cli/drain.ts` — export conversations as portable JSON, markdown, or raw source
 - `src/cli/show.ts`, `src/cli/path.ts`, `src/cli/diff.ts` — use source-aware content path resolution and parsing
-- `src/cli/publish.ts` — publish staged raw copies, set `published_message_count`, and use source-aware parsing
-- `src/db/index.ts` — add `projectName`, `projectPath`, and `publishedMessageCount` to conversation insert/update/read paths, filters, and publish-state queries
+- `src/cli/save.ts` — save staged raw copies, set `saved_message_count`, and use source-aware parsing
+- `src/db/index.ts` — add `projectName`, `projectPath`, and `savedMessageCount` to conversation insert/update/read paths, filters, and save-state queries
 
 Phase 1 must not depend on Phase 2 search or Phase 3 remote sync internals. It may leave schema fields, extension points, or notes for later phases only when the Phase 1 behavior is complete without those later implementations.
 
@@ -2206,13 +2208,13 @@ Vectra is pure JavaScript, zero native deps, JSON-file-based. It uses brute-forc
 
 Conversations are chunked by turn (user message + assistant response) rather than by arbitrary token windows. Turns are the natural unit of conversation — a user question plus the assistant's response forms a coherent thought. Splitting mid-turn would fragment the semantic unit that makes search results useful.
 
-#### Auto-Index on Publish
+#### Auto-Index on Save
 
-When search is configured and dependencies are available, indexing runs automatically during `clog publish`, not on MCP server startup. Publishing is the moment new content enters the knowledge base, so indexing there keeps search current without adding latency to agent sessions. If search deps are missing or indexing fails, publish still succeeds and leaves `indexed_at = null`; the conversation is published but not searchable until `clog index` succeeds.
+When search is configured and dependencies are available, indexing runs automatically during `clog save`, not on MCP server startup. Saving is the moment new content enters the knowledge base, so indexing there keeps search current without adding latency to agent sessions. If search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`; the conversation is saved but not searchable until `clog index` succeeds.
 
 #### Setup Owns Search Downloads
 
-Any third-party package installation or embedding-model download required for semantic search happens only during `clog search --init`, after explicit user confirmation. `clog index`, `clog search <query>`, publish auto-indexing, metadata-edit reindexing, and MCP search must not trigger surprise package installs or model downloads. If search is not set up, non-search commands remain fully inert with respect to Phase 2.
+Any third-party package installation or embedding-model download required for semantic search happens only during `clog search --init`, after explicit user confirmation. `clog index`, `clog search <query>`, save auto-indexing, metadata-edit reindexing, and MCP search must not trigger surprise package installs or model downloads. If search is not set up, non-search commands remain fully inert with respect to Phase 2.
 
 ### 10.2 Install and Configuration
 
@@ -2326,11 +2328,11 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness marker:** `indexed_at = null` is the authoritative signal that a published conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `published_at`, `published_message_count`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
+**Staleness marker:** `indexed_at = null` is the authoritative signal that a saved conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `saved_at`, `saved_message_count`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
-**Embedding is optional per conversation.** A conversation can be published without being indexed. This decouples the curation workflow from search infrastructure — publishing works without a vector DB.
+**Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
-**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `published` state, and has a non-null `indexed_at` timestamp. A published conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past publishes. Semantic search must not return conversations that have been deleted, removed from `published` state, or otherwise dropped from the local database.
+**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `saved` state, and has a non-null `indexed_at` timestamp. A saved conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, removed from `saved` state, or otherwise dropped from the local database.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -2340,9 +2342,9 @@ If a deindex operation fails after the database has already been updated, the co
 
 Phase 2 adds three commands:
 
-**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently published conversations immediately. Users can reach this flow either directly with `clog search --init` or by accepting the follow-up prompt during a fresh interactive `clog init`.
+**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently saved conversations immediately. Users can reach this flow either directly with `clog search --init` or by accepting the follow-up prompt during a fresh interactive `clog init`.
 
-**`clog search <query>`** — Semantic search across published conversations.
+**`clog search <query>`** — Semantic search across saved conversations.
 
 ```bash
 $ clog search "JWT refresh token race condition"
@@ -2360,14 +2362,14 @@ Options:
 
 If search is not configured or dependencies are missing, prints a helpful message directing the user to `clog search --init`.
 
-**`clog index`** — Index un-indexed published conversations (embeds them and inserts into the vector store).
+**`clog index`** — Index un-indexed saved conversations (embeds them and inserts into the vector store).
 
 ```bash
 $ clog index              # Index conversations where indexed_at is null
-$ clog index --rebuild    # Re-index all published conversations from scratch
+$ clog index --rebuild    # Re-index all saved conversations from scratch
 ```
 
-`--rebuild` sets `indexed_at = null` on all published conversations before indexing, forcing a full re-index.
+`--rebuild` sets `indexed_at = null` on all saved conversations before indexing, forcing a full re-index.
 
 ### 10.8.1 Searchability Lifecycle
 
@@ -2375,16 +2377,16 @@ The search index follows the lifecycle of conversations in the database:
 
 | Operation | DB effect | Search effect |
 |-----------|-----------|---------------|
-| `publish` | Conversation enters `published` state; `published_at`, `modified_at`, and `published_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set. If search is unconfigured or indexing fails, publish still succeeds and `indexed_at` remains `null`, so the conversation is published but not searchable until indexed. |
-| `edit`, MCP `clog_update` title/summary change on a published conversation | Conversation remains `published`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
-| `tag`, `untag`, MCP `clog_update` tag change on a published conversation | Conversation remains `published`; DB metadata filters change | No vector re-index occurs because tags are not part of the embedded search content. Tag-based filtering reflects the new DB state immediately. `indexed_at` is unchanged. No-op tag updates do not bump `modified_at`. |
-| Local scan detects source mtime change on a published conversation | Conversation remains `published`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The published/searchable content has not changed until `clog add <id>` refreshes the raw copy or explicit `clog publish <id>` pushthrough refreshes and republishes it. |
-| A command detects a raw copy mtime newer than `published_at` or `indexed_at` | Conversation remains `published`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
-| Remote reconciliation metadata update on a published conversation | Conversation remains `published`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, or slug do not clear `indexed_at`. |
-| `unpublish` | Conversation leaves `published` state and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
+| `save` | Conversation enters `saved` state; `saved_at`, `modified_at`, and `saved_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set. If search is unconfigured or indexing fails, save still succeeds and `indexed_at` remains `null`, so the conversation is saved but not searchable until indexed. |
+| `edit`, MCP `clog_update` title/summary change on a saved conversation | Conversation remains `saved`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
+| `tag`, `untag`, MCP `clog_update` tag change on a saved conversation | Conversation remains `saved`; DB metadata filters change | No vector re-index occurs because tags are not part of the embedded search content. Tag-based filtering reflects the new DB state immediately. `indexed_at` is unchanged. No-op tag updates do not bump `modified_at`. |
+| Local scan detects source mtime change on a saved conversation | Conversation remains `saved`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The saved/searchable content has not changed until `clog add <id>` refreshes the raw copy or explicit `clog save <id>` pushthrough refreshes and resaves it. |
+| A command detects a raw copy mtime newer than `saved_at` or `indexed_at` | Conversation remains `saved`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
+| Remote reconciliation metadata update on a saved conversation | Conversation remains `saved`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, or slug do not clear `indexed_at`. |
+| `unsave` | Conversation leaves `saved` state and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
 | `reset` | Only operates on staged conversations; `filePath` is cleared and the conversation returns to `discovered` | No search effect; staged conversations are not searchable |
 | `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
-| `remove` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-published conversation is a harmless no-op. |
+| `remove` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-saved conversation is a harmless no-op. |
 | `remote remove` | All conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
 | Remote reconciliation delete/retract | Conversation is removed from the DB or replaced by a non-searchable state | Conversation ceases to be searchable; vectors are deleted |
 
@@ -2395,7 +2397,7 @@ The authoritative definition of whether a conversation is eligible to appear in 
 Phase 2 adds one tool to the MCP server:
 
 ```typescript
-// Semantic search across published conversations
+// Semantic search across saved conversations
 tool: "clog_search"
 input: {
   query: string;           // Natural language search query
@@ -2419,16 +2421,16 @@ returns: {
   }>;
   totalCount: number;
   indexCoverage: {
-    indexed: number;     // How many published conversations are indexed
-    published: number;   // Total published conversations
+    indexed: number;     // How many saved conversations are indexed
+    saved: number;   // Total saved conversations
   };
   warning?: string;      // Present when search hit the scan cap and completeness is not guaranteed
 }
 ```
 
-`clog_search` only searches **published** conversations, consistent with `clog_list_published` and `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
+`clog_search` only searches **saved** conversations, consistent with `clog_list_saved` and `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
 
-Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (published state with non-null `indexed_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `published` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
+Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with non-null `indexed_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
 
 Search uses an expanding query window: it starts by fetching a small multiple of the requested limit from the vector store, then doubles the fetch count on each iteration until it either collects enough valid results or reaches the 5,000-entry scan cap. If search stops because it reached that 5,000-entry cap before finding enough valid results, it returns the best results found so far and includes a warning that results may be incomplete. If search stops for any other reason (enough results found, or vector store exhausted below the cap), it does not include that warning.
 
@@ -2438,13 +2440,13 @@ For the CLI command, this warning is printed as a visible warning line before th
 
 Phase 2 requires changes to existing Phase 1 code:
 
-**Publish** (`clog publish`): After publishing, auto-index the newly published conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, publish still succeeds and leaves `indexed_at = null`. The conversation is published but not searchable until `clog index` or a later publish indexes it successfully.
+**Save** (`clog save`): After saving, auto-index the newly saved conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`. The conversation is saved but not searchable until `clog index` or a later save indexes it successfully.
 
-**Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a published conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and summary changes. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
+**Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a saved conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and summary changes. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
 
 **Tagging** (`clog tag`, `clog untag`, and MCP `clog_update` tag changes): Tags are DB-side metadata filters, not embedded vector content. Tag changes do not trigger re-indexing and do not change `indexed_at`. Tag-based filtering reflects the new DB state immediately.
 
-**Unpublish / removal / deletion**: When a published conversation stops being searchable because it is unpublished, removed from the database, deleted during reconciliation, or otherwise no longer searchable, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk. `clog reset` has no search cleanup role because it only operates on staged conversations, which are not searchable.
+**Unsave / removal / deletion**: When a saved conversation stops being searchable because it is unsaved, removed from the database, deleted during reconciliation, or otherwise no longer searchable, delete its vectors from the vector store. Search must not surface conversations that are no longer searchable even if stale vectors still exist on disk. `clog reset` has no search cleanup role because it only operates on staged conversations, which are not searchable.
 
 **Config schema**: Add `search.embedding.type` and `search.vectorStore.type` fields to the config schema (Section 7).
 
@@ -2459,7 +2461,7 @@ The provider and dependency resolution pattern is designed for optional deps tha
 ### 10.12 Implementation Parameters
 
 - **Chunk size:** ~800 tokens with ~100 token overlap, turn-based. Turns are the natural unit of conversation — a user question plus the assistant's response.
-- **Auto-index timing:** On publish, not on MCP server startup. Publishing is the moment new content enters the knowledge base, so indexing there keeps search current. MCP startup indexing would add latency to agent sessions.
+- **Auto-index timing:** On save, not on MCP server startup. Saving is the moment new content enters the knowledge base, so indexing there keeps search current. MCP startup indexing would add latency to agent sessions.
 - **Default embedding model:** `all-MiniLM-L6-v2` — well-established, good quality-to-size ratio, widely supported by transformers.js.
 - **Search ranking:** Cosine similarity via the vector store. Ranking quality is determined by the embedding model. The default is sufficient for the expected scale.
 - **Minimum score threshold:** Results below 0.15 cosine similarity are filtered out. This removes noise from unrelated conversations without being so aggressive that it drops marginally relevant results.
@@ -2474,7 +2476,7 @@ The provider and dependency resolution pattern is designed for optional deps tha
 
 ## 11. Team Sharing (Phase 3)
 
-Phase 3 adds team sharing via git. Developers publish conversations locally (Phase 1 workflow), then sync them to a shared git repository where teammates can pull and search them. The remote is a private git repo on any git host (GitHub, GitLab, Gitea, bare repo on a server). No custom server infrastructure.
+Phase 3 adds team sharing via git. Developers save conversations locally (Phase 1 workflow), then sync them to a shared git repository where teammates can pull and search them. The remote is a private git repo on any git host (GitHub, GitLab, Gitea, bare repo on a server). No custom server infrastructure.
 
 ### 11.1 Design Decisions
 
@@ -2486,10 +2488,10 @@ P2P sync is out of scope.
 
 #### Git Is Additive
 
-The existing local workflow (discover → stage → curate → publish) is unchanged. Git enters only at the sync boundary:
+The existing local workflow (discover → stage → curate → save) is unchanged. Git enters only at the sync boundary:
 
 ```
-[existing local workflow] → publish → [export to git, commit, push]
+[existing local workflow] → save → [export to git, commit, push]
 [git pull, import into local DB] → [existing local workflow]
 ```
 
@@ -2540,7 +2542,7 @@ This supports power users who manipulate the git repo directly. Documentation sh
 
 #### Remote Conversations Are Read-Only (v1)
 
-Remote conversations cannot be edited, tagged, or unpublished locally. `clog edit`, `clog tag`, `clog untag`, `clog unpublish` refuse to operate on conversations with `origin IS NOT NULL`, even when `author == config.author`. This avoids the complexity of local overlays, sync-back, and conflicts with the author's edits. Revisit after Phase 3 stabilizes.
+Remote conversations cannot be edited, tagged, or unsaved locally. `clog edit`, `clog tag`, `clog untag`, `clog unsave` refuse to operate on conversations with `origin IS NOT NULL`, even when `author == config.author`. This avoids the complexity of local overlays, sync-back, and conflicts with the author's edits. Revisit after Phase 3 stabilizes.
 
 A future version may add an explicit workflow to materialize one or more remote conversations into a local source directory so the user can continue them locally. That continuation flow is out of scope for Phase 3 / v1 sync.
 
@@ -2590,7 +2592,7 @@ The `.meta.json` contains the conversation's metadata. It uses only objective id
 
 The remote path tuple is `(author, source, id)`. The source directory and filename are part of the remote storage contract:
 
-- `<author>` is the publishing author directory
+- `<author>` is the author directory for the person who saved the conversation
 - `<source>` must be a supported source key such as `claude-code` or `codex-cli`
 - `<id>` is the source-native conversation ID and must match `meta.id`
 - `meta.source` must match the `<source>` directory
@@ -2606,7 +2608,7 @@ Remote import identity is `(source, id)`, not `id` alone.
   "tags": ["auth", "debugging"],
   "author": "alice",
   "projectName": "myapp",
-  "publishedAt": "2026-02-20T10:00:00Z",
+  "savedAt": "2026-02-20T10:00:00Z",
   "modifiedAt": "2026-02-21T15:00:00Z",
   "source": "claude-code",
   "createdAt": "2026-02-19T09:15:00Z",
@@ -2614,7 +2616,7 @@ Remote import identity is `(source, id)`, not `id` alone.
 }
 ```
 
-On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL once for validation. Remote import uses the metadata for DB fields, and the JSONL must parse successfully through the source adapter so clog can treat the imported conversation as a readable published artifact. Imported remote conversations derive their local `publishedMessageCount` from the parsed `Message[]` length at import/update time; this checkpoint is not stored in remote metadata.
+On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL once for validation. Remote import uses the metadata for DB fields, and the JSONL must parse successfully through the source adapter so clog can treat the imported conversation as a readable saved artifact. Imported remote conversations derive their local `savedMessageCount` from the parsed `Message[]` length at import/update time; this checkpoint is not stored in remote metadata.
 
 **meta.json field reference:**
 
@@ -2626,7 +2628,7 @@ On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL
 | `tags` | string[] | Curated tags |
 | `author` | string | Who curated this conversation |
 | `projectName` | string or null | User-facing project name the conversation is associated with. Remote metadata does not include local project paths |
-| `publishedAt` | string | ISO timestamp of publication |
+| `savedAt` | string | ISO timestamp of the time the conversation was saved to clog |
 | `modifiedAt` | string | ISO timestamp of the last metadata edit or content-change marker |
 | `source` | string | Source adapter (e.g., `"claude-code"`) |
 | `createdAt` | string | Earliest message timestamp — when the conversation started |
@@ -2637,7 +2639,7 @@ Remote metadata is valid only when:
 - the metadata file is valid JSON
 - all required fields are present with the expected types
 - the paired JSONL parses successfully through the adapter selected by `source`
-- `publishedAt`, `modifiedAt`, and `createdAt` are ISO timestamp strings
+- `savedAt`, `modifiedAt`, and `createdAt` are ISO timestamp strings
 - `source` is a supported source key
 - `source` matches the source directory in the path
 - `id` matches the filename stem in both the `.meta.json` and `.jsonl` path
@@ -2648,9 +2650,9 @@ Remote metadata is valid only when:
 |----------|----------------------------------|
 | `sourceId` | Same as `id` |
 | `discoveredAt` | Import timestamp (now) |
-| `state` | `"published"` |
-| `publishVersion` | `1` |
-| `publishedMessageCount` | Parsed `Message[]` length at import/update time |
+| `state` | `"saved"` |
+| `saveVersion` | `1` |
+| `savedMessageCount` | Parsed `Message[]` length at import/update time |
 | `projectPath` | `null` |
 | `sourcePath` | Path in checkout (`~/.clog/remote/<author>/<source>/<id>.jsonl`) |
 | `filePath` | Same as `sourcePath` |
@@ -2692,7 +2694,7 @@ This extends the base storage layout (§3.5) with a `remote/` directory:
 Remote conversation content is read directly from the git checkout. No duplication into `raw/`. A `resolveContentPath(conversation)` function checks the origin and local curation state and returns the right path:
 
 - Local `discovered` conversations: `sourcePath`
-- Local `staged` and `published` conversations: `filePath` / `~/.clog/raw/<source>/<id>.jsonl`
+- Local `staged` and `saved` conversations: `filePath` / `~/.clog/raw/<source>/<id>.jsonl`
 - Remote conversations: `~/.clog/remote/<author>/<source>/<id>.jsonl`
 
 ### 11.4 DB Schema Changes
@@ -2713,7 +2715,7 @@ This column is local-only. It never appears in `.meta.json` files.
 Purposes:
 
 1. `clog list` can distinguish "my conversations" from "team conversations"
-2. Remote conversations are read-only — edit/tag/untag/unpublish refuse them
+2. Remote conversations are read-only — edit/tag/untag/unsave refuse them
 3. `clog sync push` knows not to re-push conversations that came from the remote
 4. MCP server can optionally filter by origin
 
@@ -2828,7 +2830,7 @@ The `--yes` flag bypasses this confirmation (for scripts and tests). `--yes` doe
 
 #### `clog remote show`
 
-Display: configured remote URL, last sync time, counts of local published and remote conversations.
+Display: configured remote URL, last sync time, counts of local saved and remote conversations.
 
 #### `clog remote remove`
 
@@ -2838,7 +2840,7 @@ Confirmation prompt required:
 
 ```
 This will remove the remote and delete 47 conversations pulled from it.
-Conversations you discovered, staged, or published locally are not affected.
+Conversations you discovered, staged, or saved locally are not affected.
 Continue? [y/N]
 ```
 
@@ -2856,7 +2858,7 @@ If search is configured and conversations were imported, report unindexed count 
 
 #### `clog sync push`
 
-Export locally published conversations to the git checkout, commit, push. See §11.7 for full flow.
+Export locally saved conversations to the git checkout, commit, push. See §11.7 for full flow.
 
 #### `clog refresh`
 
@@ -2907,16 +2909,16 @@ The command does not touch the git checkout, push, or config. On the next `clog 
 
 **Pre-reconcile snapshot** (multi-machine safety):
 
-Before the pull phase, snapshot the set of `(source, id)` tuples for published conversations where `author = config.author` and `origin = <remote URL>`. These are conversations imported from the remote (possibly pushed from another machine) that the user has not explicitly deleted. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — the pre-reconcile snapshot excludes those so retractions still proceed.
+Before the pull phase, snapshot the set of `(source, id)` tuples for saved conversations where `author = config.author` and `origin = <remote URL>`. These are conversations imported from the remote (possibly pushed from another machine) that the user has not explicitly deleted. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — the pre-reconcile snapshot excludes those so retractions still proceed.
 
 This complements the import-side guards in §11.8 (`clogignore` remote gating and local-precedence rule), which prevent most re-imports but not all. If reconcile does re-create a row that wasn't in the snapshot, the export phase still retracts the checkout files.
 
 **Export phase** (write local state to checkout):
 
-3. For each locally-originated published conversation (`origin IS NULL AND state = 'published'`) where `author = config.author`:
+3. For each locally-originated saved conversation (`origin IS NULL AND state = 'saved'`) where `author = config.author`:
    - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName` but not local-only `projectPath`
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
-4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a locally-published conversation or a pre-reconcile remote-origin conversation: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
+4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a locally-saved conversation or a pre-reconcile remote-origin conversation: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
 
 The export/retraction phase should use the lightest necessary touch:
 
@@ -2929,7 +2931,7 @@ The export/retraction phase should use the lightest necessary touch:
 **Commit and push phase:**
 
 5. `git add -A`
-6. If no changes: `"Nothing to push — all published conversations are already synced."` Stop.
+6. If no changes: `"Nothing to push — all saved conversations are already synced."` Stop.
 7. `git commit` with auto-generated message (see §11.14).
 8. `git push`. If rejected: stop, inform user: `"Push was rejected — likely a simultaneous push from a teammate. Run 'clog sync push' again to retry."`
 9. Update `config.remote.lastSyncHead` with new HEAD.
@@ -2971,7 +2973,7 @@ After `git pull` (or in `clog refresh`, without the git pull), scan the checkout
 
 | Remote files for `(author, source, id)` | Imported DB row with matching origin? | Action |
 |------------------------------------------|--------------------------------------|--------|
-| `.meta.json` + `.jsonl`, valid | No | Insert (state = published, origin = remote URL) |
+| `.meta.json` + `.jsonl`, valid | No | Insert (state = saved, origin = remote URL) |
 | `.meta.json` + `.jsonl`, valid | Yes | Update if metadata or derived checkout path changed |
 | Neither file exists | Yes | Delete imported row |
 | Only `.meta.json` exists | Any | Warn, skip, leave DB unchanged |
@@ -2982,7 +2984,7 @@ A remote conversation is retracted only when the complete pair is absent from di
 
 Remote reconciliation is scoped to the configured remote only. Conversations imported from a different remote origin are left untouched, even if they also have `origin IS NOT NULL`. Reconciliation keys remote conversations by `(source, id)`.
 
-**Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns. The derived local `publishedMessageCount` is refreshed from the parsed JSONL whenever the remote row is inserted or updated, but it is not part of remote metadata comparison. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
+**Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns. The derived local `savedMessageCount` is refreshed from the parsed JSONL whenever the remote row is inserted or updated, but it is not part of remote metadata comparison. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
 
 Reconciliation also compares the derived checkout path for the conversation. If the same imported conversation now lives at a different checkout path (for example because the author directory changed), update `sourcePath` and `filePath` in place on the existing DB row rather than treating it as a delete plus re-import.
 
@@ -2996,13 +2998,13 @@ For search coherence, imported conversations follow the same stale-index rule as
 
 **Corrupt metadata or content:** If a `.meta.json` fails to parse or validate, or the paired JSONL fails to parse through the source adapter, skip the conversation and print a warning. This includes invalid JSON, missing required fields, unsupported `source`, path source not matching metadata `source`, or filename stem not matching metadata `id`. Invalid remote metadata must not be imported with degraded semantics.
 
-**Remote validation warnings:** Warnings are emitted during the command that performs validation and are not persisted as conversation state. Each warning uses the `ClogWarning` shape with `remote: { author, source, id }`, affected `paths`, validation reason, reconciliation action taken, and a concrete fix suggestion. For example, if the paired JSONL fails to parse through the selected source adapter, the warning should say that the pair was skipped, any existing local imported row was left unchanged, and the publishing author should republish the conversation or repair/remove the pair in the remote repo.
+**Remote validation warnings:** Warnings are emitted during the command that performs validation and are not persisted as conversation state. Each warning uses the `ClogWarning` shape with `remote: { author, source, id }`, affected `paths`, validation reason, reconciliation action taken, and a concrete fix suggestion. For example, if the paired JSONL fails to parse through the selected source adapter, the warning should say that the pair was skipped, any existing local imported row was left unchanged, and the original author should save the conversation again or repair/remove the pair in the remote repo.
 
 **Ignored conversations:** Before importing, check `~/.clog/clogignore` using the remote-pull subset from §5.10. If the remote ID or project name matches a local ignore rule, skip import. Path-like rules and filename-only rules do not suppress remote import.
 
 **Local takes precedence on duplicates:** During reconciliation, if a conversation with the same `source + source_id` already exists with `origin IS NULL` (user has their own local copy), skip the remote version entirely. The user's own curation takes precedence.
 
-For remote-vs-remote duplicates (two remote authors published the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the `UNIQUE(source, source_id)` constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
+For remote-vs-remote duplicates (two remote authors saved the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the `UNIQUE(source, source_id)` constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
 
 Properties:
 
@@ -3037,14 +3039,14 @@ Not shown on `clog show`, `clog search`, or other commands that retrieve specifi
 `clog list` remains curated-by-default in Phase 3. With no flags, it shows the user's local curated library on this machine plus that same user's synced curated conversations from other machines:
 
 ```sql
-WHERE state IN ('staged', 'published')
+WHERE state IN ('staged', 'saved')
   AND (author = <configured author> OR origin IS NULL)
 ```
 
 If `config.author` is empty or unset, fall back to:
 
 ```sql
-WHERE state IN ('staged', 'published')
+WHERE state IN ('staged', 'saved')
   AND origin IS NULL
 ```
 
@@ -3077,7 +3079,7 @@ These compose with existing filters (`--state`, `--project`, `--tag`, `--grep`).
 
 ### 11.11 Search Indexing After Pull
 
-`clog publish` auto-indexes newly published local conversations when search is configured and dependencies are available. `clog sync pull` does not auto-index imported remote conversations. Bulk imports may add hundreds of conversations, and embedding them during pull could turn sync into a long-running indexing job.
+`clog save` auto-indexes newly saved local conversations when search is configured and dependencies are available. `clog sync pull` does not auto-index imported remote conversations. Bulk imports may add hundreds of conversations, and embedding them during pull could turn sync into a long-running indexing job.
 
 After pull, imported or updated remote conversations that need indexing remain with `indexed_at = null`. The pull output must make this visible as a separate warning-style block, using spacing and color when available:
 
@@ -3085,7 +3087,7 @@ After pull, imported or updated remote conversations that need indexing remain w
 Pulled 583 conversations from remote.
 
 Search index needs attention:
-  583 published conversations are not indexed.
+  583 saved conversations are not indexed.
   Run `clog index` to index new conversations, or `clog index --rebuild` to rebuild everything.
 ```
 
@@ -3095,12 +3097,12 @@ The DB already tracks `indexed_at` per conversation, so tracking unindexed conve
 
 ### 11.12 MCP Server Changes
 
-The MCP server already reads from the DB — if remote conversations are in the DB as published, they're served automatically.
+The MCP server already reads from the DB — if remote conversations are in the DB as saved, they're served automatically.
 
-Phase 3 extends the Phase 1/2 MCP tool schemas with an optional `origin` filter on `clog_list_published` and `clog_search`:
+Phase 3 extends the Phase 1/2 MCP tool schemas with an optional `origin` filter on `clog_list_saved` and `clog_search`:
 
 ```typescript
-// Added to clog_list_published input in Phase 3
+// Added to clog_list_saved input in Phase 3
 origin?: "local" | "remote";
 
 // Added to clog_search input in Phase 3
@@ -3117,11 +3119,11 @@ This lets an agent say "show me only my team's conversations" or "show me only m
 
 ### 11.13 Duplicate Conversations
 
-If two developers independently curate and publish the same underlying conversation (same source and UUID), the repo contains both copies under their respective author directories, potentially with different metadata (titles, tags, summaries).
+If two developers independently curate and save the same underlying conversation (same source and UUID), the repo contains both copies under their respective author directories, potentially with different metadata (titles, tags, summaries).
 
 The DB primary key and `UNIQUE(source, source_id)` constraint enforce that a conversation exists at most once in the local database. For built-in sources, the source-native UUID is treated as the conversation's global identity.
 
-**On pull:** local takes precedence. If a conversation with the same `source + source_id` already exists with `origin IS NULL`, the remote version is skipped entirely. For remote-vs-remote duplicates (two remote authors published the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the uniqueness constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
+**On pull:** local takes precedence. If a conversation with the same `source + source_id` already exists with `origin IS NULL`, the remote version is skipped entirely. For remote-vs-remote duplicates (two remote authors saved the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the uniqueness constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
 
 **Implication:** When duplicates exist across authors, only one author's metadata (title, tags, summary) is visible locally. The content is identical regardless.
 
@@ -3159,7 +3161,7 @@ clog: 2 authors — 50 added, 4 updated, 1 retracted
 
 Multi-author commits never list individual conversations, only per-author summaries. There is no cap on the number of per-author lines.
 
-**No changes:** If `git add -A` produces no changes, skip the commit entirely. Report: "Nothing to push — all published conversations are already synced."
+**No changes:** If `git add -A` produces no changes, skip the commit entirely. Report: "Nothing to push — all saved conversations are already synced."
 
 The first line is always a readable summary for `git log --oneline`. The `+`/`~`/`-` prefixes echo diff conventions.
 
@@ -3189,18 +3191,18 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 #### Existing code changes
 
 - `src/cli/list.ts` — default filter to `author = config.author OR origin IS NULL`; add `--all`, `--origin` flags; team conversation footer
-- `src/cli/edit.ts`, `src/cli/tag.ts`, `src/cli/untag.ts`, `src/cli/unpublish.ts` — refuse remote conversations
+- `src/cli/edit.ts`, `src/cli/tag.ts`, `src/cli/untag.ts`, `src/cli/unsave.ts` — refuse remote conversations
 - `src/cli/exclude.ts`, `src/cli/unexclude.ts`, `src/cli/remove.ts`, `src/cli/clogignore.ts` — shared ignore-rule model and explicit current-row removal
 - `src/sync/pull.ts` — check `clogignore` before importing during reconciliation, using ID/project-name semantics only
 - `src/cli/status.ts` — report remote info, unindexed count, staleness warning
-- `src/mcp/server.ts` — add optional `origin` filter to `clog_list_published` and `clog_search`; include `source` metadata
+- `src/mcp/server.ts` — add optional `origin` filter to `clog_list_saved` and `clog_search`; include `source` metadata
 - `src/index.ts` — register new commands (remote, sync, refresh)
 - `src/db/index.ts` — add `origin` to `insertConversation`, `rowToConversation`, and `listConversations` filters
 
 #### What doesn't change
 
-- Phase 1 local curation workflow (add, reset, edit, tag, publish, unpublish — other than remote read-only guards)
-- Search indexer (`src/search/indexer.ts` — indexes published conversations regardless of origin)
+- Phase 1 local curation workflow (add, reset, edit, tag, save, unsave — other than remote read-only guards)
+- Search indexer (`src/search/indexer.ts` — indexes saved conversations regardless of origin)
 - Chunker, embedding providers, vector stores
 
 #### Tests
@@ -3213,9 +3215,9 @@ See §13.2 and §13.4 for the sync test inventory (`sync-meta.test.ts`, `sync-pu
 
 **Phase 1 — Local MVP** (§§1-9): A working CLI and MCP server that a single developer can use to discover, curate, and browse their own Claude Code and Codex CLI conversations.
 
-**Phase 2 — Semantic Search** (§10): Natural language search over published conversations using local embeddings and a vector store.
+**Phase 2 — Semantic Search** (§10): Natural language search over saved conversations using local embeddings and a vector store.
 
-**Phase 3 — Team Sharing** (§11): Share published conversations with teammates via a shared git repository.
+**Phase 3 — Team Sharing** (§11): Share saved conversations with teammates via a shared git repository.
 
 ### Phase 4: Extensions
 
@@ -3226,9 +3228,9 @@ See §13.2 and §13.4 for the sync test inventory (`sync-meta.test.ts`, `sync-pu
 | 4.3 | Conversation analytics (what topics are your team asking about most?) |
 | 4.4 | Import from exported Claude.ai conversations |
 | 4.5 | Improve `clog show` (branch-aware rendering, collapsible tool output, better formatting for long conversations) |
-| 4.6 | Cross-developer context handoff — MCP tool that lets an agent load a teammate's published conversation as reference context in a new session, enabling "pick up where they left off" workflows without writing to source locations |
+| 4.6 | Cross-developer context handoff — MCP tool that lets an agent load a teammate's saved conversation as reference context in a new session, enabling "pick up where they left off" workflows without writing to source locations |
 | 4.7 | Content-aware deduplication of conversations shared by multiple authors |
-| 4.8 | Conversation diff functionality beyond new-since-publish output |
+| 4.8 | Conversation diff functionality beyond new-since-save output |
 | 4.9 | Local metadata overlays on remote conversations (local tags, notes) |
 | 4.10 | `clog rename-author` automatic cleanup of old remote directory |
 | 4.11 | Multi-remote support |
@@ -3255,13 +3257,13 @@ tests/
 ├── chunker.test.ts          # Turn-based chunking logic (Phase 2)
 ├── cli.test.ts              # CLI command unit tests (error handling, output, edge cases)
 ├── config.test.ts           # Config schema, load/save, defaults, init
-├── db.test.ts               # CRUD, state transitions, publish fields, project filtering
+├── db.test.ts               # CRUD, state transitions, save fields, project filtering
 ├── mcp.test.ts              # MCP tool handler tests (list, get, update, browse, search)
 ├── models.test.ts           # Zod schema validation for conversation and message types
 ├── scan.test.ts             # Scan pipeline, ignore/config filtering, stale entry pruning
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
 ├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
-├── workflow.test.ts         # Multi-step workflows: add → publish, etc.
+├── workflow.test.ts         # Multi-step workflows: add → save, etc.
 ├── sync-meta.test.ts        # .meta.json serialization/deserialization (Phase 3)
 ├── sync-pull.test.ts        # Reconciliation logic: import, update, delete (Phase 3)
 ├── sync-push.test.ts        # Commit message generation, export logic (Phase 3)
@@ -3316,17 +3318,17 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 - Schema creation succeeds and is idempotent
 - CRUD operations for conversation metadata
-- State transitions (discovered → staged → published, unpublish → staged)
-- Publish fields written and cleared correctly
+- State transitions (discovered → staged → saved, unsave → staged)
+- Save fields written and cleared correctly
 - ID prefix resolution (min 4 chars, ambiguity detection)
 - Source-qualified ID resolution (`prefix@source`) and ambiguity errors with copy-pasteable candidates
 - Browse distinct tags/projects/authors
 - Project filtering by projectName with case-insensitive matching
-- `published_message_count` persistence and modified-since-publish queries
+- `saved_message_count` persistence and modified-since-save queries
 
 **MCP tests** (`mcp.test.ts`):
 
-- Tool handler tests for `clog_list_published`, `clog_list_staged`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`
+- Tool handler tests for `clog_list_saved`, `clog_list_staged`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`
 - Input validation and error responses
 - Filter behavior (tags, project, author, grep)
 - `source` metadata in list/get/search payloads
@@ -3336,7 +3338,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 - Deindexing behavior: per-conversation delete failures warn and continue
 - Search-not-configured vs dependency-failure warning behavior during deindex initialization
-- Searchability invariant (`published` + non-null `indexed_at`)
+- Searchability invariant (`saved` + non-null `indexed_at`)
 - Expanding search window behavior and the 5,000-result scan-cap warning
 
 **Models tests** (`models.test.ts`):
@@ -3370,8 +3372,8 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Workflow tests** (`workflow.test.ts`):
 
-- Multi-step flows: add → publish, edit → re-publish, exclude → unexclude, exclude → remove
-- Published refresh flows: source grows after publish → `clog add <id>` refreshes the raw copy while preserving `state = "published"`, and a subsequent bare `clog publish` republishes the refreshed content; source grows after publish → explicit `clog publish <id>` refreshes and republishes without a separate add
+- Multi-step flows: add → save, edit → re-save, exclude → unexclude, exclude → remove
+- Saved refresh flows: source grows after save → `clog add <id>` refreshes the raw copy while preserving `state = "saved"`, and a subsequent bare `clog save` resaves the refreshed content; source grows after save → explicit `clog save <id>` refreshes and resaves without a separate add
 - Literal ignore-rule handling: exact-line append/remove semantics, `project:<name>` rejection on ignore-rule commands, and `clog remove` deleting current DB rows without editing `clogignore`
 - State transitions through `withDb`
 
@@ -3380,7 +3382,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - `.meta.json` Zod schema validation
 - Read/write round-trip for meta files
 - Conversion from meta format to `ConversationMeta`
-- `.meta.json` does not contain `publishedMessageCount`
+- `.meta.json` does not contain `savedMessageCount`
 
 **Sync pull tests** (`sync-pull.test.ts`, Phase 3):
 
@@ -3392,12 +3394,12 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Deterministic remote duplicate resolution by author/source/id order
 - Unsupported source directories warn and skip without deletion
 - Path/metadata mismatch for source or id warns and skips
-- Remote import derives local `publishedMessageCount` from parsed `Message[]` length
+- Remote import derives local `savedMessageCount` from parsed `Message[]` length
 
 **Sync push tests** (`sync-push.test.ts`, Phase 3):
 
 - Commit message generation (single-author, multi-author, ≤10 and >10 changes)
-- Export logic for published conversations
+- Export logic for saved conversations
 - Source-separated remote layout export and retraction
 - Lightest-necessary-touch behavior: unrelated files, unknown source dirs, orphaned files, and empty dirs are not proactively removed
 
@@ -3409,7 +3411,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **E2E tests** (`e2e.test.ts`):
 
 - Full CLI subprocess tests via `npx tsx src/index.ts`
-- Complete workflow: status → add → edit → tag → publish → show
+- Complete workflow: status → add → edit → tag → save → show
 - Exclude/unexclude round-trip
 - Config get/set
 

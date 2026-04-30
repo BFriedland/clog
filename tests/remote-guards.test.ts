@@ -46,10 +46,10 @@ describe("assertNotRemote", () => {
   it("round-trips a remote row through DB insertion (smoke test)", async () => {
     const remote = makeConversation({
       origin: "git@github.com:myorg/repo.git",
-      state: "published",
+      state: "saved",
     });
     await insertConversation(remote);
-    expect(() => assertNotRemote(remote, "clog unpublish")).toThrow();
+    expect(() => assertNotRemote(remote, "clog unsave")).toThrow();
   });
 });
 
@@ -71,10 +71,10 @@ function makeConversation(
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "published",
-    publishedAt: timestamp,
-    publishedMessageCount: 1,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: timestamp,
+    savedMessageCount: 1,
+    saveVersion: 1,
     sourcePath: "/tmp/source.jsonl",
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,

@@ -65,7 +65,7 @@ export function buildListCommand(): Command {
           ? [options.state]
           : options.all
             ? undefined
-            : ["staged", "published"],
+            : ["staged", "saved"],
         projectName: options.project,
         author: options.author,
         tag: options.tag,
@@ -81,7 +81,7 @@ export function buildListCommand(): Command {
         renderConversationTable(conversations, {
           emptyMessage: hasFilters
             ? "No conversations found."
-            : 'No staged or published conversations. Use "clog status" or "clog list --state discovered".',
+            : 'No staged or saved conversations. Use "clog status" or "clog list --state discovered".',
           stateLabelMode: true,
           columns,
         });
