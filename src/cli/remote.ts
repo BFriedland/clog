@@ -155,14 +155,14 @@ async function runRemoteShow(): Promise<void> {
     return;
   }
 
-  const localCount = (await listConversations({ origin: "local", states: ["published"] })).length;
+  const localCount = (await listConversations({ origin: "local", states: ["saved"] })).length;
   const remoteCount = (await listConversations({ origin: "remote" })).length;
 
   process.stdout.write(`Remote URL: ${remote.url}\n`);
   process.stdout.write(
     `Last sync HEAD: ${remote.lastSyncHead ?? "(never synced)"}\n`,
   );
-  process.stdout.write(`Local published conversations: ${localCount}\n`);
+  process.stdout.write(`Local saved conversations: ${localCount}\n`);
   process.stdout.write(`Remote conversations imported: ${remoteCount}\n`);
 }
 
@@ -180,7 +180,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   if (!options.yes) {
     process.stdout.write(
       `This will remove the remote and delete ${remoteRows.length} conversation(s) pulled from it.\n` +
-        `Conversations you discovered, staged, or published locally are not affected.\n`,
+        `Conversations you discovered, staged, or saved locally are not affected.\n`,
     );
     const proceed = await confirm({ message: "Continue?", default: false });
     if (!proceed) {

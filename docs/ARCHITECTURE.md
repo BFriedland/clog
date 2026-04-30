@@ -33,7 +33,7 @@ The important centers are:
 - source adapters
 - DB and ID resolution
 - scan pipeline
-- content-path and publish-candidate resolution
+- content-path and save-candidate resolution
 - optional search composition and coherence
 - thin CLI handlers
 - MCP handlers that reuse the same semantics as the CLI
@@ -43,7 +43,7 @@ The intended flow is:
 1. adapters produce source-native discovery metadata and parsed messages
 2. the scan pipeline decides what enters or updates the DB
 3. DB helpers own stored state and filtering
-4. shared CLI helpers resolve content paths, publish candidates, warnings, and table rendering
+4. shared CLI helpers resolve content paths, save candidates, warnings, and table rendering
 5. optional search modules index and query through their own interfaces
 6. command handlers compose those shared helpers
 7. MCP handlers stay close to CLI semantics instead of inventing a parallel model
@@ -86,7 +86,7 @@ Owns all source-specific behavior.
 The adapter boundary is:
 
 - discovery output: lightweight metadata for scan
-- parse output: canonical `Message[]` for show, diff, publish, and MCP retrieval
+- parse output: canonical `Message[]` for show, diff, save, and MCP retrieval
 
 Rules:
 
@@ -172,7 +172,7 @@ The scan pipeline is the boundary between source adapters and stored state. It i
 Rules:
 
 - scan is metadata-first and read-only with respect to raw curated files
-- raw copies are created only by explicit curation operations such as `add` or explicit publish pushthrough
+- raw copies are created only by explicit curation operations such as `add` or explicit save pushthrough
 - warning aggregation belongs here, while presentation belongs elsewhere
 
 ### `src/cli/common.ts`
@@ -184,7 +184,7 @@ This file is the main internal glue layer for local workflows. It currently owns
 - conversation resolution helpers
 - content-path resolution
 - on-demand parse dispatch through the adapter registry
-- publish-candidate selection
+- save-candidate selection
 - raw-copy creation and file comparison
 - warning rendering
 - common table rendering
@@ -216,7 +216,7 @@ Each file should stay thin:
 
 Notable command groupings:
 
-- curation state changes: `add`, `reset`, `publish`, `unpublish`
+- curation state changes: `add`, `reset`, `save`, `unsave`
 - metadata changes: `edit`, `tag`, `rename-author`
 - inspection: `status`, `list`, `show`, `path`, `diff`
 - exclusion/filter control: `exclude`, `unexclude`, `remove`, `clogignore`
@@ -250,7 +250,7 @@ Rules:
 Owns the optional team-sharing subsystem introduced in Phase 3.
 
 - `git.ts` is a thin wrapper around the system `git` binary. Every subprocess call to git in the codebase flows through this file — no other module shells out to git directly.
-- `meta.ts` owns the `.meta.json` Zod schema, serialization, deserialization, and the conversion between `ConversationMeta` and the on-wire remote metadata format. It strips local-only fields (`projectPath`, `origin`, `publishedMessageCount`) on write and populates derived fields on read.
+- `meta.ts` owns the `.meta.json` Zod schema, serialization, deserialization, and the conversion between `ConversationMeta` and the on-wire remote metadata format. It strips local-only fields (`projectPath`, `origin`, `savedMessageCount`) on write and populates derived fields on read.
 - `visibility.ts` owns GitHub URL parsing, unauthenticated REST visibility probing, and the `VisibilityResult` discriminated union (`"public"` vs `"unverified"`). There is no `gh` dependency and no authenticated probe; see SPEC §11.6 for the two-outcome rationale.
 - `paths.ts` owns path helpers for the remote checkout tree (`~/.clog/remote/<author>/<source>/…`).
 - `pull.ts` owns reconciliation: it walks the checkout, validates pairs, and reconciles the DB for the currently configured remote URL only. It is the exclusive home of remote-import policy.
@@ -300,7 +300,7 @@ This keeps source-format concerns separate from stored-state concerns.
 All transcript reads should flow through shared path resolution and adapter dispatch:
 
 1. resolve a conversation row
-2. resolve its content path or publish candidate
+2. resolve its content path or save candidate
 3. dispatch to `getAdapter(conversation.source, config)`
 4. parse into canonical `Message[]`
 
@@ -309,7 +309,7 @@ All transcript reads should flow through shared path resolution and adapter disp
 Semantic search flows through these layers:
 
 1. command or MCP handler resolves the configured providers via `src/search/deps`
-2. DB state determines which published conversations are currently searchable
+2. DB state determines which saved conversations are currently searchable
 3. `chunker.ts` builds deterministic search chunks from canonical messages
 4. `indexer.ts` embeds and upserts chunks into the configured vector store
 5. query handlers validate vector hits back against current DB state before
@@ -321,20 +321,20 @@ This is used by:
 
 - `show`
 - `diff`
-- explicit publish
+- explicit save
 - MCP `clog_get`
 
-### Publish
+### Save
 
-Publish behavior is centered on the publish-candidate helper, not on ad hoc command logic.
+Save behavior is centered on the save-candidate helper, not on ad hoc command logic.
 
 The important distinction is:
 
-- discovered conversations publish from source after creating a raw copy
-- staged conversations publish from the curated raw copy
-- published conversations either reuse the raw copy or push through newer source content depending on file comparison
+- discovered conversations save from source after creating a raw copy
+- staged conversations save from the curated raw copy
+- saved conversations either reuse the raw copy or push through newer source content depending on file comparison
 
-That decision belongs in shared workflow helpers because `status`, `diff`, and `publish` all need compatible answers.
+That decision belongs in shared workflow helpers because `status`, `diff`, and `save` all need compatible answers.
 
 ## State Boundaries
 
@@ -344,18 +344,18 @@ Phase 1 state transitions are:
 
 - `discovered`
 - `staged`
-- `published`
+- `saved`
 
-Phase 3 adds `origin` as an orthogonal dimension: `NULL` for locally-originated conversations, and a remote URL string for conversations imported from a shared remote. `origin` is not a state — a remote conversation is always `state = "published"` and cannot transition. It is stored alongside the state on each row.
+Phase 3 adds `origin` as an orthogonal dimension: `NULL` for locally-originated conversations, and a remote URL string for conversations imported from a shared remote. `origin` is not a state — a remote conversation is always `state = "saved"` and cannot transition. It is stored alongside the state on each row.
 
 Important implementation rules:
 
 - scan may update operational locator fields on curated conversations without rewriting curated metadata
 - `add` manages the curated raw copy
-- `publish` advances publish checkpoint fields
-- `reset` clears active publish fields when moving back to `discovered`
-- `unpublish` preserves the last-publish checkpoint while moving back to `staged`
-- `edit`, `tag`, `untag`, and `unpublish` refuse rows where `origin IS NOT NULL` via `assertNotRemote` / `assertNoneRemote` in `src/cli/common.ts`
+- `save` advances save checkpoint fields
+- `reset` clears active save fields when moving back to `discovered`
+- `unsave` preserves the last-save checkpoint while moving back to `staged`
+- `edit`, `tag`, `untag`, and `unsave` refuse rows where `origin IS NOT NULL` via `assertNotRemote` / `assertNoneRemote` in `src/cli/common.ts`
 - `exclude` appends literal rules to `clogignore`; `remove` deletes current matching DB rows without editing the file; the same ignore-rule model gates both local scan results and remote reconciliation
 - `src/sync/pull.ts` is the only module that may insert, update, or delete rows with `origin IS NOT NULL`; reconciliation is scoped to the currently configured remote URL and never touches rows from a different origin
 
@@ -390,7 +390,7 @@ These boundaries are worth protecting:
 - adapters own source-native parsing
 - scan owns discovery reconciliation
 - DB owns stored-state queries and ID resolution
-- shared workflow helpers own content-path and publish-candidate logic
+- shared workflow helpers own content-path and save-candidate logic
 - CLI and MCP are interfaces over the same underlying semantics
 
 If future work pressures these seams, prefer extending the seam over bypassing it.

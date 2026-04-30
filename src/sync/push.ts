@@ -38,7 +38,7 @@ export async function collectRemoteOriginIds(
 ): Promise<Set<string>> {
   return withDb((db) => {
     const remote = listConversationsInDb(db, {
-      states: ["published"],
+      states: ["saved"],
       author,
       origin: { url: remoteUrl },
     });
@@ -52,16 +52,16 @@ export async function exportAuthorToCheckout(
 ): Promise<ExportStats> {
   const stats: ExportStats = { changes: [] };
 
-  const ownPublished = await withDb((db) =>
+  const ownSaved = await withDb((db) =>
     listConversationsInDb(db, {
-      states: ["published"],
+      states: ["saved"],
       author,
       origin: "local",
     }),
   );
 
   const expectedBySource = new Map<string, Map<string, ConversationMeta>>();
-  for (const conversation of ownPublished) {
+  for (const conversation of ownSaved) {
     let bySource = expectedBySource.get(conversation.source);
     if (!bySource) {
       bySource = new Map();
@@ -70,7 +70,7 @@ export async function exportAuthorToCheckout(
     bySource.set(conversation.id, conversation);
   }
 
-  for (const conversation of ownPublished) {
+  for (const conversation of ownSaved) {
     const metaPath = getRemoteMetaPath(author, conversation.source, conversation.id);
     const jsonlPath = getRemoteJsonlPath(author, conversation.source, conversation.id);
 
@@ -112,7 +112,7 @@ export async function exportAuthorToCheckout(
   }
 
   // Retractions: files present in the author's directory that don't correspond
-  // to a currently-published local conversation for this author and source.
+  // to a currently-saved local conversation for this author and source.
   const authorDir = getRemoteAuthorDir(author);
   const sourceDirs = await listSourceDirs(authorDir);
 

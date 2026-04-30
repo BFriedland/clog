@@ -6,7 +6,7 @@ import { ClogError } from "../utils/errors.js";
 import { listConversations } from "../db/index.js";
 import {
   applyHeadTail,
-  getPublishCandidate,
+  getSaveCandidate,
   parseConversationMessages,
   parseConversationMessagesFromPath,
   renderMessages,
@@ -15,7 +15,7 @@ import {
 
 export function buildDiffCommand(): Command {
   return new Command("diff")
-    .description("Show new messages since last publish")
+    .description("Show new messages since last save")
     .argument("[ids...]")
     .option("--staged")
     .option("--head <n>")
@@ -28,7 +28,7 @@ export function buildDiffCommand(): Command {
         ids.length > 0
           ? await resolveManyConversationsOrFail(ids)
           : await listConversations({
-              states: options.staged ? ["staged"] : ["published"],
+              states: options.staged ? ["staged"] : ["saved"],
             });
 
       const head = parseCount(options.head ?? options.first);
@@ -42,15 +42,15 @@ export function buildDiffCommand(): Command {
           : await loadDiffCandidateMessages(config, conversation);
         const diffMessages = options.staged
           ? messages
-          : messages.slice(conversation.publishedMessageCount ?? 0);
+          : messages.slice(conversation.savedMessageCount ?? 0);
 
         if (
           !options.staged &&
-          conversation.publishedMessageCount != null &&
-          messages.length < conversation.publishedMessageCount
+          conversation.savedMessageCount != null &&
+          messages.length < conversation.savedMessageCount
         ) {
           throw new Error(
-            `Conversation ${conversation.id.slice(0, 7)} has fewer parsed messages than its last published checkpoint.`,
+            `Conversation ${conversation.id.slice(0, 7)} has fewer parsed messages than its last saved checkpoint.`,
           );
         }
 
@@ -66,7 +66,7 @@ export function buildDiffCommand(): Command {
             : "";
 
         process.stdout.write(
-          `--- ${conversation.id.slice(0, 7)} "${conversation.title}" (${diffMessages.length} new message${diffMessages.length === 1 ? "" : "s"} since v${conversation.publishVersion}${truncationNote})\n`,
+          `--- ${conversation.id.slice(0, 7)} "${conversation.title}" (${diffMessages.length} new message${diffMessages.length === 1 ? "" : "s"} since v${conversation.saveVersion}${truncationNote})\n`,
         );
         process.stdout.write(`${renderMessages(limited)}\n\n`);
       }
@@ -90,15 +90,15 @@ function validateDiffTarget(conversation: ConversationMeta, stagedMode: boolean)
   if (stagedMode) {
     if (conversation.state !== "staged") {
       throw new ClogError(
-        `Conversation ${conversation.id.slice(0, 7)} is not staged. Use "clog diff" for published conversations.`,
+        `Conversation ${conversation.id.slice(0, 7)} is not staged. Use "clog diff" for saved conversations.`,
       );
     }
     return;
   }
 
-  if (conversation.state !== "published") {
+  if (conversation.state !== "saved") {
     throw new ClogError(
-      `Conversation ${conversation.id.slice(0, 7)} is not published. Use "clog diff --staged" for staged conversations.`,
+      `Conversation ${conversation.id.slice(0, 7)} is not saved. Use "clog diff --staged" for staged conversations.`,
     );
   }
 }
@@ -107,7 +107,7 @@ async function loadDiffCandidateMessages(
   config: Awaited<ReturnType<typeof loadConfig>>,
   conversation: Awaited<ReturnType<typeof resolveManyConversationsOrFail>>[number],
 ) {
-  const candidate = await getPublishCandidate(conversation);
+  const candidate = await getSaveCandidate(conversation);
 
   if (candidate.path === conversation.filePath) {
     return parseConversationMessages(config, conversation);

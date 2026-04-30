@@ -91,7 +91,7 @@ describe("exportAuthorToCheckout", () => {
   });
 
   it("writes .meta.json and .jsonl pairs and reports added changes on first export", async () => {
-    const conversation = await insertLocalPublished({
+    const conversation = await insertLocalSaved({
       id: "a1111111-1111-1111-1111-111111111111",
       title: "Fix auth",
       author: "alice",
@@ -120,7 +120,7 @@ describe("exportAuthorToCheckout", () => {
   });
 
   it("reports zero changes on a second export when nothing changed", async () => {
-    await insertLocalPublished({
+    await insertLocalSaved({
       id: "a2222222-2222-2222-2222-222222222222",
       title: "Stable",
       author: "alice",
@@ -206,7 +206,7 @@ describe("exportAuthorToCheckout", () => {
   });
 
   it("reports 'added' (not 'updated') when only one file of a pair previously existed", async () => {
-    const conversation = await insertLocalPublished({
+    const conversation = await insertLocalSaved({
       id: "a9999999-9999-9999-9999-999999999999",
       title: "Orphan meta pre-existed",
       author: "alice",
@@ -244,10 +244,10 @@ describe("exportAuthorToCheckout", () => {
       createdAt: timestamp,
       discoveredAt: timestamp,
       modifiedAt: timestamp,
-      state: "published",
-      publishedAt: timestamp,
-      publishedMessageCount: 2,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 2,
+      saveVersion: 1,
       sourcePath: "/tmp/remote-checkout.jsonl",
       filePath: "/tmp/remote-checkout.jsonl",
       sourceMtime: null,
@@ -290,10 +290,10 @@ describe("exportAuthorToCheckout", () => {
       createdAt: timestamp,
       discoveredAt: timestamp,
       modifiedAt: timestamp,
-      state: "published",
-      publishedAt: timestamp,
-      publishedMessageCount: 1,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 1,
+      saveVersion: 1,
       sourcePath: path.join(authorDir, `${id}.jsonl`),
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
@@ -346,10 +346,10 @@ describe("exportAuthorToCheckout", () => {
       createdAt: timestamp,
       discoveredAt: timestamp,
       modifiedAt: timestamp,
-      state: "published",
-      publishedAt: timestamp,
-      publishedMessageCount: 1,
-      publishVersion: 1,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 1,
+      saveVersion: 1,
       sourcePath: path.join(authorDir, `${id}.jsonl`),
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
@@ -373,7 +373,7 @@ describe("exportAuthorToCheckout", () => {
   });
 });
 
-async function insertLocalPublished(options: {
+async function insertLocalSaved(options: {
   id: string;
   title: string;
   author: string;
@@ -404,10 +404,10 @@ async function insertLocalPublished(options: {
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "published",
-    publishedAt: timestamp,
-    publishedMessageCount: 1,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: timestamp,
+    savedMessageCount: 1,
+    saveVersion: 1,
     sourcePath: rawPath,
     filePath: rawPath,
     sourceMtime: null,

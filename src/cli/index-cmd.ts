@@ -1,7 +1,7 @@
 import chalk from "chalk";
 
 import { loadConfig } from "../config/index.js";
-import { clearPublishedIndexedAt, listConversationsNeedingIndex, setConversationIndexedAt } from "../db/index.js";
+import { clearSavedIndexedAt, listConversationsNeedingIndex, setConversationIndexedAt } from "../db/index.js";
 import { parseConversationMessages } from "./common.js";
 import { getSearchProviders } from "../search/deps.js";
 import { indexConversation } from "../search/indexer.js";
@@ -11,13 +11,13 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
   const { embedding, vectorStore } = await getSearchProviders();
 
   if (options.rebuild) {
-    await clearPublishedIndexedAt();
+    await clearSavedIndexedAt();
   }
 
   const conversations = await listConversationsNeedingIndex();
   if (conversations.length === 0) {
     process.stdout.write(
-      'All published conversations are indexed. To rebuild, run "clog index --rebuild".\n',
+      'All saved conversations are indexed. To rebuild, run "clog index --rebuild".\n',
     );
     return;
   }

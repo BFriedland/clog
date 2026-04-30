@@ -15,7 +15,7 @@ import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
 import { buildPlungeCommand } from "./cli/plunge.js";
 import { preAction, runWithCliErrorHandling, shouldSkipPreAction } from "./cli/prelude.js";
-import { buildPublishCommand } from "./cli/publish.js";
+import { buildSaveCommand } from "./cli/save.js";
 import { buildRefreshCommand } from "./cli/refresh.js";
 import { buildRemoveCommand } from "./cli/remove.js";
 import { buildRemoteCommand } from "./cli/remote.js";
@@ -26,7 +26,7 @@ import { buildShowCommand } from "./cli/show.js";
 import { buildStatusCommand } from "./cli/status.js";
 import { buildTagCommand } from "./cli/tag.js";
 import { buildUnexcludeCommand } from "./cli/unexclude.js";
-import { buildUnpublishCommand } from "./cli/unpublish.js";
+import { buildUnsaveCommand } from "./cli/unsave.js";
 import { buildUntagCommand } from "./cli/untag.js";
 import { runSearchInitCommand } from "./cli/search-init.js";
 import { runSearchCommand } from "./cli/search.js";
@@ -57,8 +57,8 @@ async function main(): Promise<void> {
   program.addCommand(buildEditCommand());
   program.addCommand(buildTagCommand());
   program.addCommand(buildUntagCommand());
-  program.addCommand(buildPublishCommand());
-  program.addCommand(buildUnpublishCommand());
+  program.addCommand(buildSaveCommand());
+  program.addCommand(buildUnsaveCommand());
   program.addCommand(buildShowCommand());
   program.addCommand(buildPathCommand());
   program.addCommand(buildPlungeCommand());
@@ -74,15 +74,15 @@ async function main(): Promise<void> {
   program.addCommand(buildRefreshCommand());
   program
     .command("index")
-    .description("Index published conversations for semantic search")
-    .option("--rebuild", "Re-index all published conversations from scratch")
+    .description("Index saved conversations for semantic search")
+    .option("--rebuild", "Re-index all saved conversations from scratch")
     .action(async (options: { rebuild?: boolean }) => {
       await runIndexCommand(options);
     });
 
   program
     .command("search [query]")
-    .description("Semantic search across published conversations")
+    .description("Semantic search across saved conversations")
     .option("--init", "Set up search")
     .option("-p, --project <name>")
     .option("-a, --author <name>")

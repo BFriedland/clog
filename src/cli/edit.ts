@@ -48,7 +48,7 @@ export function buildEditCommand(): Command {
       };
 
       if (
-        conversation.state === "published" &&
+        conversation.state === "saved" &&
         (
           updated.title !== conversation.title ||
           updated.summary !== conversation.summary

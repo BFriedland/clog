@@ -25,7 +25,7 @@ export const remoteMetaSchema = z.object({
   tags: z.array(z.string()),
   author: z.string().min(1),
   projectName: z.string().nullable(),
-  publishedAt: isoTimestamp,
+  savedAt: isoTimestamp,
   modifiedAt: isoTimestamp,
   source: z.enum(BUILTIN_SOURCES),
   createdAt: isoTimestamp,
@@ -37,9 +37,9 @@ export type RemoteMeta = z.infer<typeof remoteMetaSchema>;
 export function conversationToRemoteMeta(
   conversation: ConversationMeta,
 ): RemoteMeta {
-  if (conversation.publishedAt == null) {
+  if (conversation.savedAt == null) {
     throw new Error(
-      `Cannot serialize conversation ${conversation.id} to remote meta: publishedAt is null (not yet published).`,
+      `Cannot serialize conversation ${conversation.id} to remote meta: savedAt is null (not yet saved).`,
     );
   }
 
@@ -50,7 +50,7 @@ export function conversationToRemoteMeta(
     tags: [...conversation.tags],
     author: conversation.author,
     projectName: conversation.projectName,
-    publishedAt: conversation.publishedAt,
+    savedAt: conversation.savedAt,
     modifiedAt: conversation.modifiedAt,
     source: conversation.source as RemoteMeta["source"],
     createdAt: conversation.createdAt,

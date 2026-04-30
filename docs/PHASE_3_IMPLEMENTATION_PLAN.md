@@ -56,7 +56,7 @@ Phase 3 adds a dedicated `src/sync/` module tree:
 - `src/sync/meta.ts`
   `.meta.json` Zod schema, serialization, deserialization, and the conversion
   between `ConversationMeta` and remote meta format. Strips local-only fields
-  (`projectPath`, `origin`, `publishedMessageCount`) on write; populates
+  (`projectPath`, `origin`, `savedMessageCount`) on write; populates
   derived fields on read.
 - `src/sync/visibility.ts`
   Public-repo REST probe and GitHub URL parsing (github.com and GHE host
@@ -72,7 +72,7 @@ Phase 3 adds a dedicated `src/sync/` module tree:
   pairs, applies the table in SPEC §11.8, and reports counts. Does not touch
   git itself — pull-from-remote is the caller's responsibility.
 - `src/sync/push.ts`
-  Export flow. Selects locally-originated published rows for `config.author`,
+  Export flow. Selects locally-originated saved rows for `config.author`,
   writes pairs into the checkout, computes retractions scoped to
   `config.author`'s directory, generates the commit message (SPEC §11.14), and
   reports counts.
@@ -82,7 +82,7 @@ Phase 3 adds a dedicated `src/sync/` module tree:
 - `resolveContentPath` stays in `src/cli/common.ts`. The Phase 1 implementation
   already returns the right on-disk path for remote conversations without
   modification, because pull.ts sets `sourcePath` and `filePath` to the same
-  checkout path and marks the row `state = "published"`. No new file. The
+  checkout path and marks the row `state = "saved"`. No new file. The
   plan originally considered a dedicated `src/sync/resolve-content-path.ts`;
   that was unnecessary once the existing helper's branching was verified.
 - `src/sync/remote-config.ts`
@@ -127,9 +127,9 @@ Phase 3 should touch existing code in only these places.
 
 ### CLI Lifecycle Hooks
 
-- `edit`, `tag`, `untag`, `unpublish` — refuse rows where `origin IS NOT NULL`
+- `edit`, `tag`, `untag`, `unsave` — refuse rows where `origin IS NOT NULL`
   with a clear error message ("This conversation came from the remote and is
-  read-only. Edit it on the publishing author's machine."). The guard goes in
+  read-only. Edit it on the saving author's machine."). The guard goes in
   shared workflow code (`src/cli/common.ts`) so all four commands share one
   implementation and message.
 - `exclude` — extend to operate on remote rows. Excluding a remote row deletes
@@ -150,7 +150,7 @@ Phase 3 should touch existing code in only these places.
 
 ### MCP
 
-- extend `clog_list_published` and `clog_search` input schemas with optional
+- extend `clog_list_saved` and `clog_search` input schemas with optional
   `origin: "local" | "remote"`
 - thread the new filter through to the existing DB query helpers
 - no other MCP changes
@@ -177,13 +177,13 @@ Phase 3 should touch existing code in only these places.
 10. Implement `src/sync/staleness.ts`
 11. Wire up `src/cli/remote.ts`, `src/cli/sync.ts`, `src/cli/refresh.ts`,
     register in `src/index.ts`
-12. Add remote read-only guards to `edit/tag/untag/unpublish` via
+12. Add remote read-only guards to `edit/tag/untag/unsave` via
     `src/cli/common.ts`
 13. Extend `src/cli/exclude.ts` to handle remote rows; update `pull.ts` to
     consult the excluded file
 14. Update `src/cli/list.ts` (default filter, flags, footer) and
     `src/cli/status.ts` (remote info, staleness, unindexed count)
-15. Extend MCP `clog_list_published` and `clog_search` with the `origin`
+15. Extend MCP `clog_list_saved` and `clog_search` with the `origin`
     filter
 16. Add `tests/sync-integration.test.ts` against bare local git repos, gated
     on `git --version` success
@@ -194,7 +194,7 @@ Phase 3 should touch existing code in only these places.
 
 - system git is the only transport; no in-process git library
 - the local curation workflow is unchanged for `origin IS NULL` rows
-- remote rows are read-only in v1 — `edit`, `tag`, `untag`, `unpublish` refuse
+- remote rows are read-only in v1 — `edit`, `tag`, `untag`, `unsave` refuse
   them with one shared error
 - the excluded file is the single blocklist for both local discovery and
   remote import
@@ -221,7 +221,7 @@ Sync UX should be linear and self-explanatory:
 1. `clog remote add <url>`
 2. URL is validated, GitHub visibility is probed, config is written
 3. `clog sync pull` clones the repo and reconciles
-4. `clog sync push` exports `config.author`'s published conversations and
+4. `clog sync push` exports `config.author`'s saved conversations and
    pushes
 5. `clog status` shows remote URL, unindexed count, and a staleness warning if
    anything outside clog modified the checkout
@@ -249,11 +249,11 @@ Phase 3 adds four test files (SPEC §13.4):
 
 - `tests/sync-meta.test.ts` — `.meta.json` Zod schema, read/write round-trip,
   `ConversationMeta` ↔ meta format conversion, absence of
-  `publishedMessageCount` on the wire
+  `savedMessageCount` on the wire
 - `tests/sync-pull.test.ts` — full reconciliation table from SPEC §11.8,
   excluded-file gating, local-takes-precedence, remote-vs-remote duplicates,
   unsupported source dirs, path/metadata mismatches, derived
-  `publishedMessageCount`. No real git; tests construct fake checkout
+  `savedMessageCount`. No real git; tests construct fake checkout
   directories on disk.
 - `tests/sync-push.test.ts` — commit message generation (single-author and
   multi-author, ≤10 and >10 changes), export logic, retraction scoping to

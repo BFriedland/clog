@@ -7,9 +7,9 @@ import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
 import {
-  classifyPublishedDelta,
+  classifySavedDelta,
   getScanWarningsForCommand,
-  isPublishedReadyForRepublishWithDelta,
+  isSavedReadyForResaveWithDelta,
   renderWarnings,
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
@@ -38,41 +38,41 @@ export function buildStatusCommand(): Command {
       const scanResult = await scanLocalSources(config);
       renderWarnings(getScanWarningsForCommand(scanResult, { suppressUndiscoverable: true }));
       const staged = await listConversations({ states: ["staged"], origin: "local" });
-      const published = await listConversations({ states: ["published"], origin: "local" });
+      const saved = await listConversations({ states: ["saved"], origin: "local" });
       const discovered = await listConversations({ states: ["discovered"], origin: "local" });
-      const readyPublished: ConversationMeta[] = [];
-      const sourceAheadPublished: ConversationMeta[] = [];
-      const cleanPublished: ConversationMeta[] = [];
+      const readySaved: ConversationMeta[] = [];
+      const sourceAheadSaved: ConversationMeta[] = [];
+      const cleanSaved: ConversationMeta[] = [];
       const showConversations = options.conversations === true || options.source === true;
 
-      for (const conversation of published) {
-        const kind = await classifyPublishedDelta(conversation);
+      for (const conversation of saved) {
+        const kind = await classifySavedDelta(conversation);
         if (kind === "ready") {
-          readyPublished.push(conversation);
+          readySaved.push(conversation);
         } else if (kind === "source_ahead") {
-          sourceAheadPublished.push(conversation);
-        } else if (isPublishedReadyForRepublishWithDelta(conversation, kind)) {
-          readyPublished.push(conversation);
+          sourceAheadSaved.push(conversation);
+        } else if (isSavedReadyForResaveWithDelta(conversation, kind)) {
+          readySaved.push(conversation);
         } else {
-          cleanPublished.push(conversation);
+          cleanSaved.push(conversation);
         }
       }
 
       const sections: Array<() => void> = [];
 
-      if (staged.length > 0 || readyPublished.length > 0) {
+      if (staged.length > 0 || readySaved.length > 0) {
         sections.push(() => {
-          process.stdout.write("Conversations to be published:\n");
+          process.stdout.write("Conversations to be saved:\n");
           process.stdout.write(
-            `${dimText(formatToBePublishedHint({
+            `${dimText(formatToBeSavedHint({
               stagedCount: staged.length,
-              modifiedCount: readyPublished.length,
+              modifiedCount: readySaved.length,
             }))}\n`,
           );
           renderStatusEntries(
             [
               ...toStatusEntries(staged, "added", "staged"),
-              ...toStatusEntries(readyPublished, "modified", "staged"),
+              ...toStatusEntries(readySaved, "modified", "staged"),
             ],
             {
               includeSource: options.source === true,
@@ -82,13 +82,13 @@ export function buildStatusCommand(): Command {
         });
       }
 
-      if (sourceAheadPublished.length > 0) {
+      if (sourceAheadSaved.length > 0) {
         sections.push(() => {
-          process.stdout.write("Changes not staged for publishing:\n");
+          process.stdout.write("Changes not staged for saving:\n");
           process.stdout.write(
-            `${dimText('  (use "clog add <id>" to refresh the curated copy, or "clog publish <id>" to publish directly)')}\n`,
+            `${dimText('  (use "clog add <id>" to refresh the curated copy, or "clog save <id>" to save directly)')}\n`,
           );
-          renderStatusEntries(toStatusEntries(sourceAheadPublished, "modified", "unstaged"), {
+          renderStatusEntries(toStatusEntries(sourceAheadSaved, "modified", "unstaged"), {
             includeSource: options.source === true,
             showConversations,
           });
@@ -99,7 +99,7 @@ export function buildStatusCommand(): Command {
         sections.push(() => {
           process.stdout.write("Untracked conversations:\n");
           process.stdout.write(
-            `${dimText('  (use "clog add <id>" to stage for publishing)')}\n`,
+            `${dimText('  (use "clog add <id>" to stage for saving)')}\n`,
           );
           renderStatusEntries(toStatusEntries(discovered, "discovered", "unstaged"), {
             includeSource: options.source === true,
@@ -109,14 +109,14 @@ export function buildStatusCommand(): Command {
       }
 
       if (sections.length === 0) {
-        process.stdout.write("No conversations pending publication.\n");
-        if (cleanPublished.length > 0) {
+        process.stdout.write("Nothing to save.\n");
+        if (cleanSaved.length > 0) {
           process.stdout.write(
-            `${dimText('Published conversations are up to date. Use "clog list" to browse the curated set.')}\n`,
+            `${dimText('Saved conversations are up to date. Use "clog list" to browse the curated set.')}\n`,
           );
         } else {
           process.stdout.write(
-            `${dimText('Nothing to publish. Use "clog add" or "clog status" after new conversations appear.')}\n`,
+            `${dimText('Use "clog add" or "clog status" after new conversations appear.')}\n`,
           );
         }
       } else {
@@ -163,7 +163,7 @@ export function buildStatusCommand(): Command {
 
 async function renderSearchSection(): Promise<void> {
   const unindexed = (
-    await listConversations({ states: ["published"], indexed: false })
+    await listConversations({ states: ["saved"], indexed: false })
   ).length;
 
   if (unindexed === 0) {
@@ -408,17 +408,17 @@ function getStatusProjectWidth(conversations: ConversationMeta[]): number {
   return Math.max("PROJECT".length, widestProject) + 1;
 }
 
-function formatToBePublishedHint(counts: {
+function formatToBeSavedHint(counts: {
   stagedCount: number;
   modifiedCount: number;
 }): string {
   if (counts.stagedCount > 0 && counts.modifiedCount > 0) {
-    return '  (use "clog publish" to publish everything here; "clog reset <id>" only unstages added conversations)';
+    return '  (use "clog save" to save everything here; "clog reset <id>" only unstages added conversations)';
   }
 
   if (counts.stagedCount > 0) {
     return '  (use "clog reset <id>" to unstage)';
   }
 
-  return '  (use "clog publish" to publish these modified conversations)';
+  return '  (use "clog save" to save these modified conversations)';
 }

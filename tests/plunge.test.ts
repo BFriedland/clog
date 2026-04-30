@@ -148,7 +148,7 @@ describe("plunge", () => {
     expect(findCheck(report, 8)?.message).toContain("could not be parsed");
   });
 
-  it("reports publish checkpoint drift as informational when parsed messages are below published_message_count", async () => {
+  it("reports save checkpoint drift as informational when parsed messages are below saved_message_count", async () => {
     await seedConfig();
     const id = "44444444-4444-4444-4444-444444444444";
     const rawPath = getRawConversationPath("claude-code", id);
@@ -157,42 +157,42 @@ describe("plunge", () => {
       makeConversation({
         id,
         sourceId: id,
-        state: "published",
+        state: "saved",
         filePath: rawPath,
-        publishedAt: "2026-02-01T10:00:00.000Z",
-        publishedMessageCount: 3,
-        publishVersion: 1,
+        savedAt: "2026-02-01T10:00:00.000Z",
+        savedMessageCount: 3,
+        saveVersion: 1,
       }),
     );
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 9)?.message).toContain("below published_message_count");
+    expect(findCheck(report, 9)?.message).toContain("below saved_message_count");
     expect(findCheck(report, 9)?.severity).toBe("info");
     expect(findCheck(report, 9)?.recovery).toContain("refresh the stored message-count checkpoint");
     expect(report.exitCode).toBe(0);
   });
 
-  it("reports missing publish metadata without synthesizing it", async () => {
+  it("reports missing save metadata without synthesizing it", async () => {
     await seedConfig();
     const id = "55555555-5555-5555-5555-555555555555";
     const rawPath = getRawConversationPath("claude-code", id);
-    await writeMinimalClaudeJsonl(rawPath, "Published");
+    await writeMinimalClaudeJsonl(rawPath, "Saved");
     await insertConversation(
       makeConversation({
         id,
         sourceId: id,
-        state: "published",
+        state: "saved",
         filePath: rawPath,
-        publishedAt: null,
-        publishedMessageCount: null,
-        publishVersion: 0,
+        savedAt: null,
+        savedMessageCount: null,
+        saveVersion: 0,
       }),
     );
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 11)?.message).toContain("published_at is null");
+    expect(findCheck(report, 11)?.message).toContain("saved_at is null");
   });
 
   it("reports invalid timestamps", async () => {
@@ -294,11 +294,11 @@ describe("plunge", () => {
         source: "claude-code",
         author: "alice",
         projectName: "webapp",
-        state: "published",
+        state: "saved",
         filePath: rawPath,
-        publishedAt: "2026-02-01T10:00:00.000Z",
-        publishedMessageCount: 3,
-        publishVersion: 1,
+        savedAt: "2026-02-01T10:00:00.000Z",
+        savedMessageCount: 3,
+        saveVersion: 1,
       }),
     );
 
@@ -383,9 +383,9 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     discoveredAt: now,
     modifiedAt: now,
     state: "discovered",
-    publishedAt: null,
-    publishedMessageCount: null,
-    publishVersion: 0,
+    savedAt: null,
+    savedMessageCount: null,
+    saveVersion: 0,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: now,

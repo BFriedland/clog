@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { listConversations, updateConversation } from "../db/index.js";
 import {
   assertNoneRemote,
-  isPublishedReadyForRepublish,
+  isSavedReadyForResave,
   removeRawCopyIfPresent,
 } from "./common.js";
 import { collectBareResetTargets, collectProjectResetTargets } from "./project-targets.js";
@@ -25,17 +25,17 @@ export function buildResetCommand(): Command {
           : await collectBareResetTargets();
 
       if (conversations.length === 0) {
-        const published = await listConversations({ states: ["published"], origin: "local" });
-        let modifiedPublishedCount = 0;
-        for (const conversation of published) {
-          if (await isPublishedReadyForRepublish(conversation)) {
-            modifiedPublishedCount += 1;
+        const saved = await listConversations({ states: ["saved"], origin: "local" });
+        let modifiedSavedCount = 0;
+        for (const conversation of saved) {
+          if (await isSavedReadyForResave(conversation)) {
+            modifiedSavedCount += 1;
           }
         }
 
-        if (modifiedPublishedCount > 0) {
+        if (modifiedSavedCount > 0) {
           process.stdout.write(
-            `No added conversations to reset. ${modifiedPublishedCount} published conversation(s) still have unpublished changes; use "clog publish" to publish them.\n`,
+            `No added conversations to reset. ${modifiedSavedCount} saved conversation(s) still have unsaved changes; use "clog save" to save them.\n`,
           );
           return;
         }
@@ -53,8 +53,8 @@ export function buildResetCommand(): Command {
           );
         }
 
-        if (conversation.state === "published") {
-          throw new Error(`Conversation ${conversation.id} is published. Use "clog unpublish" first.`);
+        if (conversation.state === "saved") {
+          throw new Error(`Conversation ${conversation.id} is saved. Use "clog unsave" first.`);
         }
 
         await removeRawCopyIfPresent(conversation);
@@ -62,9 +62,9 @@ export function buildResetCommand(): Command {
           ...conversation,
           state: "discovered",
           filePath: null,
-          publishedAt: null,
-          publishedMessageCount: null,
-          publishVersion: 0,
+          savedAt: null,
+          savedMessageCount: null,
+          saveVersion: 0,
         });
       }
 

@@ -18,21 +18,21 @@ export async function runSearchCommand(
 ): Promise<void> {
   const { embedding, vectorStore } = await requireSearchProviders();
   const limit = options.limit ?? 10;
-  const matchingPublished = await listMatchingPublishedConversations(options);
+  const matchingSaved = await listMatchingSavedConversations(options);
 
-  if (matchingPublished.length === 0) {
-    process.stdout.write("No published conversations match the specified filters.\n");
+  if (matchingSaved.length === 0) {
+    process.stdout.write("No saved conversations match the specified filters.\n");
     return;
   }
 
   const searchableIds = new Set(
-    matchingPublished
+    matchingSaved
       .filter((conversation) => isConversationSearchable(conversation))
       .map((conversation) => conversation.id),
   );
 
   if (searchableIds.size === 0) {
-    process.stdout.write('No published conversations are indexed yet. Run "clog index".\n');
+    process.stdout.write('No saved conversations are indexed yet. Run "clog index".\n');
     return;
   }
 
@@ -104,13 +104,13 @@ async function requireSearchProviders() {
   }
 }
 
-async function listMatchingPublishedConversations(options: {
+async function listMatchingSavedConversations(options: {
   project?: string;
   author?: string;
   tag?: string;
 }): Promise<ConversationMeta[]> {
   return listConversations({
-    states: ["published"],
+    states: ["saved"],
     projectName: options.project,
     author: options.author,
     tag: options.tag,

@@ -3,37 +3,37 @@ import { Command } from "commander";
 import { listConversations, updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { assertNoneRemote } from "./common.js";
-import { collectBareUnpublishTargets, collectProjectUnpublishTargets } from "./project-targets.js";
+import { collectBareUnsaveTargets, collectProjectUnsaveTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
-export function buildUnpublishCommand(): Command {
-  return new Command("unpublish")
-    .description("Move published conversations back to staged")
+export function buildUnsaveCommand(): Command {
+  return new Command("unsave")
+    .description("Move saved conversations back to staged")
     .argument("[selectors...]")
     .action(async (selectors: string[]) => {
       const conversations =
         selectors.length > 0
           ? resolveConversationSelectors({
-              commandName: "clog unpublish",
+              commandName: "clog unsave",
               tokens: selectors,
               idCandidates: await listConversations(),
-              projectCandidates: await collectProjectUnpublishTargets(),
+              projectCandidates: await collectProjectUnsaveTargets(),
             })
-          : await collectBareUnpublishTargets();
+          : await collectBareUnsaveTargets();
 
       if (conversations.length === 0) {
-        process.stdout.write('No published conversations. Use "clog publish" to publish conversations first.\n');
+        process.stdout.write('No saved conversations. Use "clog save" to save conversations first.\n');
         return;
       }
 
-      assertNoneRemote(conversations, "clog unpublish");
+      assertNoneRemote(conversations, "clog unsave");
 
       const showProgress = process.stdout.isTTY && conversations.length > 1;
 
       for (const [index, conversation] of conversations.entries()) {
-        if (conversation.state !== "published") {
+        if (conversation.state !== "saved") {
           throw new Error(
-            `Conversation ${conversation.id.slice(0, 7)} is not published. Use "clog add <id>" to stage it first.`,
+            `Conversation ${conversation.id.slice(0, 7)} is not saved. Use "clog add <id>" to stage it first.`,
           );
         }
 
@@ -45,7 +45,7 @@ export function buildUnpublishCommand(): Command {
 
         if (showProgress) {
           process.stdout.write(
-            `\r${index + 1}/${conversations.length} conversations unpublished locally...`,
+            `\r${index + 1}/${conversations.length} conversations unsaved locally...`,
           );
         }
       }
@@ -67,10 +67,10 @@ export function buildUnpublishCommand(): Command {
       );
       for (const failedId of failures) {
         process.stderr.write(
-          `warning: ${failedId.slice(0, 7)} was unpublished but its search vectors could not be deleted\n`,
+          `warning: ${failedId.slice(0, 7)} was unsaved but its search vectors could not be deleted\n`,
         );
       }
 
-      process.stdout.write(`Unpublished ${conversations.length} conversation(s) (moved to staging).\n`);
+      process.stdout.write(`Unsaved ${conversations.length} conversation(s) (moved to staging).\n`);
     });
 }

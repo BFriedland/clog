@@ -29,11 +29,11 @@ clog status --source
 # Show individual conversation rows
 clog status --conversations
 
-# Publish a project straight to your local library
-clog publish myapp
+# Save a project straight to your local library
+clog save myapp
 
-# Or publish one conversation by short ID
-clog publish a1b2c3
+# Or save one conversation by short ID
+clog save a1b2c3
 
 # Browse and inspect
 clog list
@@ -51,8 +51,8 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog status` | Scan sources and show project summaries for discovered, staged, and modified published conversations (`--conversations`, `--source`) |
-| `clog list [filters]` | List conversations — staged + published by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
+| `clog status` | Scan sources and show project summaries for discovered, staged, and modified saved conversations (`--conversations`, `--source`) |
+| `clog list [filters]` | List conversations — staged + saved by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
 | `clog add [selector...]` | Stage conversations from a project or by ID (`--all`) |
 | `clog reset <selector...>` | Move staged conversations back to discovered |
 | `clog edit <id>` | Edit metadata (`--title`, `--summary`, `--author`) |
@@ -63,13 +63,13 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog remove <rule...>` | Remove currently matching conversations from clog's local DB |
 | `clog rename-author <old> <new>` | Rename an author across local conversations |
 
-### Publishing & Inspection
+### Saving & Inspection
 
 | Command | What it does |
 |---------|-------------|
-| `clog publish [selector...]` | Publish staged conversations, or publish a project directly |
-| `clog unpublish <selector...>` | Move published conversations back to staged |
-| `clog diff [id...]` | Show new messages since last publish (`--staged`, `--head N`, `--tail N`, `--first N`, `--last N`) |
+| `clog save [selector...]` | Save staged conversations, or save a project directly |
+| `clog unsave <selector...>` | Move saved conversations back to staged |
+| `clog diff [id...]` | Show new messages since last save (`--staged`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
 | `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`) |
@@ -80,15 +80,15 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | Command | What it does |
 |---------|-------------|
 | `clog search --init` | Interactive setup — choose embedding provider and vector store |
-| `clog search <query>` | Semantic search across published conversations (`--project`, `--author`, `--tag`, `--limit`) |
-| `clog index` | Index published conversations for search (`--rebuild` to re-index all) |
+| `clog search <query>` | Semantic search across saved conversations (`--project`, `--author`, `--tag`, `--limit`) |
+| `clog index` | Index saved conversations for search (`--rebuild` to re-index all) |
 
 ### Team Sharing
 
 | Command | What it does |
 |---------|-------------|
 | `clog remote add\|show\|remove` | Configure a git remote for team sharing |
-| `clog sync push` | Export published conversations to the team repo |
+| `clog sync push` | Export saved conversations to the team repo |
 | `clog sync pull` | Import conversations from the team repo |
 | `clog refresh` | Reconcile local DB from the git checkout (no fetch) |
 
@@ -128,7 +128,7 @@ This gives agents the following tools:
 
 | Tool | What it does |
 |------|-------------|
-| `clog_list_published` | List published conversations (filterable by origin, project, etc.) |
+| `clog_list_saved` | List saved conversations (filterable by origin, project, etc.) |
 | `clog_list_staged` | List staged conversations for agent-assisted curation |
 | `clog_get` | Load a conversation's messages |
 | `clog_update` | Edit title, summary, or tags |
@@ -151,11 +151,11 @@ clog search "JWT refresh token race condition"
 clog search "database migration" --project myapp --limit 5
 ```
 
-Once configured, conversations are auto-indexed whenever you `clog publish`. Editing a conversation's title or summary re-indexes it. Use `clog index --rebuild` to re-index everything from scratch.
+Once configured, conversations are auto-indexed whenever you `clog save`. Editing a conversation's title or summary re-indexes it. Use `clog index --rebuild` to re-index everything from scratch.
 
 ## Team Sharing
 
-Share your published conversations with teammates using any private git remote (GitHub, GitLab, bare repo, etc.). Git handles auth, transport, and access control.
+Share your saved conversations with teammates using any private git remote (GitHub, GitLab, bare repo, etc.). Git handles auth, transport, and access control.
 
 ```bash
 # Point clog at a shared private repo
@@ -168,13 +168,13 @@ clog sync pull
 clog sync push
 ```
 
-**How it works:** clog manages a git checkout under `~/.clog/remote/`. Each author writes to their own directory to avoid conflicts. `sync push` exports and pushes your published conversations; `sync pull` imports your teammates'.
+**How it works:** clog manages a git checkout under `~/.clog/remote/`. Each author writes to their own directory to avoid conflicts. `sync push` exports and pushes your saved conversations; `sync pull` imports your teammates'.
 
 **Good to know:**
 
 - `clog list` shows your conversations by default. `--all` includes teammates'; `--author bob` filters to one person.
 - Remote conversations are read-only — you can view but not edit them.
-- Unpublishing a synced conversation retracts it from the remote on next push.
+- Unsaving a synced conversation retracts it from the remote on next push.
 - Use `clog exclude` to ignore projects or conversations, and `clog remove` if you also want to delete current local DB rows.
 - `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
 

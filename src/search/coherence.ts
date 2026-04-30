@@ -10,13 +10,13 @@ import { indexConversation } from "./indexer.js";
 export function isConversationSearchable(
   conversation: ConversationMeta | null | undefined,
 ): conversation is ConversationMeta {
-  return Boolean(conversation && conversation.state === "published" && conversation.indexedAt);
+  return Boolean(conversation && conversation.state === "saved" && conversation.indexedAt);
 }
 
 export async function markConversationIndexStale(
   conversation: ConversationMeta,
 ): Promise<ConversationMeta> {
-  if (conversation.state !== "published" || !conversation.indexedAt) {
+  if (conversation.state !== "saved" || !conversation.indexedAt) {
     return conversation;
   }
 
@@ -30,7 +30,7 @@ export async function markConversationIndexStale(
 export async function maybeReindexUpdatedConversation(
   conversation: ConversationMeta,
 ): Promise<ConversationMeta> {
-  if (conversation.state !== "published") {
+  if (conversation.state !== "saved") {
     return conversation;
   }
 
@@ -67,11 +67,11 @@ export async function maybeAutoIndexConversations(
     const config = await loadConfig();
     const { embedding, vectorStore } = await getSearchProviders();
     const failures: string[] = [];
-    const indexable = conversations.filter((c) => c.state === "published");
+    const indexable = conversations.filter((c) => c.state === "saved");
     let completed = 0;
 
     for (const conversation of conversations) {
-      if (conversation.state !== "published") {
+      if (conversation.state !== "saved") {
         continue;
       }
 

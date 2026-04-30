@@ -99,11 +99,11 @@ export function buildAddCommand(): Command {
 
         const updated = {
           ...conversation,
-          state: conversation.state === "published" ? "published" : "staged",
+          state: conversation.state === "saved" ? "saved" : "staged",
           filePath: destination,
           modifiedAt: identical ? conversation.modifiedAt : nowIso(),
           indexedAt:
-            conversation.state === "published" && !identical ? null : conversation.indexedAt,
+            conversation.state === "saved" && !identical ? null : conversation.indexedAt,
         } as const;
 
         await updateConversation(updated);

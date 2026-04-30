@@ -131,7 +131,7 @@ export async function browseValues(
   return withDb((db) => {
     if (field === "tags_json") {
       const conversations = resultToConversations(
-        db.exec("SELECT * FROM conversations WHERE state = 'published'"),
+        db.exec("SELECT * FROM conversations WHERE state = 'saved'"),
       );
       const counts = new Map<string, number>();
 
@@ -150,7 +150,7 @@ export async function browseValues(
       `
         SELECT ${field} AS name, COUNT(*) AS count
         FROM conversations
-        WHERE state = 'published' AND ${field} IS NOT NULL AND ${field} != ''
+        WHERE state = 'saved' AND ${field} IS NOT NULL AND ${field} != ''
         GROUP BY ${field}
         ORDER BY ${field} ASC
       `,
@@ -238,9 +238,9 @@ export function insertConversationInDb(
         discovered_at,
         modified_at,
         state,
-        published_at,
-        published_message_count,
-        publish_version,
+        saved_at,
+        saved_message_count,
+        save_version,
         source_path,
         file_path,
         source_mtime,
@@ -273,9 +273,9 @@ export function updateConversationInDb(
         discovered_at = ?,
         modified_at = ?,
         state = ?,
-        published_at = ?,
-        published_message_count = ?,
-        publish_version = ?,
+        saved_at = ?,
+        saved_message_count = ?,
+        save_version = ?,
         source_path = ?,
         file_path = ?,
         source_mtime = ?,
@@ -297,9 +297,9 @@ export function updateConversationInDb(
       conversation.discoveredAt,
       conversation.modifiedAt,
       conversation.state,
-      conversation.publishedAt,
-      conversation.publishedMessageCount,
-      conversation.publishVersion,
+      conversation.savedAt,
+      conversation.savedMessageCount,
+      conversation.saveVersion,
       conversation.sourcePath,
       conversation.filePath,
       conversation.sourceMtime,
@@ -393,7 +393,7 @@ export function getConversationBySourceIdentityInDb(
 export async function listConversationsNeedingIndex(): Promise<ConversationMeta[]> {
   return withDb((db) =>
     listConversationsInDb(db, {
-      states: ["published"],
+      states: ["saved"],
       indexed: false,
     }),
   );
@@ -408,9 +408,9 @@ export async function setConversationIndexedAt(
   });
 }
 
-export async function clearPublishedIndexedAt(): Promise<void> {
+export async function clearSavedIndexedAt(): Promise<void> {
   await withDb((db) => {
-    db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'published'");
+    db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'saved'");
   });
 }
 
@@ -458,9 +458,9 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.discoveredAt,
     conversation.modifiedAt,
     conversation.state,
-    conversation.publishedAt,
-    conversation.publishedMessageCount,
-    conversation.publishVersion,
+    conversation.savedAt,
+    conversation.savedMessageCount,
+    conversation.saveVersion,
     conversation.sourcePath,
     conversation.filePath,
     conversation.sourceMtime,
@@ -512,9 +512,9 @@ function rowToConversation(row: Record<string, unknown>): ConversationMeta {
     discoveredAt: String(row.discovered_at),
     modifiedAt: String(row.modified_at),
     state: String(row.state) as ConversationState,
-    publishedAt: nullableString(row.published_at),
-    publishedMessageCount: nullableInteger(row.published_message_count),
-    publishVersion: Number(row.publish_version),
+    savedAt: nullableString(row.saved_at),
+    savedMessageCount: nullableInteger(row.saved_message_count),
+    saveVersion: Number(row.save_version),
     sourcePath: String(row.source_path),
     filePath: nullableString(row.file_path),
     sourceMtime: nullableString(row.source_mtime),

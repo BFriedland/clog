@@ -293,7 +293,7 @@ async function validatePair(
         remote: { author: pair.author, source: pair.source, id: pair.id },
         paths: [pair.metaPath, pair.jsonlPath],
         guidance:
-          "Ask the publishing author to republish the conversation, or remove the orphaned file from the remote repo.",
+          "Ask the original author to save the conversation again, or remove the orphaned file from the remote repo.",
       },
     };
   }
@@ -323,7 +323,7 @@ async function validatePair(
         remote: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
         guidance:
-          "Ask the publishing author to republish the conversation, or fix/remove the pair in the remote repo.",
+          "Ask the original author to save the conversation again, or fix/remove the pair in the remote repo.",
       },
     };
   }
@@ -380,7 +380,7 @@ async function validatePair(
         remote: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.jsonlPath,
         guidance:
-          "Ask the publishing author to republish the conversation, or fix/remove the pair in the remote repo.",
+          "Ask the original author to save the conversation again, or fix/remove the pair in the remote repo.",
       },
     };
   }
@@ -418,10 +418,10 @@ function buildConversationFromRemote(
     createdAt: pair.meta.createdAt,
     discoveredAt: now,
     modifiedAt: pair.meta.modifiedAt,
-    state: "published",
-    publishedAt: pair.meta.publishedAt,
-    publishedMessageCount: pair.messageCount,
-    publishVersion: 1,
+    state: "saved",
+    savedAt: pair.meta.savedAt,
+    savedMessageCount: pair.messageCount,
+    saveVersion: 1,
     sourcePath: pair.jsonlPath,
     filePath: pair.jsonlPath,
     sourceMtime: null,
@@ -450,8 +450,8 @@ function mergeRemoteInto(
     existing.slug !== pair.meta.slug ||
     existing.createdAt !== pair.meta.createdAt ||
     existing.modifiedAt !== pair.meta.modifiedAt ||
-    existing.publishedAt !== pair.meta.publishedAt ||
-    existing.publishedMessageCount !== pair.messageCount;
+    existing.savedAt !== pair.meta.savedAt ||
+    existing.savedMessageCount !== pair.messageCount;
 
   if (!metadataChanged && !contentPathChanged) {
     return null;
@@ -467,8 +467,8 @@ function mergeRemoteInto(
     slug: pair.meta.slug,
     createdAt: pair.meta.createdAt,
     modifiedAt: pair.meta.modifiedAt,
-    publishedAt: pair.meta.publishedAt,
-    publishedMessageCount: pair.messageCount,
+    savedAt: pair.meta.savedAt,
+    savedMessageCount: pair.messageCount,
     sourcePath: pair.jsonlPath,
     filePath: pair.jsonlPath,
     indexedAt:

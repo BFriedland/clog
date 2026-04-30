@@ -3,7 +3,7 @@ import { z } from "zod";
 export const conversationStateSchema = z.enum([
   "discovered",
   "staged",
-  "published",
+  "saved",
 ]);
 
 export type ConversationState = z.infer<typeof conversationStateSchema>;
@@ -42,9 +42,9 @@ export const conversationMetaSchema = z.object({
   discoveredAt: z.string(),
   modifiedAt: z.string(),
   state: conversationStateSchema,
-  publishedAt: z.string().nullable(),
-  publishedMessageCount: z.number().int().nonnegative().nullable(),
-  publishVersion: z.number().int().nonnegative(),
+  savedAt: z.string().nullable(),
+  savedMessageCount: z.number().int().nonnegative().nullable(),
+  saveVersion: z.number().int().nonnegative(),
   sourcePath: z.string(),
   filePath: z.string().nullable(),
   sourceMtime: z.string().nullable(),

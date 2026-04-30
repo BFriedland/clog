@@ -1,28 +1,28 @@
 import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
-import { isPublishedReadyForRepublish } from "./common.js";
+import { isSavedReadyForResave } from "./common.js";
 
 export async function collectProjectAddTargets(): Promise<ConversationMeta[]> {
   // Project-scoped add should behave like repeated `clog add <id>` for every
-  // local conversation in the project, including staged and published rows.
+  // local conversation in the project, including staged and saved rows.
   return listConversations({ origin: "local" });
 }
 
-export async function collectBarePublishTargets(): Promise<ConversationMeta[]> {
+export async function collectBareSaveTargets(): Promise<ConversationMeta[]> {
   const staged = await listConversations({ states: ["staged"], origin: "local" });
-  const published = await listConversations({ states: ["published"], origin: "local" });
-  const readyPublished: ConversationMeta[] = [];
-  for (const conversation of published) {
-    if (await isPublishedReadyForRepublish(conversation)) {
-      readyPublished.push(conversation);
+  const saved = await listConversations({ states: ["saved"], origin: "local" });
+  const readySaved: ConversationMeta[] = [];
+  for (const conversation of saved) {
+    if (await isSavedReadyForResave(conversation)) {
+      readySaved.push(conversation);
     }
   }
-  return [...staged, ...readyPublished];
+  return [...staged, ...readySaved];
 }
 
-export async function collectProjectPublishTargets(): Promise<ConversationMeta[]> {
+export async function collectProjectSaveTargets(): Promise<ConversationMeta[]> {
   const discovered = await listConversations({ states: ["discovered"], origin: "local" });
-  return [...discovered, ...(await collectBarePublishTargets())];
+  return [...discovered, ...(await collectBareSaveTargets())];
 }
 
 export async function collectProjectResetTargets(): Promise<ConversationMeta[]> {
@@ -36,15 +36,15 @@ export async function collectBareResetTargets(): Promise<ConversationMeta[]> {
   return collectProjectResetTargets();
 }
 
-export async function collectProjectUnpublishTargets(): Promise<ConversationMeta[]> {
+export async function collectProjectUnsaveTargets(): Promise<ConversationMeta[]> {
   return listConversations({
-    states: ["published"],
+    states: ["saved"],
     origin: "local",
   });
 }
 
-export async function collectBareUnpublishTargets(): Promise<ConversationMeta[]> {
-  return collectProjectUnpublishTargets();
+export async function collectBareUnsaveTargets(): Promise<ConversationMeta[]> {
+  return collectProjectUnsaveTargets();
 }
 
 export async function collectProjectDrainTargets(

@@ -27,7 +27,7 @@ export function buildInitCommand(): Command {
       const config = await loadConfig();
       if (config.search) {
         process.stdout.write(
-          `${chalk.bold("\nWarning: Vector search is already configured. Re-running setup may replace your current search configuration and require re-indexing published conversations.\n")}`,
+          `${chalk.bold("\nWarning: Vector search is already configured. Re-running setup may replace your current search configuration and require re-indexing saved conversations.\n")}`,
         );
 
         const rerunSearchSetup = await confirm({

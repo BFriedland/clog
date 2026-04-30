@@ -35,20 +35,20 @@ const mockedGetSearchProviders = vi.mocked(depsModule.getSearchProviders);
 const mockedSearchAvailable = vi.mocked(depsModule.searchAvailable);
 
 describe("isConversationSearchable (SPEC §10.7)", () => {
-  it("returns true for a published conversation with a non-null indexedAt", () => {
+  it("returns true for a saved conversation with a non-null indexedAt", () => {
     const conversation = makeConversation({
-      state: "published",
+      state: "saved",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
     expect(isConversationSearchable(conversation)).toBe(true);
   });
 
   it("returns false when indexedAt is null", () => {
-    const conversation = makeConversation({ state: "published", indexedAt: null });
+    const conversation = makeConversation({ state: "saved", indexedAt: null });
     expect(isConversationSearchable(conversation)).toBe(false);
   });
 
-  it("returns false when state is not published, even with a non-null indexedAt", () => {
+  it("returns false when state is not saved, even with a non-null indexedAt", () => {
     const conversation = makeConversation({
       state: "staged",
       indexedAt: "2026-02-01T10:00:00.000Z",
@@ -77,9 +77,9 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("clears indexedAt for a published conversation that was previously indexed", async () => {
+  it("clears indexedAt for a saved conversation that was previously indexed", async () => {
     const conversation = makeConversation({
-      state: "published",
+      state: "saved",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
     await insertConversation(conversation);
@@ -92,7 +92,7 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
   });
 
   it("is a no-op when indexedAt is already null", async () => {
-    const conversation = makeConversation({ state: "published", indexedAt: null });
+    const conversation = makeConversation({ state: "saved", indexedAt: null });
     await insertConversation(conversation);
 
     const next = await markConversationIndexStale(conversation);
@@ -102,7 +102,7 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
     expect(reloaded?.indexedAt).toBeNull();
   });
 
-  it("is a no-op when the conversation is not published", async () => {
+  it("is a no-op when the conversation is not saved", async () => {
     const conversation = makeConversation({
       state: "staged",
       indexedAt: "2026-02-01T10:00:00.000Z",
@@ -298,9 +298,9 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     discoveredAt: now,
     modifiedAt: now,
     state: "discovered",
-    publishedAt: null,
-    publishedMessageCount: null,
-    publishVersion: 0,
+    savedAt: null,
+    savedMessageCount: null,
+    saveVersion: 0,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: now,

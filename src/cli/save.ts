@@ -7,39 +7,39 @@ import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
-  defaultPublishFilePath,
+  defaultSaveFilePath,
   ensureRawCopy,
-  getPublishCandidate,
+  getSaveCandidate,
   parseConversationMessages,
   parseConversationMessagesFromPath,
 } from "./common.js";
-import { collectBarePublishTargets, collectProjectPublishTargets } from "./project-targets.js";
+import { collectBareSaveTargets, collectProjectSaveTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
-export function buildPublishCommand(): Command {
-  return new Command("publish")
-    .description("Publish conversations")
+export function buildSaveCommand(): Command {
+  return new Command("save")
+    .description("Save conversations")
     .argument("[selectors...]")
     .action(async (selectors: string[]) => {
       const config = await loadConfig();
       const conversations =
         selectors.length > 0
           ? resolveConversationSelectors({
-              commandName: "clog publish",
+              commandName: "clog save",
               tokens: selectors,
               idCandidates: await listConversations(),
-              projectCandidates: await collectProjectPublishTargets(),
+              projectCandidates: await collectProjectSaveTargets(),
             })
-          : await collectBarePublishTargets();
+          : await collectBareSaveTargets();
 
       if (conversations.length === 0) {
         process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
         return;
       }
 
-      assertNoneRemote(conversations, "clog publish");
+      assertNoneRemote(conversations, "clog save");
 
-      const publishedConversations: ConversationMeta[] = [];
+      const savedConversations: ConversationMeta[] = [];
       const showProgress = process.stdout.isTTY && conversations.length > 1;
 
       for (const [index, conversation] of conversations.entries()) {
@@ -47,15 +47,15 @@ export function buildPublishCommand(): Command {
           selectors.length > 0 &&
           conversation.state !== "discovered" &&
           conversation.state !== "staged" &&
-          conversation.state !== "published"
+          conversation.state !== "saved"
         ) {
-          throw new Error(`Conversation ${conversation.id} is not publishable.`);
+          throw new Error(`Conversation ${conversation.id} cannot be saved.`);
         }
 
-        const candidate = await getPublishCandidate(conversation);
+        const candidate = await getSaveCandidate(conversation);
         const rawPath =
           conversation.state === "discovered" || !conversation.filePath
-            ? defaultPublishFilePath(conversation)
+            ? defaultSaveFilePath(conversation)
             : conversation.filePath;
 
         if (candidate.shouldRefreshRawCopy) {
@@ -79,23 +79,23 @@ export function buildPublishCommand(): Command {
             : await parseConversationMessagesFromPath(config, conversation.source, parsePath);
         const timestamp = nowIso();
 
-        const publishedConversation = {
+        const savedConversation = {
           ...conversation,
           filePath: rawPath,
-          state: "published" as const,
-          publishVersion: conversation.publishVersion + 1,
-          publishedAt: timestamp,
+          state: "saved" as const,
+          saveVersion: conversation.saveVersion + 1,
+          savedAt: timestamp,
           modifiedAt: timestamp,
-          publishedMessageCount: messages.length,
+          savedMessageCount: messages.length,
           indexedAt: null,
         };
 
-        await updateConversation(publishedConversation);
-        publishedConversations.push(publishedConversation);
+        await updateConversation(savedConversation);
+        savedConversations.push(savedConversation);
 
         if (showProgress) {
           process.stdout.write(
-            `\r${index + 1}/${conversations.length} conversations published locally...`,
+            `\r${index + 1}/${conversations.length} conversations saved locally...`,
           );
         }
       }
@@ -105,7 +105,7 @@ export function buildPublishCommand(): Command {
       }
 
       const indexedFailures = await maybeAutoIndexConversations(
-        publishedConversations,
+        savedConversations,
         showProgress
           ? (completed, total) => {
               process.stdout.write(`\r${completed}/${total} conversations indexed for vector search...`);
@@ -118,11 +118,11 @@ export function buildPublishCommand(): Command {
 
       for (const failedId of indexedFailures) {
         process.stderr.write(
-          `warning: published ${failedId.slice(0, 7)} but failed to index it for search\n`,
+          `warning: saved ${failedId.slice(0, 7)} but failed to index it for search\n`,
         );
       }
 
-      process.stdout.write(`Published ${conversations.length} conversation(s).\n`);
+      process.stdout.write(`Saved ${conversations.length} conversation(s).\n`);
     });
 }
 
