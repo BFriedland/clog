@@ -1,9 +1,15 @@
+import chalk from "chalk";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { listConversations, updateConversation } from "../db/index.js";
+import {
+  listConversations,
+  listConversationsNeedingIndex,
+  updateConversation,
+} from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
+import { searchAvailable } from "../search/deps.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
@@ -34,6 +40,7 @@ export function buildSaveCommand(): Command {
 
       if (conversations.length === 0) {
         process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
+        await maybePrintUnindexedHint(config);
         return;
       }
 
@@ -104,6 +111,12 @@ export function buildSaveCommand(): Command {
         process.stdout.write("\n");
       }
 
+      if (showProgress && (await searchAvailable())) {
+        process.stdout.write(
+          'Indexing conversations for vector search. Safe to interrupt; run "clog index" to resume.\n',
+        );
+      }
+
       const indexedFailures = await maybeAutoIndexConversations(
         savedConversations,
         showProgress
@@ -123,6 +136,7 @@ export function buildSaveCommand(): Command {
       }
 
       process.stdout.write(`Saved ${conversations.length} conversation(s).\n`);
+      await maybePrintUnindexedHint(config);
     });
 }
 
@@ -131,4 +145,21 @@ function resolveFilePathOrFallback(
   fallback: string,
 ): string {
   return conversation.filePath ?? fallback;
+}
+
+async function maybePrintUnindexedHint(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<void> {
+  if (!config.search) {
+    return;
+  }
+
+  const count = (await listConversationsNeedingIndex()).length;
+  if (count === 0) {
+    return;
+  }
+
+  process.stdout.write(
+    `hint: ${chalk.bold(`${count} saved conversation(s) still unindexed.`)} Run \`clog index\` to finish.\n`,
+  );
 }

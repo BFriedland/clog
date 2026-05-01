@@ -36,4 +36,5 @@ export interface VectorStore {
     filter?: Record<string, string>,
   ): Promise<SearchHit[]>;
   delete(id: string): Promise<void>;
+  reset?(): Promise<void>;
 }

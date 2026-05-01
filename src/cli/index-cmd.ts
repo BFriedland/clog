@@ -12,6 +12,7 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
 
   if (options.rebuild) {
     await clearSavedIndexedAt();
+    await vectorStore.reset?.();
   }
 
   const conversations = await listConversationsNeedingIndex();
@@ -25,6 +26,12 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
   const config = await loadConfig();
   let indexed = 0;
   let errors = 0;
+
+  if (process.stdout.isTTY && conversations.length > 1) {
+    process.stdout.write(
+      "Indexing conversations for vector search. Safe to interrupt; rerun to resume.\n",
+    );
+  }
 
   for (const conversation of conversations) {
     try {
