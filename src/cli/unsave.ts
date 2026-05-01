@@ -2,6 +2,7 @@ import { Command } from "commander";
 
 import { listConversations, updateConversation } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
+import { searchAvailable } from "../search/deps.js";
 import { assertNoneRemote } from "./common.js";
 import { collectBareUnsaveTargets, collectProjectUnsaveTargets } from "./project-targets.js";
 import { resolveConversationSelectors } from "./selectors.js";
@@ -52,6 +53,10 @@ export function buildUnsaveCommand(): Command {
 
       if (showProgress) {
         process.stdout.write("\n");
+      }
+
+      if (showProgress && (await searchAvailable())) {
+        process.stdout.write("Removing conversations from vector search. Safe to interrupt.\n");
       }
 
       const failures = await tryDeleteConversationVectors(

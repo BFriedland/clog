@@ -9,8 +9,21 @@ declare module "@huggingface/transformers" {
 }
 
 declare module "vectra" {
+  export class LocalFileStorage {
+    constructor(rootFolder?: string);
+    createFile(filePath: string, content: Buffer | string): Promise<void>;
+    createFolder(folderPath: string): Promise<void>;
+    deleteFile(filePath: string): Promise<void>;
+    deleteFolder(folderPath: string): Promise<void>;
+    getDetails(fileOrFolderPath: string): Promise<unknown>;
+    listFiles(folderPath: string, filter?: unknown): Promise<unknown[]>;
+    pathExists(fileOrFolderPath: string): Promise<boolean>;
+    readFile(filePath: string): Promise<Buffer>;
+    upsertFile(filePath: string, content: Buffer | string): Promise<void>;
+  }
+
   export class LocalIndex {
-    constructor(indexPath: string);
+    constructor(indexPath: string, indexName?: string, storage?: LocalFileStorage);
     isIndexCreated(): Promise<boolean>;
     createIndex(): Promise<void>;
     beginUpdate(): Promise<void>;

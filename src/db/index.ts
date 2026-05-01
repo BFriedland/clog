@@ -10,6 +10,7 @@ import {
   conversationMetaSchema,
   type ConversationState,
 } from "../models/conversation.js";
+import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
 import { applyMigrations } from "./schema.js";
@@ -572,7 +573,7 @@ async function loadDatabase(SQL: SqlJsStatic, dbPath: string): Promise<Database>
 
 async function flushDatabase(db: Database, dbPath: string): Promise<void> {
   const data = db.export();
-  await fs.writeFile(dbPath, Buffer.from(data));
+  await writeFileAtomic(dbPath, Buffer.from(data));
 }
 
 async function removeLegacyLockFile(lockPath: string): Promise<void> {

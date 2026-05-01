@@ -1257,6 +1257,53 @@ describe("cli", () => {
       expect(reloaded?.savedAt).not.toBe("2026-02-01T10:00:00.000Z");
       expect(reloaded?.modifiedAt).toBe(reloaded?.savedAt);
     });
+
+    it("hints at unindexed saved conversations when search is configured", async () => {
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+
+      await insertConversation(
+        makeConversation({
+          id: "c6666666-6666-6666-6666-666666666666",
+          sourceId: "c6666666-6666-6666-6666-666666666666",
+          title: "Saved but unindexed",
+          state: "saved",
+          filePath: "/tmp/saved-unindexed.jsonl",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+          indexedAt: null,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, []);
+      expect(stdout).toContain("No staged conversations");
+      expect(stdout).toContain("1 saved conversation(s) still unindexed");
+      expect(stdout).toContain("Run `clog index` to finish");
+    });
+
+    it("does not hint at unindexed saved conversations when search is not configured", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "c4444444-4444-4444-4444-444444444444",
+          sourceId: "c4444444-4444-4444-4444-444444444444",
+          title: "Saved but unindexed",
+          state: "saved",
+          filePath: "/tmp/saved-unindexed.jsonl",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+          indexedAt: null,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, []);
+      expect(stdout).toContain("No staged conversations");
+      expect(stdout).not.toContain("still unindexed");
+      expect(stdout).not.toContain("clog index");
+    });
   });
 
   describe("project-aware selectors", () => {
@@ -2186,7 +2233,14 @@ describe("cli", () => {
       expect(stdout).toContain('use "clog save" to save everything here; "clog reset <id>" only unstages added conversations');
     });
 
-    it("shows unindexed saved conversations in a search section without requiring a remote", async () => {
+    it("shows unindexed saved conversations in a search section when search is configured, even without a remote", async () => {
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+
       await insertConversation(
         makeConversation({
           id: "c8888888-8888-8888-8888-888888888888",
@@ -2204,6 +2258,25 @@ describe("cli", () => {
       expect(stdout).toContain("Search:");
       expect(stdout).toContain("1 conversation(s) not yet indexed");
       expect(stdout).not.toContain("Remote:");
+    });
+
+    it("hides the search section when search is not configured", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "c7777777-7777-7777-7777-777777777777",
+          sourceId: "c7777777-7777-7777-7777-777777777777",
+          title: "Local unindexed row",
+          state: "saved",
+          filePath: "/tmp/local-unindexed.jsonl",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+          indexedAt: null,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).not.toContain("Search:");
+      expect(stdout).not.toContain("not yet indexed");
     });
 
     it("renders a remote section when a remote is configured", async () => {
@@ -2227,10 +2300,9 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Search:");
       expect(stdout).toContain("Remote: git@example.com:team/repo.git");
       expect(stdout).toContain("1 conversation(s) imported from remote");
-      expect(stdout).toContain("1 conversation(s) not yet indexed");
+      expect(stdout).not.toContain("Search:");
     });
   });
 

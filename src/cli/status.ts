@@ -156,12 +156,18 @@ export function buildStatusCommand(): Command {
         }
       }
 
-      await renderSearchSection();
+      await renderSearchSection(config);
       await renderRemoteSection(config);
     });
 }
 
-async function renderSearchSection(): Promise<void> {
+async function renderSearchSection(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<void> {
+  if (!config.search) {
+    return;
+  }
+
   const unindexed = (
     await listConversations({ states: ["saved"], indexed: false })
   ).length;
@@ -172,7 +178,7 @@ async function renderSearchSection(): Promise<void> {
 
   process.stdout.write(`\nSearch:\n`);
   process.stdout.write(
-    `  ${unindexed} conversation(s) not yet indexed. Run \`clog index\` to index.\n`,
+    `  ${chalk.bold(`${unindexed} conversation(s) not yet indexed for vector search.`)} Run \`clog index\` to index.\n`,
   );
 }
 
