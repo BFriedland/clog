@@ -2109,7 +2109,7 @@ When no `config.json` exists, the first invocation of any `clog` command detects
 
 ```
 $ clog status
-Your name (used as the default author for new local discoveries) [alice]:
+Your name (used as the default author for conversations clog finds):
 Initialized clog at /Users/alice/.clog
 ```
 

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@inquirer/prompts", () => ({
   confirm: vi.fn(),
+  input: vi.fn(),
   select: vi.fn(),
 }));
 

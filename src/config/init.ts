@@ -1,24 +1,18 @@
 import fs from "node:fs/promises";
 import os from "node:os";
-import readline from "node:readline/promises";
 
-import { stdin as input, stdout as output } from "node:process";
+import { input as promptForInput } from "@inquirer/prompts";
 
 import { getDefaultConfig, loadConfig, saveConfig } from "./index.js";
 import { getClogHome, getConfigPath } from "../utils/paths.js";
 import { pathExists } from "../utils/fs.js";
 
 async function promptForAuthor(defaultAuthor: string): Promise<string> {
-  const rl = readline.createInterface({ input, output });
-
-  try {
-    const answer = await rl.question(
-      `Your name (used as the default author for new local discoveries) [${defaultAuthor}]: `,
-    );
-    return answer.trim() || defaultAuthor;
-  } finally {
-    rl.close();
-  }
+  const answer = await promptForInput({
+    message: `Your name (used as the default author for conversations clog finds):`,
+    default: defaultAuthor,
+  });
+  return answer.trim() || defaultAuthor;
 }
 
 export async function initializeClog(input: {
