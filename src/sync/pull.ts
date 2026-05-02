@@ -81,11 +81,8 @@ export async function reconcileRemote(
     }
   }
 
-  const validatedAfterExclude = validated.filter((pair) => {
-    return true;
-  });
   const clogIgnoreRules = await readClogIgnoreRules();
-  const validatedAfterIgnore = validatedAfterExclude.filter((pair) => {
+  const validatedAfterIgnore = validated.filter((pair) => {
     if (
       clogIgnoreRules.some((rule) =>
         matchesRemoteClogIgnoreRule(rule, {
