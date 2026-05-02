@@ -22,8 +22,31 @@ const listInputSchema = z.object({
 
 const getInputSchema = z.object({
   id: z.string(),
-  maxMessages: z.number().int().positive().max(200).default(20),
+  maxMessages: z.number().int().positive().max(200).optional(),
+  head: z.number().int().positive().max(200).optional(),
+  tail: z.number().int().positive().max(200).optional(),
+  offset: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().max(200).optional(),
 });
+
+type GetInput = z.infer<typeof getInputSchema>;
+
+interface MessageRange {
+  mode: "tail" | "head" | "window";
+  startIndex: number;
+  endIndex: number;
+  returnedMessages: number;
+  pageSize: number;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  previousOffset?: number;
+  nextOffset?: number;
+}
+
+interface SelectedRange {
+  range: MessageRange;
+  requestedOffset?: number;
+}
 
 const updateInputSchema = z.object({
   id: z.string(),
@@ -58,6 +81,7 @@ export async function handleListStaged(input: unknown) {
 
 export async function handleGet(input: unknown) {
   const parsed = getInputSchema.parse(input);
+  validateRangeControls(parsed);
   const config = await loadConfig();
   const conversation = await resolveConversationByInput(parsed.id);
 
@@ -66,8 +90,9 @@ export async function handleGet(input: unknown) {
   }
 
   const messages = await parseConversationMessages(config, conversation);
-  const startIndex = Math.max(0, messages.length - parsed.maxMessages);
-  const truncated = startIndex > 0;
+  const selected = selectMessageRange(parsed, messages.length);
+  const { range } = selected;
+  const truncated = range.hasMoreBefore || range.hasMoreAfter;
 
   return {
     id: conversation.id,
@@ -79,13 +104,109 @@ export async function handleGet(input: unknown) {
     projectName: conversation.projectName,
     state: conversation.state,
     createdAt: conversation.createdAt,
-    messages: messages.slice(startIndex),
+    messages: messages.slice(range.startIndex, range.endIndex),
     totalMessages: messages.length,
+    range,
     truncated,
-    truncationNote: truncated
-      ? `Showing the last ${parsed.maxMessages} of ${messages.length} messages. Request a larger maxMessages value to retrieve more.`
-      : undefined,
+    truncationNote: truncated ? buildTruncationNote(selected, messages.length) : undefined,
   };
+}
+
+function selectMessageRange(input: GetInput, totalMessages: number): SelectedRange {
+  if (input.head !== undefined) {
+    return buildRange("head", 0, Math.min(input.head, totalMessages), input.head, totalMessages);
+  }
+
+  if (input.offset !== undefined) {
+    const pageSize = input.limit ?? 20;
+    const startIndex = Math.min(input.offset, totalMessages);
+    const endIndex = Math.min(startIndex + pageSize, totalMessages);
+    return {
+      ...buildRange("window", startIndex, endIndex, pageSize, totalMessages),
+      requestedOffset: input.offset,
+    };
+  }
+
+  const pageSize = input.tail ?? input.maxMessages ?? 20;
+  const startIndex = Math.max(0, totalMessages - pageSize);
+  return buildRange("tail", startIndex, totalMessages, pageSize, totalMessages);
+}
+
+function validateRangeControls(input: GetInput): void {
+  const activeModes = [
+    input.maxMessages !== undefined ? "maxMessages" : null,
+    input.head !== undefined ? "head" : null,
+    input.tail !== undefined ? "tail" : null,
+    input.offset !== undefined ? "offset/limit" : null,
+  ].filter(Boolean);
+
+  if (activeModes.length > 1) {
+    throw new Error("Choose only one message range: maxMessages, head, tail, or offset/limit.");
+  }
+
+  if (input.limit !== undefined && input.offset === undefined) {
+    throw new Error("limit can only be used with offset. Use head to request the first N messages.");
+  }
+}
+
+function buildRange(
+  mode: MessageRange["mode"],
+  startIndex: number,
+  endIndex: number,
+  pageSize: number,
+  totalMessages: number,
+): SelectedRange {
+  const range: MessageRange = {
+    mode,
+    startIndex,
+    endIndex,
+    returnedMessages: endIndex - startIndex,
+    pageSize,
+    hasMoreBefore: startIndex > 0,
+    hasMoreAfter: endIndex < totalMessages,
+  };
+
+  if (range.hasMoreBefore) {
+    range.previousOffset = Math.max(0, startIndex - pageSize);
+  }
+
+  if (range.hasMoreAfter) {
+    range.nextOffset = endIndex;
+  }
+
+  return { range };
+}
+
+function buildTruncationNote(selected: SelectedRange, totalMessages: number): string {
+  const { range, requestedOffset } = selected;
+  const previous = range.hasMoreBefore
+    ? `Request offset ${range.previousOffset} with limit ${range.pageSize} for the previous window.`
+    : undefined;
+  const next = range.hasMoreAfter
+    ? `Request offset ${range.nextOffset} with limit ${range.pageSize} for the next window.`
+    : undefined;
+
+  if (
+    range.mode === "window" &&
+    requestedOffset !== undefined &&
+    requestedOffset >= totalMessages
+  ) {
+    return [
+      `Requested offset ${requestedOffset} is beyond the ${totalMessages}-message conversation.`,
+      previous,
+    ].filter(Boolean).join(" ");
+  }
+
+  if (range.mode === "tail") {
+    return `Showing the last ${range.returnedMessages} of ${totalMessages} messages. Request head or offset/limit to inspect earlier messages.`;
+  }
+
+  const shownRange =
+    range.returnedMessages > 0
+      ? `Showing messages ${range.startIndex + 1}-${range.endIndex} of ${totalMessages}.`
+      : `Showing no messages from the ${totalMessages}-message conversation.`;
+
+  return [shownRange, next, previous].filter(Boolean).join(" ");
 }
 
 export async function handleUpdate(input: unknown) {

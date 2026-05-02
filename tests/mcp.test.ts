@@ -104,6 +104,15 @@ describe("mcp handlers", () => {
     const result = await handleGet({ id: "abc12345", maxMessages: 20 });
     expect(result.totalMessages).toBe(2);
     expect(result.messages[0]?.content).toBe("Debug auth flow");
+    expect(result.range).toMatchObject({
+      mode: "tail",
+      startIndex: 0,
+      endIndex: 2,
+      returnedMessages: 2,
+      pageSize: 20,
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+    });
   });
 
   it("returns clog-style guidance when content is missing", async () => {
@@ -117,7 +126,7 @@ describe("mcp handlers", () => {
   it("includes a request-more truncation note when clog_get is truncated", async () => {
     const result = await handleGet({ id: "abc12345", maxMessages: 1 });
     expect(result.truncated).toBe(true);
-    expect(result.truncationNote).toContain("Request a larger maxMessages value");
+    expect(result.truncationNote).toContain("Request head or offset/limit");
   });
 
   it("updates metadata and tags", async () => {
@@ -296,6 +305,173 @@ describe("mcp handlers", () => {
   // clog_get edge cases
   // ============================================================
 
+  it("clog_get defaults to the last 20 messages and reports range metadata", async () => {
+    const id = "c1000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(
+      tempDir,
+      id,
+      Array.from({ length: 25 }, (_, index) => `message ${index}`),
+    );
+
+    const result = await handleGet({ id: "c1000000" });
+
+    expect(result.messages).toHaveLength(20);
+    expect(result.messages[0]?.content).toBe("message 5");
+    expect(result.messages[19]?.content).toBe("message 24");
+    expect(result.range).toEqual({
+      mode: "tail",
+      startIndex: 5,
+      endIndex: 25,
+      returnedMessages: 20,
+      pageSize: 20,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      previousOffset: 0,
+    });
+    expect(result.truncationNote).toContain("Showing the last 20 of 25 messages");
+  });
+
+  it("clog_get keeps maxMessages as a tail-mode compatibility alias", async () => {
+    const id = "c2000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
+
+    const result = await handleGet({ id: "c2000000", maxMessages: 2 });
+
+    expect(result.messages.map((message) => message.content)).toEqual(["m3", "m4"]);
+    expect(result.range).toMatchObject({
+      mode: "tail",
+      startIndex: 3,
+      endIndex: 5,
+      returnedMessages: 2,
+      pageSize: 2,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      previousOffset: 1,
+    });
+  });
+
+  it("clog_get supports explicit head and tail ranges", async () => {
+    const id = "c3000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
+
+    const head = await handleGet({ id: "c3000000", head: 2 });
+    expect(head.messages.map((message) => message.content)).toEqual(["m0", "m1"]);
+    expect(head.range).toEqual({
+      mode: "head",
+      startIndex: 0,
+      endIndex: 2,
+      returnedMessages: 2,
+      pageSize: 2,
+      hasMoreBefore: false,
+      hasMoreAfter: true,
+      nextOffset: 2,
+    });
+
+    const tail = await handleGet({ id: "c3000000", tail: 2 });
+    expect(tail.messages.map((message) => message.content)).toEqual(["m3", "m4"]);
+    expect(tail.range).toEqual({
+      mode: "tail",
+      startIndex: 3,
+      endIndex: 5,
+      returnedMessages: 2,
+      pageSize: 2,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      previousOffset: 1,
+    });
+  });
+
+  it("clog_get supports arbitrary offset and limit windows", async () => {
+    const id = "c4000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
+
+    const result = await handleGet({ id: "c4000000", offset: 2, limit: 2 });
+
+    expect(result.messages.map((message) => message.content)).toEqual(["m2", "m3"]);
+    expect(result.range).toEqual({
+      mode: "window",
+      startIndex: 2,
+      endIndex: 4,
+      returnedMessages: 2,
+      pageSize: 2,
+      hasMoreBefore: true,
+      hasMoreAfter: true,
+      previousOffset: 0,
+      nextOffset: 4,
+    });
+    expect(result.truncationNote).toContain("Showing messages 3-4 of 5");
+    expect(result.truncationNote).toContain("Request offset 4 with limit 2");
+  });
+
+  it("clog_get defaults a window limit to 20 when offset is supplied", async () => {
+    const id = "c5000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(
+      tempDir,
+      id,
+      Array.from({ length: 25 }, (_, index) => `message ${index}`),
+    );
+
+    const result = await handleGet({ id: "c5000000", offset: 20 });
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "message 20",
+      "message 21",
+      "message 22",
+      "message 23",
+      "message 24",
+    ]);
+    expect(result.range).toMatchObject({
+      mode: "window",
+      startIndex: 20,
+      endIndex: 25,
+      returnedMessages: 5,
+      pageSize: 20,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      previousOffset: 0,
+    });
+  });
+
+  it("clog_get clamps empty windows beyond the end and points back to real content", async () => {
+    const id = "c6000000-0000-0000-0000-000000000000";
+    await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
+
+    const result = await handleGet({ id: "c6000000", offset: 100, limit: 2 });
+
+    expect(result.messages).toEqual([]);
+    expect(result.range).toEqual({
+      mode: "window",
+      startIndex: 5,
+      endIndex: 5,
+      returnedMessages: 0,
+      pageSize: 2,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      previousOffset: 3,
+    });
+    expect(result.truncationNote).toContain("Requested offset 100 is beyond the 5-message conversation");
+    expect(result.truncationNote).toContain("Request offset 3 with limit 2");
+  });
+
+  it("clog_get rejects conflicting range controls", async () => {
+    await expect(handleGet({ id: "abc12345", maxMessages: 5, head: 2 })).rejects.toThrow(
+      "Choose only one message range: maxMessages, head, tail, or offset/limit.",
+    );
+    await expect(handleGet({ id: "abc12345", tail: 5, offset: 2, limit: 2 })).rejects.toThrow(
+      "Choose only one message range: maxMessages, head, tail, or offset/limit.",
+    );
+  });
+
+  it("clog_get rejects limit without offset", async () => {
+    await expect(handleGet({ id: "abc12345", limit: 2 })).rejects.toThrow(
+      "limit can only be used with offset",
+    );
+  });
+
+  it("clog_get rejects message counts over the per-call cap", async () => {
+    await expect(handleGet({ id: "abc12345", head: 201 })).rejects.toThrow();
+  });
+
   it("clog_get throws on a discovered conversation", async () => {
     await insertOtherSaved("b6666666-6666-6666-6666-666666666666", {
       state: "discovered",
@@ -466,6 +642,30 @@ async function insertOtherSaved(
     indexedAt: "2026-02-01T10:00:00.000Z",
     origin: null,
     ...overrides,
+  });
+}
+
+async function insertSavedMessages(
+  tempDir: string,
+  id: string,
+  contents: string[],
+): Promise<void> {
+  const rawDir = path.join(tempDir, "raw", "claude-code");
+  const filePath = path.join(rawDir, `${id}.jsonl`);
+  await writeJsonl(
+    filePath,
+    contents.map((content, index) => ({
+      type: "user",
+      timestamp: `2026-02-01T10:00:${String(index).padStart(2, "0")}.000Z`,
+      message: { role: "user", content },
+    })),
+  );
+
+  await insertOtherSaved(id, {
+    title: `Conversation ${id.slice(0, 7)}`,
+    sourcePath: filePath,
+    filePath,
+    savedMessageCount: contents.length,
   });
 }
 

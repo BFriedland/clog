@@ -1939,7 +1939,11 @@ tool: "clog_list_staged"
 tool: "clog_get"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
-  maxMessages?: number;    // Default 20, max 200
+  maxMessages?: number;    // Compatibility alias for tail mode; max 200
+  head?: number;           // First N messages; max 200
+  tail?: number;           // Last N messages; max 200
+  offset?: number;         // Zero-based message window offset
+  limit?: number;          // Window size when offset is supplied; default 20, max 200
 }
 returns: {
   id: string;
@@ -1951,16 +1955,41 @@ returns: {
   projectName: string | null;
   state: string;
   createdAt: string;
-  messages: Message[];       // Last N messages (tail-truncated when over maxMessages)
+  messages: Message[];       // Requested message slice
   totalMessages: number;     // Total message count in the full conversation
-  truncated: boolean;        // True if messages were cut off
-  truncationNote?: string;   // Present when truncated, tells agent how to get more
+  range: {
+    mode: "tail" | "head" | "window";
+    startIndex: number;       // Inclusive, zero-based
+    endIndex: number;         // Exclusive, zero-based
+    returnedMessages: number;
+    pageSize: number;
+    hasMoreBefore: boolean;
+    hasMoreAfter: boolean;
+    previousOffset?: number;
+    nextOffset?: number;
+  };
+  truncated: boolean;        // True when messages exist outside the returned slice
+  truncationNote?: string;   // Present when truncated, tells agent how to page
 }
 
-// **Truncation:** When a conversation exceeds maxMessages, the **last** N messages
-// are returned (tail truncation). The tail is almost always more valuable — it
-// contains final decisions, working solutions, and conclusions. The truncation
-// note tells the agent how many messages exist and how to request more.
+// **Message ranges:** With no range fields, `clog_get` returns the last 20
+// messages. `maxMessages` is retained indefinitely as a compatibility alias for
+// tail mode, and explicit callers may use `head`, `tail`, or `offset`/`limit`.
+// Message indexes are zero-based positions in the canonical parsed `Message[]`
+// order. `offset` is uncapped; offsets beyond the end return an empty window
+// with `startIndex` and `endIndex` clamped to `totalMessages`.
+//
+// Exactly one range mode may be active. `maxMessages`, `head`, and `tail` are
+// mutually exclusive. `offset` is mutually exclusive with those fields. `limit`
+// may appear only with `offset`; `limit` without `offset` is invalid. Message
+// counts (`maxMessages`, `head`, `tail`, and `limit`) must be positive integers
+// and are capped at 200. Window mode uses `limit ?? 20`.
+//
+// `previousOffset` is present whenever `hasMoreBefore` is true and points to an
+// offset that can be requested with `limit: pageSize` to page backward.
+// `nextOffset` is present whenever `hasMoreAfter` is true and points to the
+// next forward window. `truncated` means more messages exist before or after the
+// returned slice, not that the requested count could not be satisfied.
 //
 // The default of 20 messages is a rough heuristic. Message count is a poor proxy
 // for token size — a 20-message conversation where a human pasted a large codebase

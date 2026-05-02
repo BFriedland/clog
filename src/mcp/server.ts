@@ -68,6 +68,10 @@ export async function startMcpServer(): Promise<void> {
       inputSchema: {
         id: z.string(),
         maxMessages: z.number().int().positive().max(200).optional(),
+        head: z.number().int().positive().max(200).optional(),
+        tail: z.number().int().positive().max(200).optional(),
+        offset: z.number().int().nonnegative().optional(),
+        limit: z.number().int().positive().max(200).optional(),
       },
     },
     async (input) => toToolResult(await handleGet(input), "Loaded conversation content."),
