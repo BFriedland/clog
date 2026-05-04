@@ -507,7 +507,7 @@ export async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-function getTerminalWidth(): number {
+export function getTerminalWidth(): number {
   const envColumns = Number(process.env.COLUMNS);
   if (Number.isFinite(envColumns) && envColumns > 0) {
     return envColumns;

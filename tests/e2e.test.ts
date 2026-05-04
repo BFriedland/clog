@@ -95,6 +95,26 @@ describe("e2e", () => {
     expect(discoveredLine).not.toContain("api-service      Compact spacing");
   });
 
+  it("status --conversations does not add ellipses to clean 100-character titles in wide terminals", async () => {
+    const title = "A".repeat(120);
+    const storedTitle = "A".repeat(100);
+    await writeClaudeConversation(
+      path.join(claudeRoot, "-Users-alice-api-service", "19191919-1919-1919-1919-191919191919.jsonl"),
+      title,
+    );
+
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    const { stdout } = await run(["status", "--conversations"], { COLUMNS: "200" });
+    const lines = stdout.split("\n");
+    const discoveredLine = lines.find((line) => line.includes("19191919"));
+
+    expect(discoveredLine).toBeDefined();
+    expect(discoveredLine).toContain(storedTitle);
+    expect(discoveredLine).not.toContain("...");
+  });
+
   it("status omits empty sections and shows a clean fallback message", async () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);

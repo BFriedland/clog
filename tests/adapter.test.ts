@@ -489,7 +489,7 @@ describe("adapters", () => {
   // Additional Claude discovery edge cases (SPEC §4.2.6)
   // ============================================================
 
-  it("Claude discovery truncates a very long first user message title to 100 + '...'", async () => {
+  it("Claude discovery stores a clean 100-character title for a very long first user message", async () => {
     const longBody = "A".repeat(250);
     const filePath = path.join(
       tempDir,
@@ -513,10 +513,52 @@ describe("adapters", () => {
 
     const discovered = await collect(adapter.discover());
     const title = discovered[0]?.metadata.title ?? "";
-    // Spec: the title field is truncated to 100 characters (§4.2.6 step 4a).
-    // The adapter appends "..." as the truncation indicator.
-    expect(title).toBe(`${"A".repeat(100)}...`);
-    expect(title.length).toBe(103);
+    expect(title).toBe("A".repeat(100));
+    expect(title.length).toBe(100);
+    expect(title).not.toContain("...");
+  });
+
+  it("Codex discovery stores a clean 100-character title for a very long user message", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-650e8400-e29b-41d4-a716-446655440000.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "turn_context",
+        payload: {
+          cwd: "/Users/alice/api-service",
+        },
+        timestamp: "2026-02-01T10:00:00.000Z",
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "B".repeat(250),
+        },
+      },
+      {
+        type: "session_meta",
+        payload: {
+          id: "650e8400-e29b-41d4-a716-446655440000",
+          timestamp: "2026-02-01T09:59:59.000Z",
+          cwd: "/Users/alice/api-service",
+        },
+      },
+    ]);
+
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(adapter.discover());
+    const title = discovered[0]?.metadata.title ?? "";
+    expect(title).toBe("B".repeat(100));
+    expect(title.length).toBe(100);
+    expect(title).not.toContain("...");
   });
 
   it("Claude discovery skips a leading file-history-snapshot line and still derives a title", async () => {

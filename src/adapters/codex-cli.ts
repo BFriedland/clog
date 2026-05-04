@@ -696,7 +696,7 @@ function normalizeTimestamp(value: unknown): string | null {
 }
 
 function truncateTitle(value: string): string {
-  return value.length <= 100 ? value : `${value.slice(0, 100)}...`;
+  return value.length <= 100 ? value : value.slice(0, 100);
 }
 
 function normalizeCodexText(value: string): string {

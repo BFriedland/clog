@@ -8,6 +8,7 @@ import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
 import {
   classifySavedDelta,
+  getTerminalWidth,
   getScanWarningsForCommand,
   isSavedReadyForResaveWithDelta,
   renderWarnings,
@@ -399,11 +400,8 @@ function getStatusTitleWidth(options: {
   includeSource: boolean;
   projectWidth: number;
 }): number {
-  const envColumns = Number(process.env.COLUMNS);
-  const width =
-    (Number.isFinite(envColumns) && envColumns > 0 ? envColumns : process.stdout.columns) ?? 100;
   const sourceWidth = options.includeSource ? 13 : 0;
-  return width - (39 + sourceWidth + options.projectWidth);
+  return getTerminalWidth() - (39 + sourceWidth + options.projectWidth);
 }
 
 function getStatusProjectWidth(conversations: ConversationMeta[]): number {

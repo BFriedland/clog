@@ -306,7 +306,7 @@ function projectClaudeUserLine(
 }
 
 function truncateTitle(value: string): string {
-  return value.length <= 100 ? value : `${value.slice(0, 100)}...`;
+  return value.length <= 100 ? value : value.slice(0, 100);
 }
 
 function stripClaudeUserWrappers(text: string): string {

@@ -622,7 +622,7 @@ During discovery (lightweight metadata extraction), the adapter will:
 2. Ignore `~/.claude/projects/*/*/subagents/` files for discovery. They are auxiliary sidechain logs, not separate discovered conversations.
 3. Set `projectPath` from the first `cwd` field found in the main conversation JSONL. Claude records may contain multiple `cwd` values over the life of a conversation as the agent moves into subdirectories; for project identity, the first `cwd` is authoritative because it best represents where Claude Code was started. Later `cwd` values must not overwrite `projectPath` during discovery.
 4. Scan each JSONL file for metadata only:
-   a. Find the first projected canonical user message represented by a `type: "user"` line where `message.content` is a string, after skipping any string that is wrapper-only under the hidden-wrapper rule in §4.2.7 → use as title (truncated to 100 chars)
+   a. Find the first projected canonical user message represented by a `type: "user"` line where `message.content` is a string, after skipping any string that is wrapper-only under the hidden-wrapper rule in §4.2.7 → use as title (truncated to 100 chars without adding a display ellipsis)
    b. Find the `type: "summary"` line if present → use as summary
    c. Extract the first valid `cwd` found → use as `projectPath`
    d. Set `projectName` to the basename of `projectPath` when `projectPath` is available; otherwise leave `projectName = null`
@@ -717,7 +717,7 @@ During discovery, the adapter will:
 6. If both the embedded ID and filename-derived ID are valid but differ, use the embedded ID and emit a warning
 7. If neither source provides a valid UUID-shaped ID, report the file as malformed and skip it
 8. Use `session_meta.payload.cwd` as `projectPath`; otherwise fall back to the first valid `turn_context.payload.cwd` encountered in source-file order; set `projectName` to the basename of `projectPath` when available
-9. Use the earliest human prompt in source-file order as the title source, truncated to 100 characters. When that prompt is represented by both a canonical `response_item.message(role="user")` record and an `event_msg.user_message` duplicate, prefer the `event_msg.user_message` text from `payload.message` as the cleaner rendering of that same prompt. If the earliest human prompt has no usable `event_msg.user_message`, fall back to the canonical user message text after skipping wrapper-only messages. If no usable human prompt exists, use `"(untitled)"`
+9. Use the earliest human prompt in source-file order as the title source, truncated to 100 characters without adding a display ellipsis. When that prompt is represented by both a canonical `response_item.message(role="user")` record and an `event_msg.user_message` duplicate, prefer the `event_msg.user_message` text from `payload.message` as the cleaner rendering of that same prompt. If the earliest human prompt has no usable `event_msg.user_message`, fall back to the canonical user message text after skipping wrapper-only messages. If no usable human prompt exists, use `"(untitled)"`
 10. Use an empty string for `summary`
 11. Use `null` for `slug`
 12. Use `session_meta.payload.timestamp` as `createdAt`; otherwise fall back to the first valid top-level timestamp encountered in source-file order, then file mtime
