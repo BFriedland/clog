@@ -64,14 +64,18 @@ describeIfGit("sync integration (requires git)", () => {
   });
 
   it("clones the remote on first pull", async () => {
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
     await expect(
       fs.stat(path.join(getRemoteRoot(), ".git")),
     ).resolves.toBeTruthy();
   });
 
   it("pushes a local conversation and pulls it back on another machine", async () => {
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
 
     await insertLocalSaved({
       id: "a1111111-1111-1111-1111-111111111111",
@@ -86,7 +90,9 @@ describeIfGit("sync integration (requires git)", () => {
       `git config user.email integration@test.local && git config user.name integration`,
     );
 
-    await runSyncPush();
+    await captureOutput(async () => {
+      await runSyncPush();
+    });
 
     // Pull in the external checkout and verify the file is there.
     runInCheckout(externalCheckout, `git pull --rebase`);
@@ -144,7 +150,9 @@ describeIfGit("sync integration (requires git)", () => {
     );
     runInCheckout(externalCheckout, `git push origin main`);
 
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
 
     const row = await getConversationById(id);
     expect(row).not.toBeNull();
@@ -154,7 +162,9 @@ describeIfGit("sync integration (requires git)", () => {
   });
 
   it("retracts a conversation when the local DB no longer has it", async () => {
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
 
     const id = "a3333333-3333-3333-3333-333333333333";
     await insertLocalSaved({ id, title: "To be retracted", author: "alice" });
@@ -164,13 +174,17 @@ describeIfGit("sync integration (requires git)", () => {
       `git config user.email integration@test.local && git config user.name integration`,
     );
 
-    await runSyncPush();
+    await captureOutput(async () => {
+      await runSyncPush();
+    });
 
     // Now unsave (delete the local row) and push again — retraction expected.
     const { deleteConversation } = await import("../src/db/index.js");
     await deleteConversation(id);
 
-    await runSyncPush();
+    await captureOutput(async () => {
+      await runSyncPush();
+    });
 
     runInCheckout(externalCheckout, `git pull --rebase`);
     await expect(
@@ -195,22 +209,28 @@ describeIfGit("sync integration (requires git)", () => {
     };
     await saveConfig(config);
 
-    await expect(runSyncPush()).rejects.toThrow(/visibility was never confirmed/);
+    await expect(
+      captureOutput(async () => {
+        await runSyncPush();
+      }),
+    ).rejects.toThrow(/visibility was never confirmed/);
   });
 
   it("push reports 'Nothing to push' when the checkout matches the DB", async () => {
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
 
     runInCheckout(
       getRemoteRoot(),
       `git config user.email integration@test.local && git config user.name integration`,
     );
 
-    const output = await captureStdout(async () => {
+    const output = await captureOutput(async () => {
       await runSyncPush();
     });
 
-    expect(output).toContain("Nothing to push");
+    expect(output.stdout).toContain("Nothing to push");
   });
 
   it("does not import conversations ignored by clogignore on pull", async () => {
@@ -260,7 +280,9 @@ describeIfGit("sync integration (requires git)", () => {
       "utf8",
     );
 
-    await runSyncPull();
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
 
     const rows = await listConversations({ origin: "remote" });
     expect(rows).toHaveLength(0);
@@ -280,11 +302,19 @@ function runInCheckout(cwd: string, command: string): void {
   execSync(command, { cwd, stdio: "ignore" });
 }
 
-async function captureStdout(fn: () => Promise<void>): Promise<string> {
-  const chunks: string[] = [];
+async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string }> {
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
   const originalWrite = process.stdout.write.bind(process.stdout);
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
   (process.stdout.write as unknown) = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
-    chunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    stdoutChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    const cb = rest[rest.length - 1];
+    if (typeof cb === "function") (cb as () => void)();
+    return true;
+  }) as typeof process.stdout.write;
+  (process.stderr.write as unknown) = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
     const cb = rest[rest.length - 1];
     if (typeof cb === "function") (cb as () => void)();
     return true;
@@ -294,9 +324,10 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
     await fn();
   } finally {
     (process.stdout.write as unknown) = originalWrite;
+    (process.stderr.write as unknown) = originalStderrWrite;
   }
 
-  return chunks.join("");
+  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
 }
 
 async function insertLocalSaved(options: {
