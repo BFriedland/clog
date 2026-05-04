@@ -731,7 +731,7 @@ describe("cli", () => {
 
       const { stderr } = await runBuiltCommand(buildDrainCommand, [convId, "--to-dir", outDir]);
 
-      expect(stderr).toContain("Could not drain d666666@claude-code");
+      expect(stderr).toContain("Could not drain d6666666@claude-code");
       expect(stderr).toContain("already exists");
       expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (1 failed)`);
     });
@@ -771,7 +771,7 @@ describe("cli", () => {
         outDir,
       ]);
 
-      expect(stderr).toContain("Could not drain da0a0a0@claude-code");
+      expect(stderr).toContain("Could not drain da0a0a0a@claude-code");
       expect(stderr).toContain(`Drained 1 conversation to ${outDir}/ (1 failed)`);
       expect(await fs.readFile(path.join(outDir, `${goodId}.json`), "utf8")).toContain(
         goodId,
@@ -1718,7 +1718,7 @@ describe("cli", () => {
         2,
       );
       const { stdout } = await runBuiltCommand(buildDiffCommand, [conv.id]);
-      expect(stdout).toContain(conv.id.slice(0, 7));
+      expect(stdout).toContain(conv.id.slice(0, 8));
       expect(stdout).toContain("2 new messages");
       // Assistant messages are text "Reply N"; the diff should include at least one.
       expect(stdout).toMatch(/\[USER\]|\[ASSISTANT\]/);
@@ -1742,7 +1742,7 @@ describe("cli", () => {
         3,
       );
       const { stdout } = await runBuiltCommand(buildDiffCommand, ["--staged", conv.id]);
-      expect(stdout).toContain(conv.id.slice(0, 7));
+      expect(stdout).toContain(conv.id.slice(0, 8));
       expect(stdout).toContain("[USER]");
     });
 
@@ -1816,8 +1816,8 @@ describe("cli", () => {
       });
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--project", "API-SERVICE"]);
-      expect(stdout).toContain("a555555");
-      expect(stdout).not.toContain("a666666");
+      expect(stdout).toContain("a5555555");
+      expect(stdout).not.toContain("a6666666");
     });
 
     it("--grep filters by text match on title", async () => {
@@ -1918,7 +1918,7 @@ describe("cli", () => {
       await fs.writeFile(getClogIgnorePath(), `${convId}\n`, "utf8");
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
-      expect(stdout).toContain(convId.slice(0, 7));
+      expect(stdout).toContain(convId.slice(0, 8));
       expect(stdout).toContain("ignored");
     });
 
@@ -2103,7 +2103,7 @@ describe("cli", () => {
       });
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, ["--conversations"]);
-      expect(stdout).toContain("c343434");
+      expect(stdout).toContain("c3434343");
       expect(stdout).toContain("Conversation fallback");
       expect(stdout).toContain("added:");
     });
@@ -2114,8 +2114,8 @@ describe("cli", () => {
       });
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, ["--source"]);
-      expect(stdout).toContain("c444444");
-      expect(stdout).toMatch(/c444444\s+claude-code/);
+      expect(stdout).toContain("c4444444");
+      expect(stdout).toMatch(/c4444444\s+claude-code/);
     });
 
     it("prints a staleness warning in the remote section when checkStaleness reports stale", async () => {

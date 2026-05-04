@@ -71,7 +71,7 @@ export async function runSearchCommand(
     }
 
     process.stdout.write(
-      `${chalk.yellow(`${index + 1}.`)} ${chalk.cyan(conversation.id.slice(0, 7))} ${chalk.dim(
+      `${chalk.yellow(`${index + 1}.`)} ${chalk.cyan(conversation.id.slice(0, 8))} ${chalk.dim(
         `[${Math.round(hit.score * 100)}%]`,
       )} ${conversation.title}\n`,
     );

@@ -34,7 +34,7 @@ export function buildUnsaveCommand(): Command {
       for (const [index, conversation] of conversations.entries()) {
         if (conversation.state !== "saved") {
           throw new Error(
-            `Conversation ${conversation.id.slice(0, 7)} is not saved. Use "clog add <id>" to stage it first.`,
+            `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog add <id>" to stage it first.`,
           );
         }
 
@@ -72,7 +72,7 @@ export function buildUnsaveCommand(): Command {
       );
       for (const failedId of failures) {
         process.stderr.write(
-          `warning: ${failedId.slice(0, 7)} was unsaved but its search vectors could not be deleted\n`,
+          `warning: ${failedId.slice(0, 8)} was unsaved but its search vectors could not be deleted\n`,
         );
       }
 

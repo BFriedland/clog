@@ -200,7 +200,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   const failures = await tryDeleteConversationVectors(idsToDelete);
   for (const failedId of failures) {
     process.stderr.write(
-      `warning: ${failedId.slice(0, 7)} removed from DB but search vectors could not be deleted\n`,
+      `warning: ${failedId.slice(0, 8)} removed from DB but search vectors could not be deleted\n`,
     );
   }
 

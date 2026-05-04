@@ -32,7 +32,7 @@ export function buildRemoveCommand(): Command {
       const failures = await tryDeleteConversationVectors(matches.map((conversation) => conversation.id));
       for (const failedId of failures) {
         process.stderr.write(
-          `warning: ${failedId.slice(0, 7)} was removed but its search vectors could not be deleted\n`,
+          `warning: ${failedId.slice(0, 8)} was removed but its search vectors could not be deleted\n`,
         );
       }
 

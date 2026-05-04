@@ -131,7 +131,7 @@ export function buildSaveCommand(): Command {
 
       for (const failedId of indexedFailures) {
         process.stderr.write(
-          `warning: saved ${failedId.slice(0, 7)} but failed to index it for search\n`,
+          `warning: saved ${failedId.slice(0, 8)} but failed to index it for search\n`,
         );
       }
 

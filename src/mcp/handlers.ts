@@ -219,7 +219,7 @@ export async function handleUpdate(input: unknown) {
 
   if (conversation.origin != null) {
     throw new Error(
-      `clog_update cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only.`,
+      `clog_update cannot modify conversation ${conversation.id.slice(0, 8)} — it came from the remote and is read-only.`,
     );
   }
 

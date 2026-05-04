@@ -28,7 +28,7 @@ export function buildShowCommand(): Command {
       const limited = applyHeadTail(messages, { head, tail });
 
       process.stdout.write(
-        `ID:      ${conversation.id.slice(0, 7)}\nSource:  ${conversation.source}\nTitle:   ${formatForSingleLine(conversation.title)}\nProject: ${conversation.projectName ?? "-"}\nState:   ${conversation.state}\n\n`,
+        `ID:      ${conversation.id.slice(0, 8)}\nSource:  ${conversation.source}\nTitle:   ${formatForSingleLine(conversation.title)}\nProject: ${conversation.projectName ?? "-"}\nState:   ${conversation.state}\n\n`,
       );
       process.stdout.write(`${renderMessages(limited, { colorUserMessages: true })}\n`);
     });

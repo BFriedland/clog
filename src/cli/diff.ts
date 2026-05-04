@@ -50,7 +50,7 @@ export function buildDiffCommand(): Command {
           messages.length < conversation.savedMessageCount
         ) {
           throw new Error(
-            `Conversation ${conversation.id.slice(0, 7)} has fewer parsed messages than its last saved checkpoint.`,
+            `Conversation ${conversation.id.slice(0, 8)} has fewer parsed messages than its last saved checkpoint.`,
           );
         }
 
@@ -66,7 +66,7 @@ export function buildDiffCommand(): Command {
             : "";
 
         process.stdout.write(
-          `--- ${conversation.id.slice(0, 7)} "${conversation.title}" (${diffMessages.length} new message${diffMessages.length === 1 ? "" : "s"} since v${conversation.saveVersion}${truncationNote})\n`,
+          `--- ${conversation.id.slice(0, 8)} "${conversation.title}" (${diffMessages.length} new message${diffMessages.length === 1 ? "" : "s"} since v${conversation.saveVersion}${truncationNote})\n`,
         );
         process.stdout.write(`${renderMessages(limited)}\n\n`);
       }
@@ -90,7 +90,7 @@ function validateDiffTarget(conversation: ConversationMeta, stagedMode: boolean)
   if (stagedMode) {
     if (conversation.state !== "staged") {
       throw new ClogError(
-        `Conversation ${conversation.id.slice(0, 7)} is not staged. Use "clog diff" for saved conversations.`,
+        `Conversation ${conversation.id.slice(0, 8)} is not staged. Use "clog diff" for saved conversations.`,
       );
     }
     return;
@@ -98,7 +98,7 @@ function validateDiffTarget(conversation: ConversationMeta, stagedMode: boolean)
 
   if (conversation.state !== "saved") {
     throw new ClogError(
-      `Conversation ${conversation.id.slice(0, 7)} is not saved. Use "clog diff --staged" for staged conversations.`,
+      `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog diff --staged" for staged conversations.`,
     );
   }
 }

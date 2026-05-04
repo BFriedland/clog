@@ -119,7 +119,7 @@ describe("mcp handlers", () => {
     await fs.rm(path.join(tempDir, "raw", "claude-code", "abc12345-1234-1234-1234-123456789012.jsonl"));
 
     await expect(handleGet({ id: "abc12345", maxMessages: 20 })).rejects.toThrow(
-      'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog add abc1234" to recreate it.',
+      'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog add abc12345" to recreate it.',
     );
   });
 
@@ -662,7 +662,7 @@ async function insertSavedMessages(
   );
 
   await insertOtherSaved(id, {
-    title: `Conversation ${id.slice(0, 7)}`,
+    title: `Conversation ${id.slice(0, 8)}`,
     sourcePath: filePath,
     filePath,
     savedMessageCount: contents.length,

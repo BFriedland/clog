@@ -699,7 +699,7 @@ function renderPlungeReport(
     for (const finding of subsystemFindings) {
       if (finding.conversation && finding.conversationTitle) {
         process.stdout.write(
-          `- [${finding.severity}] ${finding.conversation.id.slice(0, 7)}: ${finding.conversationTitle}:\n`,
+          `- [${finding.severity}] ${finding.conversation.id.slice(0, 8)}: ${finding.conversationTitle}:\n`,
         );
         if (options.verbose) {
           process.stdout.write(

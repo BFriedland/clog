@@ -239,7 +239,7 @@ function renderStatusLikeRows(
   for (const entry of entries) {
     const { conversation } = entry;
     const prefix = colorizeStatusLabel(`${entry.label}:`.padEnd(12), entry.stagingState);
-    const id = `${conversation.id.slice(0, 7)}`.padEnd(9);
+    const id = `${conversation.id.slice(0, 8)}`.padEnd(10);
     const source = options.includeSource ? `${conversation.source}`.padEnd(13) : "";
     const date = formatDate(conversation.createdAt).padEnd(12);
     const project = `${conversation.projectName ?? "-"}`.padEnd(projectWidth);
@@ -403,7 +403,7 @@ function getStatusTitleWidth(options: {
   const width =
     (Number.isFinite(envColumns) && envColumns > 0 ? envColumns : process.stdout.columns) ?? 100;
   const sourceWidth = options.includeSource ? 13 : 0;
-  return width - (38 + sourceWidth + options.projectWidth);
+  return width - (39 + sourceWidth + options.projectWidth);
 }
 
 function getStatusProjectWidth(conversations: ConversationMeta[]): number {

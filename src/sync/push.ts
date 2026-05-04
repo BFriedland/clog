@@ -147,7 +147,7 @@ export async function exportAuthorToCheckout(
       }
 
       const existingMetaRaw = await readFileIfExists(metaPath);
-      let retractedTitle = id.slice(0, 7);
+      let retractedTitle = id.slice(0, 8);
       if (existingMetaRaw) {
         try {
           const parsed = JSON.parse(existingMetaRaw) as { title?: string };
@@ -284,7 +284,7 @@ function buildSingleAuthorCommit(
     .sort(changeSortKey)
     .map((change) => {
       const prefix = prefixFor(change.kind);
-      const shortId = change.id.slice(0, 7);
+      const shortId = change.id.slice(0, 8);
       return `  ${prefix} ${shortId} ${change.title}`;
     });
 

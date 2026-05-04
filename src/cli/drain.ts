@@ -336,7 +336,7 @@ async function drainToDirectory(
     } catch (error) {
       failed += 1;
       process.stderr.write(
-        `error: Could not drain ${conversation.id.slice(0, 7)}@${conversation.source}: ${
+        `error: Could not drain ${conversation.id.slice(0, 8)}@${conversation.source}: ${
           error instanceof Error ? error.message : String(error)
         }\n`,
       );
@@ -480,7 +480,7 @@ async function readRawPayload(conversation: ConversationMeta): Promise<Buffer> {
       }
 
       throw new ClogError(
-        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 7)}" to recreate it.`,
+        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
       );
     }
 

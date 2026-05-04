@@ -39,7 +39,7 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
       const chunkCount = await indexConversation(conversation, messages, embedding, vectorStore);
       await setConversationIndexedAt(conversation.id, nowIso());
       process.stdout.write(
-        `Indexed ${chalk.cyan(conversation.id.slice(0, 7))} (${chunkCount} chunk${
+        `Indexed ${chalk.cyan(conversation.id.slice(0, 8))} (${chunkCount} chunk${
           chunkCount === 1 ? "" : "s"
         })\n`,
       );
@@ -47,7 +47,7 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
     } catch (error) {
       errors += 1;
       process.stderr.write(
-        `warning: failed to index ${conversation.id.slice(0, 7)}: ${
+        `warning: failed to index ${conversation.id.slice(0, 8)}: ${
           error instanceof Error ? error.message : String(error)
         }\n`,
       );

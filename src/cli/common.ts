@@ -71,7 +71,7 @@ export function assertNotRemote(
   }
 
   throw new ClogError(
-    `${command} cannot modify conversation ${conversation.id.slice(0, 7)} — it came from the remote and is read-only. Edit it on the original author's machine.`,
+    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — it came from the remote and is read-only. Edit it on the original author's machine.`,
   );
 }
 
@@ -334,7 +334,7 @@ export function renderDisplayTable(
     : new Set(rows.map((row) => row.author).filter(Boolean)).size > 1;
 
   const columns: Array<{ key: string; width?: number; value: (row: DisplayRow) => string }> = [
-    { key: "id", value: (row) => row.id.slice(0, 7) },
+    { key: "id", value: (row) => row.id.slice(0, 8) },
     { key: "date", value: (row) => formatDate(row.createdAt) },
   ];
 
@@ -618,7 +618,7 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
 
     if (!(await pathExists(conversation.filePath))) {
       throw new ClogError(
-        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 7)}" to recreate it.`,
+        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
       );
     }
 
@@ -688,7 +688,7 @@ function wrapMissingContentError(
 
   if (conversation.filePath && attemptedPath === conversation.filePath) {
     return new ClogError(
-      `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 7)}" to recreate it.`,
+      `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
     );
   }
 

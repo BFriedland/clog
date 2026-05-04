@@ -300,7 +300,7 @@ function printPushResult(remoteUrl: string, stats: ExportStats): void {
       const prefix =
         change.kind === "added" ? "+" : change.kind === "updated" ? "~" : "-";
       process.stdout.write(
-        `  ${prefix} ${change.id.slice(0, 7)} ${change.title}\n`,
+        `  ${prefix} ${change.id.slice(0, 8)} ${change.title}\n`,
       );
     }
     process.stdout.write("\n");

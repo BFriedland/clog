@@ -58,7 +58,7 @@ export function buildEditCommand(): Command {
       }
 
       await updateConversation(nextConversation);
-      process.stdout.write(`Updated ${conversation.id.slice(0, 7)}\n`);
+      process.stdout.write(`Updated ${conversation.id.slice(0, 8)}\n`);
     });
 
   return command;

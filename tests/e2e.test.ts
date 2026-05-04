@@ -57,7 +57,7 @@ describe("e2e", () => {
     const { stdout } = await run(["status"]);
     expect(stdout).toContain("api-service");
     expect(stdout).toContain("1 discovered");
-    expect(stdout).not.toContain("1111111");
+    expect(stdout).not.toContain("11111111");
   });
 
   it("status --source includes the source column after the short id", async () => {
@@ -71,10 +71,10 @@ describe("e2e", () => {
 
     const { stdout } = await run(["status", "--source"], { COLUMNS: "120" });
     const lines = stdout.split("\n");
-    const discoveredLine = lines.find((line) => line.includes("1717171"));
+    const discoveredLine = lines.find((line) => line.includes("17171717"));
 
     expect(discoveredLine).toBeDefined();
-    expect(discoveredLine).toContain("1717171  claude-code  2026-02-01");
+    expect(discoveredLine).toContain("17171717  claude-code  2026-02-01");
   });
 
   it("status --conversations sizes the project column to content width instead of a fixed wide field", async () => {
@@ -88,10 +88,10 @@ describe("e2e", () => {
 
     const { stdout } = await run(["status", "--conversations"], { COLUMNS: "120" });
     const lines = stdout.split("\n");
-    const discoveredLine = lines.find((line) => line.includes("1818181"));
+    const discoveredLine = lines.find((line) => line.includes("18181818"));
 
     expect(discoveredLine).toBeDefined();
-    expect(discoveredLine).toContain("1818181  2026-02-01  api-service Compact spacing");
+    expect(discoveredLine).toContain("18181818  2026-02-01  api-service Compact spacing");
     expect(discoveredLine).not.toContain("api-service      Compact spacing");
   });
 
@@ -117,7 +117,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
     const { stdout } = await run(["list", "--state", "discovered"]);
-    expect(stdout).toContain("4444444");
+    expect(stdout).toContain("44444444");
     expect(stdout).toContain("Implicit scan test");
   });
 
@@ -137,9 +137,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
-    await run(["tag", firstId.slice(0, 7), "debugging"]);
-    await run(["tag", secondId.slice(0, 7), "bug"]);
+    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
+    await run(["tag", firstId.slice(0, 8), "debugging"]);
+    await run(["tag", secondId.slice(0, 8), "bug"]);
 
     const { stdout } = await run(["list", "--state", "staged", "--tag", "BUG"]);
 
@@ -194,9 +194,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
+    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["save"]);
-    await run(["edit", secondId.slice(0, 7), "--author", "bob"]);
+    await run(["edit", secondId.slice(0, 8), "--author", "bob"]);
 
     const { stdout } = await run(["list"]);
     const [header] = stdout.trim().split("\n");
@@ -239,7 +239,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
 
-    const { stdout } = await run(["drain", id.slice(0, 7), "--raw"]);
+    const { stdout } = await run(["drain", id.slice(0, 8), "--raw"]);
 
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
@@ -254,10 +254,10 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
-    const { stdout } = await run(["show", id.slice(0, 7)]);
+    const { stdout } = await run(["show", id.slice(0, 8)]);
     expect(stdout).toContain("Debug auth flow");
     expect(stdout).toContain("State:   saved");
   });
@@ -273,7 +273,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
 
-    const { stdout } = await run(["edit", id.slice(0, 7)]);
+    const { stdout } = await run(["edit", id.slice(0, 8)]);
     expect(stdout).toContain("Usage: clog edit");
     expect(stdout).toContain("--title <text>");
     expect(stdout).toContain("--summary <text>");
@@ -289,8 +289,8 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
 
-    const showPath = await run(["show", id.slice(0, 7), "--path"]);
-    const pathCmd = await run(["path", id.slice(0, 7)]);
+    const showPath = await run(["show", id.slice(0, 8), "--path"]);
+    const pathCmd = await run(["path", id.slice(0, 8)]);
 
     expect(showPath.stdout.trim()).toBe(filePath);
     expect(pathCmd.stdout.trim()).toBe(filePath);
@@ -306,7 +306,7 @@ describe("e2e", () => {
     await run(["status"]);
     await fs.rm(filePath);
 
-    await expect(run(["show", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["show", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
     });
   });
@@ -319,11 +319,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
 
     const expectedRawPath = path.join(clogHome, "raw", "claude-code", `${id}.jsonl`);
-    const showPath = await run(["show", id.slice(0, 7), "--path"]);
-    const pathCmd = await run(["path", id.slice(0, 7)]);
+    const showPath = await run(["show", id.slice(0, 8), "--path"]);
+    const pathCmd = await run(["path", id.slice(0, 8)]);
 
     expect(showPath.stdout.trim()).toBe(expectedRawPath);
     expect(pathCmd.stdout.trim()).toBe(expectedRawPath);
@@ -367,11 +367,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
-    const head = await run(["show", id.slice(0, 7), "--first", "2"]);
-    const tail = await run(["show", id.slice(0, 7), "--last", "2"]);
+    const head = await run(["show", id.slice(0, 8), "--first", "2"]);
+    const tail = await run(["show", id.slice(0, 8), "--last", "2"]);
 
     expect(head.stdout).toContain("[USER] Show limits");
     expect(head.stdout).toContain("[ASSISTANT] Working on it.");
@@ -406,9 +406,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["save", id.slice(0, 7)]);
+    await run(["save", id.slice(0, 8)]);
 
-    const { stdout } = await run(["show", id.slice(0, 7)]);
+    const { stdout } = await run(["show", id.slice(0, 8)]);
     expect(stdout).toContain("State:   saved");
     expect(stdout).toContain("Save from discovered");
   });
@@ -423,9 +423,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
 
-    await expect(run(["unsave", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["unsave", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not saved"),
     });
   });
@@ -439,7 +439,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Diff source growth", [
@@ -454,7 +454,7 @@ describe("e2e", () => {
       },
     ]);
 
-    const { stdout } = await run(["diff", id.slice(0, 7)]);
+    const { stdout } = await run(["diff", id.slice(0, 8)]);
     expect(stdout).toContain("New source-only message.");
     expect(stdout).toContain("since v1");
   });
@@ -488,7 +488,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
 
     const { stdout } = await run(["diff", "--staged", "--head", "2"]);
     expect(stdout).toContain("since v0, showing 2 of 4 new messages");
@@ -507,9 +507,9 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
 
-    await expect(run(["diff", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["diff", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not saved"),
     });
   });
@@ -524,10 +524,10 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
-    await expect(run(["diff", "--staged", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["diff", "--staged", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not staged"),
     });
   });
@@ -541,7 +541,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Refresh saved raw copy", [
@@ -556,8 +556,8 @@ describe("e2e", () => {
       },
     ]);
 
-    await run(["add", id.slice(0, 7)]);
-    const { stdout } = await run(["show", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
+    const { stdout } = await run(["show", id.slice(0, 8)]);
     expect(stdout).toContain("State:   saved");
     expect(stdout).toContain("Refreshed into raw.");
   });
@@ -572,7 +572,7 @@ describe("e2e", () => {
     await run(["status"]);
     await fs.rm(filePath);
 
-    await expect(run(["add", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["add", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
     });
   });
@@ -587,11 +587,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
-    await run(["reset", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
+    await run(["reset", id.slice(0, 8)]);
 
     const { stdout } = await run(["list", "--state", "discovered"]);
-    expect(stdout).toContain("8888888");
+    expect(stdout).toContain("88888888");
     expect(stdout).toContain("discovered");
   });
 
@@ -610,12 +610,12 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
+    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["reset"]);
 
     const { stdout } = await run(["list", "--state", "discovered"]);
-    expect(stdout).toContain("8989898");
-    expect(stdout).toContain("8a8a8a8");
+    expect(stdout).toContain("89898989");
+    expect(stdout).toContain("8a8a8a8a");
   });
 
   it("reset rejects conversations that are not staged", async () => {
@@ -629,7 +629,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
 
-    await expect(run(["reset", id.slice(0, 7)])).rejects.toMatchObject({
+    await expect(run(["reset", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not staged"),
     });
   });
@@ -644,11 +644,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
-    await run(["unsave", id.slice(0, 7)]);
+    await run(["unsave", id.slice(0, 8)]);
 
-    const { stdout } = await run(["show", id.slice(0, 7)]);
+    const { stdout } = await run(["show", id.slice(0, 8)]);
     expect(stdout).toContain("State:   staged");
   });
 
@@ -667,12 +667,12 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 7), secondId.slice(0, 7)]);
+    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["save"]);
     await run(["unsave"]);
 
-    const first = await run(["show", firstId.slice(0, 7)]);
-    const second = await run(["show", secondId.slice(0, 7)]);
+    const first = await run(["show", firstId.slice(0, 8)]);
+    const second = await run(["show", secondId.slice(0, 8)]);
     expect(first.stdout).toContain("State:   staged");
     expect(second.stdout).toContain("State:   staged");
   });
@@ -687,12 +687,12 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["exclude", id.slice(0, 7)]);
+    await run(["exclude", id.slice(0, 8)]);
 
     const afterExclude = await run(["list", "--state", "discovered"]);
     expect(afterExclude.stdout).not.toContain("Exclude and unexclude");
 
-    await run(["unexclude", id.slice(0, 7)]);
+    await run(["unexclude", id.slice(0, 8)]);
     const afterUnexclude = await run(["list", "--state", "discovered"]);
     expect(afterUnexclude.stdout).toContain("Exclude and unexclude");
   });
@@ -707,7 +707,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["exclude", id.slice(0, 7)]);
+    await run(["exclude", id.slice(0, 8)]);
 
     const { stdout } = await run(["list", "--all"]);
     expect(stdout).toContain("ignored");
@@ -752,7 +752,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 7)]);
+    await run(["add", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Status modified saved", [

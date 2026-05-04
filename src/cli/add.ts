@@ -76,7 +76,7 @@ export function buildAddCommand(): Command {
           if (isScanDrivenSelection && conversation.state === "discovered") {
             warnings.push({
               code: "missing_source_file",
-              message: `Skipping ${conversation.id.slice(0, 7)} because the source file disappeared before it could be added.`,
+              message: `Skipping ${conversation.id.slice(0, 8)} because the source file disappeared before it could be added.`,
               source: conversation.source,
               path: conversation.sourcePath,
               guidance: "The stale discovered entry was removed. Re-run status to refresh discovery.",

@@ -318,9 +318,9 @@ Codex CLI JSONL (Section 4.3) is normalized as follows:
 
 Full conversation IDs are UUIDs from the source system (e.g., `c7044ea5-c019-44d6-a77a-500036740f9a`). The CLI displays and accepts short prefixes, similar to Git:
 
-- **Display:** All commands that show IDs use the first 7 characters by default (e.g., `c7044ea`).
+- **Display:** All commands that show IDs use the first 8 characters by default (e.g., `c7044ea5`).
 - **Input:** Any command that accepts an ID resolves short prefixes by querying the database with a `LIKE 'prefix%'` match. If the prefix is ambiguous (matches multiple conversations), the command errors with a message showing copy-pasteable disambiguation candidates.
-- **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, unknown sources, and prefixes shorter than the minimum are invalid. Source-qualified input restricts resolution to the named source.
+- **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea5@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, unknown sources, and prefixes shorter than the minimum are invalid. Source-qualified input restricts resolution to the named source.
 - **Minimum prefix length:** 4 characters. Shorter prefixes are rejected.
 
 Ambiguous unqualified prefixes should name the conflicting sources:
@@ -910,9 +910,9 @@ Untracked conversations:
 
 # 2. Review discovered conversations
 $ clog list --state discovered
-ID       DATE        STATE       PROJECT          TITLE
-d4e5f6a  2026-02-18  discovered  api-service      Add rate limiting middleware
-g7h8i9b  2026-02-17  discovered  frontend         Fix SSR hydration mismatch
+ID        DATE        STATE       PROJECT          TITLE
+d4e5f6a7  2026-02-18  discovered  api-service      Add rate limiting middleware
+g7h8i9b0  2026-02-17  discovered  frontend         Fix SSR hydration mismatch
 ...
 
 # 3. Add interesting ones
@@ -963,7 +963,7 @@ Example shape with `--conversations --source`:
 ```text
 Untracked conversations:
   (use "clog add <id>" to stage for saving)
-    discovered:    d4e5f6a  claude-code  2026-02-18  api-service Add rate limiting middleware
+    discovered:    d4e5f6a7  claude-code  2026-02-18  api-service Add rate limiting middleware
 ```
 
 `clog status` uses its own compact row format rather than the generic `clog list` table. In the conversation-level layout, the `PROJECT` field is content-width: it is sized to the widest displayed project name in that status view, plus one trailing space of padding. It must not expand to consume additional terminal width beyond that content-based width. Any remaining horizontal space belongs to the rendered title text.
@@ -1273,7 +1273,7 @@ The first line ticks once per DB state transition; the second ticks once per vec
 The metadata header includes the canonical source key for every conversation:
 
 ```
-ID:      a1b2c3d
+ID:      a1b2c3d4
 Source:  claude-code
 Title:   Debug JWT refresh race condition
 Project: api-service
@@ -1728,7 +1728,7 @@ $ clog diff --last 3          # alias for --tail
 **Default mode (no `--staged`):** Uses the saved parser-sequence checkpoint to show only what was added since the last save. `saved_message_count` is the number of parsed messages included in the last saved version. `clog diff` re-parses the current save candidate and shows `messages.slice(savedMessageCount)`. For a saved conversation whose source file exists and differs from the current raw copy, the save candidate is the source file, matching the explicit `clog save <id>` pushthrough behavior. Otherwise, the save candidate is the existing raw copy. Each conversation gets a header:
 
 ```
---- a1b2c3d "Debug JWT refresh race condition" (3 new messages since v1)
+--- a1b2c3d4 "Debug JWT refresh race condition" (3 new messages since v1)
 ```
 
 With no arguments and no modified conversations, `clog diff` produces no output (like `git diff` on a clean tree).

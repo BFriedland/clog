@@ -24,19 +24,19 @@ const TEST_REMOTE_URL = "git@github.com:myorg/clog-team.git";
 describe("buildCommitMessage", () => {
   it("renders a single-author commit with ≤10 changes including per-conversation lines", () => {
     const changes: ChangeRecord[] = [
-      { kind: "added", id: "abc1234", title: "Fix auth", source: "claude-code", author: "alice" },
-      { kind: "added", id: "def5678", title: "Refactor DB", source: "claude-code", author: "alice" },
-      { kind: "updated", id: "aaa1111", title: "Update session", source: "claude-code", author: "alice" },
-      { kind: "retracted", id: "789fedc", title: "Debug leak", source: "claude-code", author: "alice" },
+      { kind: "added", id: "abc12345", title: "Fix auth", source: "claude-code", author: "alice" },
+      { kind: "added", id: "def56789", title: "Refactor DB", source: "claude-code", author: "alice" },
+      { kind: "updated", id: "aaa11112", title: "Update session", source: "claude-code", author: "alice" },
+      { kind: "retracted", id: "789fedcb", title: "Debug leak", source: "claude-code", author: "alice" },
     ];
 
     const message = buildCommitMessage({ changes });
 
     expect(message).toContain("clog: alice — 2 added, 1 updated, 1 retracted");
-    expect(message).toContain("  + abc1234 Fix auth");
-    expect(message).toContain("  + def5678 Refactor DB");
-    expect(message).toContain("  ~ aaa1111 Update session");
-    expect(message).toContain("  - 789fedc Debug leak");
+    expect(message).toContain("  + abc12345 Fix auth");
+    expect(message).toContain("  + def56789 Refactor DB");
+    expect(message).toContain("  ~ aaa11112 Update session");
+    expect(message).toContain("  - 789fedcb Debug leak");
   });
 
   it("renders a single-author commit with >10 changes as a summary only", () => {
