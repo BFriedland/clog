@@ -98,7 +98,9 @@ export async function runSyncPull(): Promise<void> {
 
   renderWarnings(stats.warnings);
 
-  await printPostPullIndexNudge(stats);
+  if (config.search) {
+    await printPostPullIndexNudge(stats);
+  }
 
   const head = await gitRevParseHead(getRemoteRoot());
   await updateLastSyncHead(head);

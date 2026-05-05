@@ -152,7 +152,7 @@ describeIfGit("sync integration (requires git)", () => {
     );
     runInCheckout(externalCheckout, `git push origin main`);
 
-    await captureOutput(async () => {
+    const output = await captureOutput(async () => {
       await runSyncPull();
     });
 
@@ -161,6 +161,11 @@ describeIfGit("sync integration (requires git)", () => {
     expect(row?.title).toBe("Bob's fix");
     expect(row?.origin).toBe(bareRepo);
     expect(row?.author).toBe("bob");
+
+    // Search isn't configured in this test setup, so the index nudge
+    // (which would point users at `clog index`, a command that requires
+    // search) must not appear.
+    expect(output.stdout).not.toContain("Search index needs attention");
   });
 
   it("retracts a conversation when the local DB no longer has it", async () => {
