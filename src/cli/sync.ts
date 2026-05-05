@@ -182,6 +182,10 @@ export async function runSyncPush(): Promise<void> {
   await gitAddAll(getRemoteRoot());
 
   if (!(await gitHasChanges(getRemoteRoot()))) {
+    // Pull/reconcile may have advanced HEAD with teammate-only changes; record
+    // it so subsequent `clog status` doesn't flag the checkout as stale.
+    const head = await gitRevParseHead(getRemoteRoot());
+    await updateLastSyncHead(head);
     process.stdout.write(
       "Nothing to push — all saved conversations are already synced.\n",
     );

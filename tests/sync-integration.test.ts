@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getDefaultConfig, saveConfig } from "../src/config/index.js";
+import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import {
   getConversationById,
   insertConversation,
@@ -13,6 +13,7 @@ import {
 } from "../src/db/index.js";
 import { runSyncPull, runSyncPush } from "../src/cli/sync.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import { gitRevParseHead } from "../src/sync/git.js";
 import { getRemoteRoot } from "../src/sync/paths.js";
 import {
   getRawConversationPath,
@@ -232,6 +233,67 @@ describeIfGit("sync integration (requires git)", () => {
     });
 
     expect(output.stdout).toContain("Nothing to push");
+  });
+
+  it("records lastSyncHead when push has nothing local but pulled teammate changes", async () => {
+    await captureOutput(async () => {
+      await runSyncPull();
+    });
+
+    // Teammate pushes a conversation directly, advancing the remote HEAD.
+    const bobDir = path.join(externalCheckout, "bob", "claude-code");
+    await fs.mkdir(bobDir, { recursive: true });
+    const id = "a5555555-5555-5555-5555-555555555555";
+    await fs.writeFile(
+      path.join(bobDir, `${id}.meta.json`),
+      `${JSON.stringify(
+        {
+          id,
+          title: "Bob's other fix",
+          summary: "",
+          tags: [],
+          author: "bob",
+          projectName: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          source: "claude-code",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeJsonl(path.join(bobDir, `${id}.jsonl`), [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/tmp/repo",
+        message: { role: "user", content: "Hi" },
+      },
+    ]);
+    runInCheckout(externalCheckout, `git add -A`);
+    runInCheckout(
+      externalCheckout,
+      `git -c user.email=b@b.b -c user.name=bob commit -m "bob's save"`,
+    );
+    runInCheckout(externalCheckout, `git push origin main`);
+
+    runInCheckout(
+      getRemoteRoot(),
+      `git config user.email integration@test.local && git config user.name integration`,
+    );
+
+    const output = await captureOutput(async () => {
+      await runSyncPush();
+    });
+
+    expect(output.stdout).toContain("Nothing to push");
+
+    const head = await gitRevParseHead(getRemoteRoot());
+    const config = await loadConfig();
+    expect(config.remote.lastSyncHead).toBe(head);
   });
 
   it("does not import conversations ignored by clogignore on pull", async () => {
