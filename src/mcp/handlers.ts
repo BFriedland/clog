@@ -4,7 +4,7 @@ import { loadConfig } from "../config/index.js";
 import { browseValues, getConversationById, listConversations, resolveConversationId, updateConversation } from "../db/index.js";
 import { type ConversationMeta } from "../models/conversation.js";
 import { getSearchProviders } from "../search/deps.js";
-import { SearchDepsError, SearchNotConfiguredError } from "../search/errors.js";
+import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { searchConversations } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
@@ -312,12 +312,27 @@ export async function handleSearch(input: unknown) {
   }
 
   let warning: string | undefined;
-  const hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
-    isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
-    onScanCapReached: () => {
-      warning = "Search hit the maximum scan window; completeness is not guaranteed.";
-    },
-  });
+  let hits;
+  try {
+    hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
+      isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      onScanCapReached: () => {
+        warning = "Search hit the maximum scan window; completeness is not guaranteed.";
+      },
+    });
+  } catch (error) {
+    if (
+      error instanceof SearchNotConfiguredError ||
+      error instanceof SearchDepsError ||
+      error instanceof SearchSetupIncompleteError
+    ) {
+      throw error;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Search failed: ${detail}\nIf this looks like a vector-index issue (e.g. after changing the embedding model), try \`clog index --rebuild\`.`,
+    );
+  }
 
   const conversationsById = new Map(
     saved.map((conversation) => [conversation.id, conversation] as const),

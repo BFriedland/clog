@@ -77,6 +77,31 @@ describe("VectraStore", () => {
     }
   });
 
+  it("propagates query errors instead of silently returning no results", async () => {
+    // Set up a real index, then overwrite with a structurally-valid but
+    // semantically-wrong shape (e.g. what could happen after a botched
+    // migration or incompatible vectra version). isVectraIndexTorn() only
+    // catches torn JSON, so this gets past startup and fails at query time.
+    await new VectraStore().upsert("abc12345-1234-1234-1234-123456789012", [
+      {
+        text: "chunk",
+        embedding: [1, 0, 0],
+        metadata: {
+          conversationId: "abc12345-1234-1234-1234-123456789012",
+          chunkIndex: "0",
+        },
+      },
+    ]);
+    await fs.writeFile(
+      path.join(getVectorsRoot(), "index.json"),
+      '{"items":"not-an-array"}',
+      "utf8",
+    );
+    resetVectraIndex();
+
+    await expect(new VectraStore().search([1, 0, 0], 5)).rejects.toThrow();
+  });
+
   it("reset() wipes the index file and the next access creates a fresh one", async () => {
     const store = new VectraStore();
     await store.upsert("abc12345-1234-1234-1234-123456789012", [

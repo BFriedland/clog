@@ -105,9 +105,10 @@ import { applyHeadTail } from "../src/cli/common.js";
 import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
-import { getConversationById, insertConversation } from "../src/db/index.js";
+import { getConversationById, insertConversation, setConversationIndexedAt } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { SearchDepsError } from "../src/search/errors.js";
+import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
+import { ClogError } from "../src/utils/errors.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutputWithError } from "./helpers/output.js";
@@ -1379,6 +1380,60 @@ describe("cli", () => {
       const saved = await getConversationById(id);
       expect(saved?.state).toBe("saved");
       expect(saved?.indexedAt).toBeNull();
+    });
+
+    it("search preserves SearchSetupIncompleteError instead of wrapping it as a vector-index error", async () => {
+      const id = "c6666666-6666-6666-6666-666666666666";
+      await seedSavedConversationWithRawMessages(id, 1, 1);
+      await setConversationIndexedAt(id, "2026-02-01T10:00:00.000Z");
+
+      mockedGetSearchProviders.mockResolvedValue({
+        embedding: {
+          name: "stub",
+          dimensions: 384,
+          embed: async () => {
+            throw new SearchSetupIncompleteError();
+          },
+        },
+        vectorStore: {
+          upsert: async () => undefined,
+          search: async () => [],
+          delete: async () => undefined,
+        },
+      });
+
+      const result = await captureOutputWithError(() => runSearchCommand("auth", {}));
+
+      expect(result.error).toBeInstanceOf(SearchSetupIncompleteError);
+      expect(result.error).not.toBeInstanceOf(ClogError);
+      expect((result.error as Error)?.message).not.toContain("clog index --rebuild");
+    });
+
+    it("search wraps unknown vector-store errors with a rebuild hint", async () => {
+      const id = "c7777777-7777-7777-7777-777777777777";
+      await seedSavedConversationWithRawMessages(id, 1, 1);
+      await setConversationIndexedAt(id, "2026-02-01T10:00:00.000Z");
+
+      mockedGetSearchProviders.mockResolvedValue({
+        embedding: {
+          name: "stub",
+          dimensions: 384,
+          embed: async () => [[0.1, 0.2, 0.3]],
+        },
+        vectorStore: {
+          upsert: async () => undefined,
+          search: async () => {
+            throw new Error("malformed index shape");
+          },
+          delete: async () => undefined,
+        },
+      });
+
+      const result = await captureOutputWithError(() => runSearchCommand("auth", {}));
+
+      expect(result.error).toBeInstanceOf(ClogError);
+      expect((result.error as Error)?.message).toContain("malformed index shape");
+      expect((result.error as Error)?.message).toContain("clog index --rebuild");
     });
   });
 

@@ -44,18 +44,13 @@ export class VectraStore implements VectorStore {
     filter?: Record<string, string>,
   ): Promise<SearchHit[]> {
     const index = await getVectraIndex();
-
-    try {
-      const results = await index.queryItems(embedding, "", limit, toVectraFilter(filter));
-      return results.map((result) => ({
-        id: String(result.item.id),
-        score: Number(result.score),
-        text: String(result.item.metadata.text ?? ""),
-        metadata: normalizeMetadata(result.item.metadata),
-      }));
-    } catch {
-      return [];
-    }
+    const results = await index.queryItems(embedding, "", limit, toVectraFilter(filter));
+    return results.map((result) => ({
+      id: String(result.item.id),
+      score: Number(result.score),
+      text: String(result.item.metadata.text ?? ""),
+      metadata: normalizeMetadata(result.item.metadata),
+    }));
   }
 
   async delete(id: string): Promise<void> {

@@ -6,6 +6,7 @@ import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { searchConversations } from "../search/indexer.js";
 import { isConversationSearchable } from "../search/coherence.js";
+import { ClogError } from "../utils/errors.js";
 
 export async function runSearchCommand(
   query: string,
@@ -37,12 +38,29 @@ export async function runSearchCommand(
   }
 
   let scanCapReached = false;
-  const hits = await searchConversations(query, limit, embedding, vectorStore, {
-    isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
-    onScanCapReached: () => {
-      scanCapReached = true;
-    },
-  });
+  let hits;
+  try {
+    hits = await searchConversations(query, limit, embedding, vectorStore, {
+      isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      onScanCapReached: () => {
+        scanCapReached = true;
+      },
+    });
+  } catch (error) {
+    // Preserve known setup/config/dependency errors so they reach their own
+    // dedicated messages instead of being misreported as a vector-index issue.
+    if (
+      error instanceof SearchNotConfiguredError ||
+      error instanceof SearchDepsError ||
+      error instanceof SearchSetupIncompleteError
+    ) {
+      throw error;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ClogError(
+      `Search failed: ${detail}\nIf this looks like a vector-index issue (e.g. after changing the embedding model), try \`clog index --rebuild\`.`,
+    );
+  }
 
   const conversationsById = await loadConversationsById(hits.map((hit) => hit.conversationId));
   const visibleResults = hits.filter((hit) => {

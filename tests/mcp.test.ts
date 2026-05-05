@@ -594,6 +594,23 @@ describe("mcp handlers", () => {
     expect(result.warning).toBeUndefined();
   });
 
+  it("clog_search wraps unknown vector-store errors with a rebuild hint", async () => {
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: {
+        upsert: async () => undefined,
+        delete: async () => undefined,
+        search: async () => {
+          throw new Error("malformed index shape");
+        },
+      },
+    });
+
+    await expect(handleSearch({ query: "auth" })).rejects.toThrow(
+      /malformed index shape[\s\S]*clog index --rebuild/,
+    );
+  });
+
   it("clog_search reports the scan-cap warning when the window is exhausted", async () => {
     const searchableId = "abc12345-1234-1234-1234-123456789012";
     // Return a full window of sub-threshold hits that never satisfy the limit.
