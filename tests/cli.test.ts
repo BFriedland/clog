@@ -1662,6 +1662,50 @@ describe("cli", () => {
       ]);
       expect(stdout.trim()).toBe("undefined");
     });
+
+    it("set rejects unknown top-level keys instead of silently dropping them", async () => {
+      await expect(
+        runBuiltCommand(() => buildConfigCommand(), ["set", "authore", "alice"]),
+      ).rejects.toThrow(/Unknown config key "authore"/);
+
+      const config = await loadConfig();
+      expect(config).not.toHaveProperty("authore");
+    });
+
+    it("set rejects unknown nested keys instead of silently dropping them", async () => {
+      await expect(
+        runBuiltCommand(() => buildConfigCommand(), [
+          "set",
+          "sources.unknown-source.enabled",
+          "true",
+        ]),
+      ).rejects.toThrow(/Unknown config key "sources\.unknown-source\.enabled"/);
+    });
+
+    it("set rejects values that fail schema validation with a useful path", async () => {
+      await expect(
+        runBuiltCommand(() => buildConfigCommand(), [
+          "set",
+          "sources.claude-code.enabled",
+          '"yes"',
+        ]),
+      ).rejects.toThrow(/sources\.claude-code\.enabled/);
+    });
+
+    it("set rejects unknown keys nested inside a JSON-object value", async () => {
+      // Without this guard, zod silently strips `urll` and fills `url` with
+      // its default null — losing both the typo and the user's intent.
+      await expect(
+        runBuiltCommand(() => buildConfigCommand(), [
+          "set",
+          "remote",
+          '{"urll":"git@example.com:team/repo.git"}',
+        ]),
+      ).rejects.toThrow(/Unknown config key "remote\.urll"/);
+
+      const config = await loadConfig();
+      expect(config.remote.url).toBeNull();
+    });
   });
 
   // ========================================
