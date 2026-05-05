@@ -1534,6 +1534,50 @@ describe("cli", () => {
       expect(rawContent).toBe(sourceContent);
     });
 
+    it("resolves a short bare token as a project name", async () => {
+      const id = "78888888-8888-8888-8888-888888888881";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "ui", id);
+      await writeMinimalClaudeJsonl(sourcePath, "UI work");
+      await seedConversation(id, {
+        sourcePath,
+        projectName: "ui",
+        projectPath: "/Users/testuser/projects/ui",
+      });
+
+      const { stdout } = await runBuiltCommand(buildAddCommand, ["ui"]);
+
+      expect(stdout).toContain("Added 1 conversation");
+      expect((await getConversationById(id))?.state).toBe("staged");
+    });
+
+    it("rejects a short source-qualified token with the ID-length error", async () => {
+      await expect(
+        runBuiltCommand(buildAddCommand, ["ab@claude-code"]),
+      ).rejects.toThrow(/at least 4 characters/);
+    });
+
+    it("reports cross-space ambiguity for a sub-4-char bare token that matches both a project and an ID prefix", async () => {
+      const collidingId = "ab111111-2222-3333-4444-555555555555";
+      const collidingSource = claudeDiscoveredSourcePath(sourceDir, "other", collidingId);
+      await writeMinimalClaudeJsonl(collidingSource, "ID starts with ab");
+      await seedConversation(collidingId, {
+        sourcePath: collidingSource,
+        projectName: "other",
+        projectPath: "/Users/testuser/projects/other",
+      });
+
+      const projectId = "78888888-8888-8888-8888-888888888882";
+      const projectSource = claudeDiscoveredSourcePath(sourceDir, "ab", projectId);
+      await writeMinimalClaudeJsonl(projectSource, "Project ab");
+      await seedConversation(projectId, {
+        sourcePath: projectSource,
+        projectName: "ab",
+        projectPath: "/Users/testuser/projects/ab",
+      });
+
+      await expect(runBuiltCommand(buildAddCommand, ["ab"])).rejects.toThrow(/ambiguous/i);
+    });
+
     it("reports ambiguity when a bare selector matches both an id prefix and a project", async () => {
       const sourcePath = claudeDiscoveredSourcePath(
         sourceDir,

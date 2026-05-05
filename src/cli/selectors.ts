@@ -57,15 +57,22 @@ function resolveSelectorToken(
     );
   }
 
+  if (projectMatches.length > 0) {
+    return projectMatches;
+  }
+
+  const trimmed = token.trim();
+  if (!trimmed.includes("@") && trimmed.length > 0 && trimmed.length < 4) {
+    throw new UsageError(
+      `Conversation IDs must use at least 4 characters, got "${token}".`,
+    );
+  }
+
   if (idMatches.length > 0) {
     if (idMatches.length > 1) {
       throw new UsageError(buildAmbiguousConversationIdMessage(token, idMatches));
     }
     return [idMatches[0]];
-  }
-
-  if (projectMatches.length > 0) {
-    return projectMatches;
   }
 
   const noMatchLabel = looksLikeConversationSelector(token) ? "conversation" : "conversation or project";
@@ -111,14 +118,19 @@ function findConversationIdMatches(
   const prefix = rawPrefix.toLowerCase();
   const source = rawSource?.toLowerCase();
 
-  if (prefix.length < 4) {
-    throw new UsageError(`Conversation IDs must use at least 4 characters, got "${token}".`);
-  }
-
-  if (rawSource !== undefined && source?.length === 0) {
-    throw new UsageError(
-      `Invalid source-qualified conversation ID "${token}". Use "<prefix>@<source>".`,
-    );
+  if (rawSource !== undefined) {
+    // Explicit `prefix@source` syntax commits the token to the ID space, so
+    // length / shape problems are reported instead of falling through.
+    if (source?.length === 0) {
+      throw new UsageError(
+        `Invalid source-qualified conversation ID "${token}". Use "<prefix>@<source>".`,
+      );
+    }
+    if (prefix.length < 4) {
+      throw new UsageError(
+        `Conversation IDs must use at least 4 characters, got "${token}".`,
+      );
+    }
   }
 
   return candidates.filter((conversation) => {

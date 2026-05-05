@@ -321,7 +321,7 @@ Full conversation IDs are UUIDs from the source system (e.g., `c7044ea5-c019-44d
 - **Display:** All commands that show IDs use the first 8 characters by default (e.g., `c7044ea5`).
 - **Input:** Any command that accepts an ID resolves short prefixes by querying the database with a `LIKE 'prefix%'` match. If the prefix is ambiguous (matches multiple conversations), the command errors with a message showing copy-pasteable disambiguation candidates.
 - **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea5@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, unknown sources, and prefixes shorter than the minimum are invalid. Source-qualified input restricts resolution to the named source.
-- **Minimum prefix length:** 4 characters. Shorter prefixes are rejected.
+- **Minimum prefix length:** 4 characters. Shorter prefixes are rejected as ID resolutions. In selector-bearing commands a bare token under 4 characters can still resolve as a project name (see §5.1.1), but the cross-space ambiguity check still applies: if the same short token also matches any conversation ID prefix, the command errors with the cross-space ambiguity message rather than silently choosing the project.
 
 Ambiguous unqualified prefixes should name the conflicting sources:
 
@@ -878,6 +878,7 @@ Resolution rules:
 
 - bare tokens first check both spaces: conversation IDs and project names
 - if a bare token matches both, the command fails with an ambiguity error and tells the user to disambiguate with either a fuller or source-qualified conversation ID, or `project:<name>`
+- the 4-character ID-prefix minimum from §3.3 does not preempt this ambiguity check: a bare token shorter than 4 characters that matches both a project name and any conversation ID prefix still raises the cross-space ambiguity error rather than silently resolving to the project
 - `project:<name>` is the explicit project-selector escape hatch
 - final targets are deduplicated by canonical conversation ID
 
