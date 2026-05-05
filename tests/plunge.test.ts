@@ -13,6 +13,7 @@ import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { getClogDbPath, getClogIgnorePath, getConfigPath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+import { captureOutput } from "./helpers/output.js";
 
 describe("plunge", () => {
   let tempDir: string;
@@ -316,37 +317,11 @@ async function runBuiltCommand(
   builder: () => Command,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-
-  const stdoutSpy = vi
-    .spyOn(process.stdout, "write")
-    .mockImplementation(((chunk: unknown): boolean => {
-      stdoutChunks.push(
-        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
-      );
-      return true;
-    }) as typeof process.stdout.write);
-
-  const stderrSpy = vi
-    .spyOn(process.stderr, "write")
-    .mockImplementation(((chunk: unknown): boolean => {
-      stderrChunks.push(
-        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
-      );
-      return true;
-    }) as typeof process.stderr.write);
-
-  try {
+  return captureOutput(async () => {
     const cmd = builder();
     cmd.exitOverride();
     await cmd.parseAsync(args, { from: "user" });
-  } finally {
-    stdoutSpy.mockRestore();
-    stderrSpy.mockRestore();
-  }
-
-  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
+  });
 }
 
 async function seedConfig(): Promise<void> {

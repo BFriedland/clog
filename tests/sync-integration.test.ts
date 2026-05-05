@@ -19,6 +19,7 @@ import {
   getRawSourceDir,
 } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+import { captureOutput } from "./helpers/output.js";
 
 const hasGit = checkGit();
 
@@ -300,34 +301,6 @@ function checkGit(): boolean {
 
 function runInCheckout(cwd: string, command: string): void {
   execSync(command, { cwd, stdio: "ignore" });
-}
-
-async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string }> {
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-  const originalWrite = process.stdout.write.bind(process.stdout);
-  const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  (process.stdout.write as unknown) = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
-    stdoutChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
-    const cb = rest[rest.length - 1];
-    if (typeof cb === "function") (cb as () => void)();
-    return true;
-  }) as typeof process.stdout.write;
-  (process.stderr.write as unknown) = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
-    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
-    const cb = rest[rest.length - 1];
-    if (typeof cb === "function") (cb as () => void)();
-    return true;
-  }) as typeof process.stdout.write;
-
-  try {
-    await fn();
-  } finally {
-    (process.stdout.write as unknown) = originalWrite;
-    (process.stderr.write as unknown) = originalStderrWrite;
-  }
-
-  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
 }
 
 async function insertLocalSaved(options: {

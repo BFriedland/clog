@@ -52,6 +52,17 @@ vi.mock("../src/cli/search-init.js", () => ({
   runSearchInitCommand: vi.fn(async () => {}),
 }));
 
+vi.mock("../src/search/deps.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/search/deps.js")>(
+    "../src/search/deps.js",
+  );
+  return {
+    ...actual,
+    getSearchProviders: vi.fn(actual.getSearchProviders),
+    searchAvailable: vi.fn(actual.searchAvailable),
+  };
+});
+
 const promptsModule = await import("@inquirer/prompts");
 const mockedPromptConfirm = vi.mocked(promptsModule.confirm);
 const mockedPromptSelect = vi.mocked(promptsModule.select);
@@ -61,6 +72,13 @@ const mockedExecFile = vi.mocked(childProcessModule.execFile);
 
 const searchInitModule = await import("../src/cli/search-init.js");
 const mockedRunSearchInitCommand = vi.mocked(searchInitModule.runSearchInitCommand);
+
+const searchDepsModule = await import("../src/search/deps.js");
+const actualSearchDepsModule = await vi.importActual<typeof import("../src/search/deps.js")>(
+  "../src/search/deps.js",
+);
+const mockedGetSearchProviders = vi.mocked(searchDepsModule.getSearchProviders);
+const mockedSearchAvailable = vi.mocked(searchDepsModule.searchAvailable);
 
 import { buildConfigCommand } from "../src/cli/config.js";
 import { buildAddCommand } from "../src/cli/add.js";
@@ -81,14 +99,18 @@ import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnsaveCommand } from "../src/cli/unsave.js";
 import { buildUntagCommand } from "../src/cli/untag.js";
+import { runIndexCommand } from "../src/cli/index-cmd.js";
+import { runSearchCommand } from "../src/cli/search.js";
 import { applyHeadTail } from "../src/cli/common.js";
 import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import { SearchDepsError } from "../src/search/errors.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+import { captureOutputWithError } from "./helpers/output.js";
 
 const initModule = await import("../src/config/init.js");
 
@@ -114,6 +136,8 @@ describe("cli", () => {
     mockedPromptSelect.mockReset();
     mockedRunSearchInitCommand.mockClear();
     mockedExecFile.mockReset();
+    mockedGetSearchProviders.mockImplementation(actualSearchDepsModule.getSearchProviders);
+    mockedSearchAvailable.mockImplementation(actualSearchDepsModule.searchAvailable);
   });
 
   afterEach(async () => {
@@ -1304,6 +1328,57 @@ describe("cli", () => {
       expect(stdout).toContain("No staged conversations");
       expect(stdout).not.toContain("still unindexed");
       expect(stdout).not.toContain("clog index");
+    });
+  });
+
+  describe("search optional dependencies", () => {
+    it("search reports missing search packages", async () => {
+      mockedGetSearchProviders.mockRejectedValue(new SearchDepsError(["vectra"]));
+
+      const result = await captureOutputWithError(() => runSearchCommand("auth", {}));
+
+      expect(result.error).toBeInstanceOf(SearchDepsError);
+      expect(result.error).toMatchObject({
+        message: expect.stringContaining("npm install vectra"),
+      });
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+    });
+
+    it("index reports missing search packages", async () => {
+      mockedGetSearchProviders.mockRejectedValue(new SearchDepsError(["vectra"]));
+
+      const result = await captureOutputWithError(() => runIndexCommand({}));
+
+      expect(result.error).toBeInstanceOf(SearchDepsError);
+      expect(result.error).toMatchObject({
+        message: expect.stringContaining("npm install vectra"),
+      });
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+    });
+
+    it("save still saves locally when search packages are missing", async () => {
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValue(false);
+      mockedGetSearchProviders.mockRejectedValue(new SearchDepsError(["vectra"]));
+
+      const id = "c5555555-5555-5555-5555-555555555555";
+      await seedStagedConversationWithMessages(id, 2);
+
+      const result = await runBuiltCommand(buildSaveCommand, [id]);
+
+      expect(result.stdout).toContain("Saved 1 conversation(s).");
+      expect(result.stdout).toContain("1 saved conversation(s) still unindexed");
+      expect(result.stderr).toBe("");
+      const saved = await getConversationById(id);
+      expect(saved?.state).toBe("saved");
+      expect(saved?.indexedAt).toBeNull();
     });
   });
 
@@ -2560,43 +2635,18 @@ async function runBuiltCommandCapturingError(
   builder: () => Command,
   args: string[],
 ): Promise<{ stdout: string; stderr: string; error: unknown }> {
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
   const previousExitCode = process.exitCode;
   process.exitCode = undefined;
-  let error: unknown = null;
-
-  const stdoutSpy = vi
-    .spyOn(process.stdout, "write")
-    .mockImplementation(((chunk: unknown): boolean => {
-      stdoutChunks.push(
-        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
-      );
-      return true;
-    }) as typeof process.stdout.write);
-
-  const stderrSpy = vi
-    .spyOn(process.stderr, "write")
-    .mockImplementation(((chunk: unknown): boolean => {
-      stderrChunks.push(
-        typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8"),
-      );
-      return true;
-    }) as typeof process.stderr.write);
 
   try {
-    const cmd = builder();
-    cmd.exitOverride();
-    await cmd.parseAsync(args, { from: "user" });
-  } catch (caught) {
-    error = caught;
+    return await captureOutputWithError(async () => {
+      const cmd = builder();
+      cmd.exitOverride();
+      await cmd.parseAsync(args, { from: "user" });
+    });
   } finally {
     process.exitCode = previousExitCode;
-    stdoutSpy.mockRestore();
-    stderrSpy.mockRestore();
   }
-
-  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join(""), error };
 }
 
 function makeConversation(overrides: Partial<ConversationMeta> = {}): ConversationMeta {

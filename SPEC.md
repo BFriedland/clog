@@ -3299,29 +3299,30 @@ tests/
 ├── sync-integration.test.ts # End-to-end sync with bare git repos (Phase 3)
 ├── e2e.test.ts              # End-to-end CLI tests via subprocess
 └── helpers/
-    ├── test-env.ts          # Sets CLOG_HOME and per-source config paths to temp dirs
-    └── fixtures.ts          # Programmatic JSONL fixture generation
+    └── fixtures.ts          # Small helpers for writing programmatic JSONL fixtures
 ```
 
-Tests use a flat structure rather than unit/integration subdirectories. Fixtures are generated programmatically via `createFixtureDir()` rather than checked-in static files — this keeps fixtures self-documenting and avoids maintaining separate JSONL files.
+Tests use a flat structure rather than unit/integration subdirectories. Fixtures are generated programmatically rather than checked-in as static JSONL files. This keeps fixtures self-documenting and avoids maintaining separate fixture corpuses as source formats change.
 
 ### 13.3 Test Environment Sandboxing
 
-Every test file uses `createTestEnv()` which creates an isolated temp directory and sets `CLOG_HOME` to point at it. The returned `TestEnv` object provides the paths and a `cleanup()` method:
+Tests create isolated temp directories with `fs.mkdtemp()`, set `CLOG_HOME` to point at the temp clog home, and clean up with `fs.rm(..., { recursive: true, force: true })` in `afterEach`. Source locations are set through the normal config shape, usually `sources.<name>.paths`, so the test harness uses the same inputs as real commands.
 
 ```typescript
-let env: TestEnv;
+let tempDir: string;
 
 beforeEach(async () => {
-  env = await createTestEnv();
+  tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-test-"));
+  process.env.CLOG_HOME = tempDir;
 });
 
 afterEach(async () => {
-  await env.cleanup();
+  delete process.env.CLOG_HOME;
+  await fs.rm(tempDir, { recursive: true, force: true });
 });
 ```
 
-The application code respects `CLOG_HOME` for the data directory. Source locations are controlled by `sources.<name>.paths` in the test config, falling back to built-in defaults only when unset. This is the only contract between the test harness and the application.
+The application code respects `CLOG_HOME` for the data directory. Source locations are controlled by `sources.<name>.paths` in the test config, falling back to built-in defaults only when unset. This is the core contract between the test harness and the application.
 
 ### 13.4 Test Coverage
 
@@ -3446,7 +3447,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 ### 13.5 Fixture Generation
 
-Fixtures are generated programmatically via `createFixtureDir()` in `tests/helpers/fixtures.ts`. This function creates a temp directory with synthetic JSONL files that exercise various conversation shapes (user messages, assistant messages with tool use, summaries, etc.). This approach is preferred over static fixture files because fixtures stay self-documenting and in sync with schema changes.
+Fixtures are generated programmatically. `tests/helpers/fixtures.ts` provides `writeJsonl()`, a small helper that writes JSONL files from in-test objects. Individual test files build the specific conversation shapes they need, such as user messages, assistant messages with tool use, summaries, malformed records, or remote sync metadata. This approach is preferred over static fixture files because fixtures stay self-documenting and in sync with schema changes.
 
 ### 13.6 Linting
 
@@ -3461,14 +3462,4 @@ Linting is not gated by `npm test` — it's a separate `npm run lint` step. This
 
 ### 13.7 npm Scripts
 
-```json
-{
-  "scripts": {
-    "build": "tsc",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "dev": "tsx src/index.ts",
-    "lint": "eslint src/ tests/"
-  }
-}
-```
+`package.json` is the authoritative source for npm scripts. The commonly used verification commands are `npm test`, `npm run lint`, and `npm run build`; `npm run build` also performs any post-compile binary setup needed by the CLI.
