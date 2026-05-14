@@ -40,6 +40,8 @@ interface DrainExport {
   source: string;
   title: string;
   summary: string;
+  summaryKind: ConversationMeta["summaryKind"];
+  extraction: ConversationMeta["summaryExtraction"];
   author: string;
   projectName: string | null;
   tags: string[];
@@ -366,6 +368,8 @@ async function buildDrainExport(
     source: conversation.source,
     title: conversation.title,
     summary: conversation.summary,
+    summaryKind: conversation.summaryKind,
+    extraction: conversation.summaryExtraction,
     author: conversation.author,
     projectName: conversation.projectName,
     tags: [...conversation.tags],
@@ -388,6 +392,14 @@ async function renderMarkdownExport(
   frontmatterLines.push(`title: ${quoteYamlString(exported.title)}`);
   if (exported.summary !== "") {
     frontmatterLines.push(`summary: ${quoteYamlString(exported.summary)}`);
+  }
+  if (exported.summaryKind !== "none") {
+    frontmatterLines.push(`summaryKind: ${quoteYamlString(exported.summaryKind)}`);
+  }
+  if (exported.extraction != null) {
+    frontmatterLines.push(
+      `extraction: ${quoteYamlString(JSON.stringify(exported.extraction))}`,
+    );
   }
   frontmatterLines.push(`author: ${quoteYamlString(exported.author)}`);
   if (exported.projectName != null) {
@@ -513,6 +525,8 @@ function canonicalizeJson(value: unknown): unknown {
             "source",
             "title",
             "summary",
+            "summaryKind",
+            "extraction",
             "author",
             "projectName",
             "tags",

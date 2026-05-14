@@ -179,6 +179,7 @@ clog/
 │   │   ├── show.ts          # Display conversation content
 │   │   ├── path.ts          # Print raw file path
 │   │   ├── drain.ts         # Export conversations as JSON, markdown, or raw source
+│   │   ├── talk.ts          # Launch an MCP-capable agent for conversation work
 │   │   ├── list.ts          # List conversations with filters
 │   │   ├── exclude.ts       # Append literal ignore rules to clogignore
 │   │   ├── unexclude.ts     # Remove exact ignore rules from clogignore
@@ -198,7 +199,8 @@ clog/
 │   │   └── codex-cli.ts     # Codex CLI (~/.codex/)
 │   ├── mcp/                 # MCP server
 │   │   ├── server.ts        # MCP server setup + stdio transport
-│   │   └── handlers.ts      # Tool handler implementations (extracted for testability)
+│   │   ├── handlers.ts      # Tool handler implementations (extracted for testability)
+│   │   └── guides/          # Bundled agent guidance returned by MCP tools
 │   ├── db/                  # Database layer
 │   │   ├── schema.ts        # Table definitions + migrations
 │   │   └── index.ts         # Query functions
@@ -228,6 +230,22 @@ Phase 3 (§11.15) adds: `src/sync/`, plus CLI files (`remote.ts`, `sync.ts`, `re
 The database stores metadata about conversations. Full content (messages, tool use, tool results) lives in raw JSONL files on disk and is parsed on demand when needed (e.g., `clog show`, MCP `clog_get`).
 
 ```typescript
+type SummaryKind = "none" | "imported" | "generated" | "curated";
+
+interface SummaryExtraction {
+  topics?: string[];
+  outcome?:
+    | "fixed"
+    | "partial"
+    | "abandoned"
+    | "exploratory"
+    | "blocked"
+    | "noise"
+    | "unclear";
+  toolsUsed?: string[];
+  notableMoments?: Array<{ why: string }>;
+}
+
 interface ConversationMeta {
   // Identity
   id: string;                    // Same as sourceId for built-in UUID-based sources
@@ -236,7 +254,9 @@ interface ConversationMeta {
 
   // Metadata
   title: string;                 // Auto-generated or user-provided
-  summary: string;               // Auto-generated summary (can be edited)
+  summary: string;               // Prose summary; source-native, agent-generated, or user-curated
+  summaryKind: SummaryKind;      // Who or what produced the prose summary
+  summaryExtraction: SummaryExtraction | null; // Structured summary fields for agent analysis
   author: string;                // Developer who had the conversation
   projectName: string | null;    // Display/sync project name, usually basename(projectPath)
   projectPath: string | null;    // Local-only detected project directory path, if available
@@ -271,7 +291,20 @@ This is intentional. clog does not use a composite key for the built-in sources 
 
 **Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` is the dirty/status marker for user-visible metadata or content-marker changes; `savedAt` is the latest successful save time and the baseline for cheap modified-since-save checks; `savedMessageCount` is the transcript diff boundary, not a timestamp; `sourceMtime` is the local source scan cache marker; Phase 2 `indexedAt` is the search cache freshness marker.
 
-**Source-native metadata:** clog preserves source-provided metadata such as summaries and slugs when a source exposes them in a trusted native field. Phase 1 does not synthesize summary or slug values during discovery for sources that do not provide them.
+**Summary metadata:** `summary` is the prose summary. `summaryKind` records who or what produced that prose:
+
+| value | meaning |
+|-------|---------|
+| `none` | No useful prose summary is stored |
+| `imported` | The prose summary came from trusted source-native metadata, such as a Claude Code summary line |
+| `generated` | The prose summary was written by a summarizing agent through MCP |
+| `curated` | The prose summary was written or claimed by the user, usually through `clog edit --summary` |
+
+`summaryExtraction` is a nullable JSON-shaped object that stores structured fields used by later analyst agents. All extraction fields are optional. Agents omit fields they cannot determine confidently. `outcome` uses the fixed vocabulary in `SummaryExtraction`; agents use `unclear` when real work happened but the transcript does not reveal the resolution. `notableMoments` is reserved for genuinely notable observations and is often absent. The `noise` outcome is for sessions with no substantive agent work, such as accidental opens, harness configuration without a real prompt, or sessions interrupted before work began. Noise rows still keep a short factual prose summary; the outcome flag is the signal.
+
+**Source-native metadata:** clog preserves source-provided metadata such as summaries and slugs when a source exposes them in a trusted native field. Source-native summaries set `summaryKind = "imported"`; conversations without a useful summary set `summaryKind = "none"`. Discovery never writes `summaryExtraction`. Phase 1 does not synthesize summary or slug values during discovery for sources that do not provide them.
+
+**Summary freshness:** v1 does not track whether a generated summary/extraction still covers the current saved checkpoint. If a conversation is summarized, later extended, and saved again, the existing `summary`, `summaryKind`, and `summaryExtraction` remain in place until the user or an agent clears or refreshes them. `clog_get` remains the source of truth for transcript content. Future freshness tracking should derive from a content hash of the summarized window rather than an agent-reported message count.
 
 **Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the user-facing project label, usually the basename of `projectPath`. User-facing table columns, `--project <name>`, MCP filters, and remote metadata use `projectName` and label it "project." Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
 
@@ -344,6 +377,9 @@ CREATE TABLE conversations (
   source          TEXT NOT NULL,
   title           TEXT NOT NULL,
   summary         TEXT DEFAULT '',
+  summary_kind    TEXT NOT NULL DEFAULT 'none'
+                  CHECK(summary_kind IN ('none','imported','generated','curated')),
+  summary_extraction TEXT,
   author          TEXT NOT NULL,
   project_name    TEXT,
   project_path    TEXT,
@@ -378,10 +414,12 @@ Fresh installs create all tables with the latest schema and set the version to t
 | 2 | Add `indexed_at` for Phase 2 semantic search |
 | 3 | Add `origin` for Phase 3 team sharing |
 | 4 | Rename save checkpoint fields and the saved state value from the legacy publish terminology |
+| 5 | Add `summary_kind` and `summary_extraction` for agent-assisted summarization |
 
 Phase 2 (§10) adds: `indexed_at` column (migration version 2)
 Phase 3 (§11.4) adds: `origin` column (migration version 3)
 The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
+The summarization migration (version 5) adds `summary_kind` with a default of `none` and a CHECK constraint over `none`, `imported`, `generated`, and `curated`; adds nullable `summary_extraction`; and back-fills `summary_kind = 'curated'` for existing rows whose `summary` is non-empty. This conservative back-fill prevents agent summarization from overwriting prose the user may already have edited.
 
 **What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in the JSONL files — at `file_path` (the `~/.clog/raw/` copy) for staged/saved conversations, or at `source_path` (the original source location) for discovered conversations. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
 
@@ -612,7 +650,7 @@ type ContentBlock =
 }
 ```
 
-Not all conversations have a summary line — only longer ones that Claude Code auto-summarizes. When present, use this as the conversation's default `summary` field. A conversation file may contain at most one summary line (found at the end of the file or near the end).
+Not all conversations have a summary line — only longer ones that Claude Code auto-summarizes. When present, use this as the conversation's default `summary` field and set `summaryKind = "imported"` on newly discovered conversations. A conversation file may contain at most one summary line (found at the end of the file or near the end).
 
 #### 4.2.6 Adapter Discovery Behavior
 
@@ -724,7 +762,7 @@ During discovery, the adapter will:
 
 Codex discovery should scan until it has found the needed metadata or reached end-of-file. It must not assume `session_meta` is always the first line, even if that is the common observed shape.
 
-The empty Codex `summary` and `null` Codex `slug` values are intentional in Phase 1. Unlike Claude Code, which may provide native `summary` lines and `slug` fields in its source format, the observed Codex source format does not expose an equivalent trusted native summary or slug field for discovery, and clog does not synthesize one.
+The empty Codex `summary`, `summaryKind = "none"`, and `null` Codex `slug` values are intentional in Phase 1. Unlike Claude Code, which may provide native `summary` lines and `slug` fields in its source format, the observed Codex source format does not expose an equivalent trusted native summary or slug field for discovery, and clog does not synthesize one.
 
 Discovery filtering operates on the detected `projectPath`, not the `~/.codex/sessions/...` storage path.
 
@@ -847,6 +885,8 @@ clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a 
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
+clog talk [client]         Open an MCP-capable agent primed with current clog state
+clog summarize [client]    Open an MCP-capable agent with a summarization-focused prompt
 clog rename-author <old> <new>  Rename author across local conversations
 
 # Phase 2 — Semantic Search (see §10 for details)
@@ -932,6 +972,8 @@ $ clog save
 Saving 2 conversations...
 Saved a1b2c3 (v1): "Debug JWT refresh race condition"
 Saved d4e5f6 (v1): "Add rate limiting middleware"
+
+2 saved conversation(s) don't have structured summaries. Run `clog talk` to start an agent session.
 
 # 7. Get the raw file path for a conversation
 $ clog path a1b2c3
@@ -1064,9 +1106,11 @@ The `--author` flag changes the author on an individual conversation. This is di
 
 Tags are managed separately via `clog tag` / `clog untag`. Staging is managed via `clog add` / `clog reset`.
 
-If every supplied value already matches the current metadata, `clog edit` is a no-op: it does not update `modified_at` and reports that nothing changed.
+If every supplied value already matches the current metadata and the operation does not change `summaryKind` or clear `summaryExtraction`, `clog edit` is a no-op: it does not update `modified_at` and reports that nothing changed.
 
 If an edit changes title, summary, or author, `modified_at` is set to the edit time. If the conversation is saved and the changed field is search-visible, search invalidation follows §10.8.1.
+
+Passing `--summary` is a user curation gesture. A non-blank `--summary` sets `summaryKind = "curated"` even if the text matches the existing summary. Clearing the summary with `--summary ""` sets `summary = ""`, `summaryKind = "none"`, and `summaryExtraction = null`, making the conversation eligible for agent summarization again.
 
 **Message-level editing is not supported.** If a user needs to redact sensitive data from conversation content, they should edit the raw JSONL file directly:
 
@@ -1117,8 +1161,8 @@ Scanning is idempotent. Each scan will:
 - When inserting a new local discovered conversation, set `author = config.author`. Later scans must not rewrite `author`; use `clog edit --author` or `clog rename-author` for explicit changes.
 - Skip conversations whose source file hasn't changed (matched by `source + sourceId`, checked via `source_mtime`)
 - **Detect updated source files** for conversations in any state. When a source file's mtime has changed since last scan:
-  - For `discovered` conversations: re-extract metadata (title, summary may change as the conversation grows)
-  - For `staged`/`saved` conversations: preserve the stored metadata row and preserve the curated raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog add <id>` to refresh the curated raw copy explicitly, or `clog save <id>` to save the newer source content directly.
+  - For `discovered` conversations: re-extract metadata (title and summary may change as the conversation grows). If the re-extracted summary is non-blank, set `summaryKind = "imported"`; otherwise set `summaryKind = "none"`. `summaryExtraction` remains `null`.
+  - For `staged`/`saved` conversations: preserve the stored metadata row and preserve the curated raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `summaryKind`, `summaryExtraction`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog add <id>` to refresh the curated raw copy explicitly, or `clog save <id>` to save the newer source content directly.
 - **Detect moved source files.** When a known conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `staged`/`saved`, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
 - **Prune stale entries per source.** After discovery completes, remove `discovered`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Staged and saved conversations are never pruned (they have their own copies in `~/.clog/raw/`). The scan reports a `pruned` count alongside other filter counts.
 
@@ -1223,6 +1267,8 @@ If a source file needed for the discovered-conversation shortcut is unavailable,
 
 `saved_message_count` is `null` until the first successful save. After first save it is retained as the active last-save checkpoint, including when a conversation is later unsaved back to `staged`. Every save or resave replaces it with the current parsed message count. `clog reset` clears the active save fields when moving a staged conversation back to `discovered`.
 
+Save preserves `summary`, `summaryKind`, and `summaryExtraction`; it does not summarize, clear, or refresh summary metadata. Summary freshness across later re-saves is intentionally not tracked in v1.
+
 When save runs in an interactive terminal against more than one conversation, it renders single-line progress for each phase, updating in place as work completes:
 
 ```
@@ -1232,6 +1278,14 @@ Saved 58 conversation(s).
 ```
 
 The save-loop line ticks once per conversation as the raw copy and DB row are written. The indexing line ticks once per conversation as embeddings are produced and upserted to the vector store, so the user sees real-time progress through the slow embedding step. Each phase terminates with a newline so the final counts persist on screen. In non-TTY contexts (pipes, redirected output) only the final summary is written.
+
+After `clog save` completes, if any local saved conversations lack structured summaries, clog prints a bold hint:
+
+```text
+N saved conversation(s) don't have structured summaries. Run `clog talk` to start an agent session.
+```
+
+A conversation is counted as lacking a structured summary when `summaryKind != "curated"` and `summaryExtraction == null`. Source-native prose summaries (`summaryKind = "imported"`) and generated prose without extraction still count as lacking structured summaries. Curated conversations do not count, even if they lack extraction.
 
 **Why `save` and not `commit`?** This is intentional. Git `commit` creates a permanent, immutable snapshot with a hash. `clog save` is a state change — conversations can be edited and re-saved. Calling it `commit` would set wrong expectations about immutability, revert semantics, and diff history. `save` communicates what actually happens: "this conversation is now visible to agents and (eventually) teammates."
 
@@ -1278,9 +1332,22 @@ ID:      a1b2c3d4
 Source:  claude-code
 Title:   Debug JWT refresh race condition
 Project: api-service
+State:   saved
 ```
 
 Header metadata values are presentation-normalized. In particular, the `Title:` field is rendered as a single line with internal whitespace collapsed, even if the stored title contains embedded newlines or other multi-line whitespace. This normalization applies only to the metadata header; parsed transcript messages remain source-faithful.
+
+When a conversation has a prose summary or structured extraction, `clog show` prints a compact summary block after the basic header and before messages:
+
+```text
+Summary: Debugged a JWT refresh race and updated the retry guard. (generated)
+Topics:  auth, jwt
+Outcome: fixed
+Tools:   Edit, Bash
+Notable: 1 moment
+```
+
+The `Summary:` line includes `summaryKind` in parentheses. Extraction lines are printed only for fields that are present and non-empty. `Notable:` shows only the number of notable moments, not their text. If both `summary` and `summaryExtraction` are empty, no summary block is printed.
 
 When source is shown in CLI or MCP metadata, use the canonical raw source key such as `claude-code` or `codex-cli`, not a separate human-friendly display label.
 
@@ -1638,8 +1705,9 @@ This order governs:
 
 The JSON export is a portable export object, not a dump of clog's internal
 database row. It includes user-facing metadata such as `id`, `source`,
-`title`, `summary`, `author`, `projectName`, `tags`, `slug`, `createdAt`,
-`savedAt`, `state`, and parsed `messages`. It intentionally omits
+`title`, `summary`, `summaryKind`, `extraction`, `author`, `projectName`,
+`tags`, `slug`, `createdAt`, `savedAt`, `state`, and parsed `messages`.
+`extraction` is the exported name for `summaryExtraction`. It intentionally omits
 local-only/internal fields such as `sourceId`, `projectPath`,
 `discoveredAt`, `modifiedAt`, `savedMessageCount`, `saveVersion`,
 `sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, and `origin`.
@@ -1647,7 +1715,9 @@ local-only/internal fields such as `sourceId`, `projectPath`,
 Markdown is a convenience rendering, not the canonical export contract.
 Markdown stdout mode requires exactly one matching conversation. File mode
 writes one markdown file. Directory mode writes one markdown file per
-conversation.
+conversation. Markdown frontmatter includes `summaryKind` when it is not
+`none`, and includes `extraction` as a JSON-stringified scalar when structured
+extraction is present.
 
 Raw export always reads from the same resolved content path that `clog path`
 and `clog show` use. In stdout mode and file mode, `--raw` requires
@@ -1890,6 +1960,28 @@ Note: `clog config set author` only changes the config value. It does NOT rename
 
 Phase 3 (§11.6) extends the confirmation prompt with additional sync context.
 
+### 5.13 Agent Session Commands
+
+`clog talk [client]` and `clog summarize [client]` launch the user's configured MCP-capable agent CLI in the current terminal. They do not run an LLM provider directly, store provider credentials, count tokens, or automate summarization in a subprocess. The trusted agent harness (Claude Code or Codex CLI) does the interactive work.
+
+`client` is `claude` or `codex`.
+
+- If `client` is supplied, clog validates only that the name is one of the supported clients and then launches it.
+- If `client` is omitted in an interactive terminal, clog prompts the user to choose one of the supported clients.
+- If the command is run without an interactive stdin, clog errors clearly; these commands are intentionally interactive in v1.
+
+The agent process is launched with inherited stdio so the user interacts directly with the agent.
+
+Before launch, clog gathers a small state summary and includes it in the initial prompt:
+
+- total local saved conversations
+- count of local saved conversations needing structured summaries
+- projects that contain local saved conversations needing structured summaries
+
+`clog talk` frames the agent as a general clog assistant. The prompt asks the agent to ask the user whether they want to summarize unsummarized conversations, explore existing saved conversations, or do something else. It tells the agent not to read `clog_summarization_guide` until the user chooses summarization, so users who only want exploration do not spend context on summarization instructions.
+
+`clog summarize` frames the agent as a summarization worker. The prompt tells the agent to read `clog_summarization_guide` first, then ask the user to confirm the summarization scope (for example all unsummarized conversations, a specific project, or a count) before reading transcripts or writing summaries.
+
 ---
 
 ## 6. MCP Server
@@ -1912,6 +2004,7 @@ input: {
   project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
   author?: string;         // Filter by author
   grep?: string;           // Case-insensitive substring match on title, summary, or message content
+  origin?: "local" | "remote"; // Filter local vs remote saved conversations
   limit?: number;          // Default 20, max 100
   offset?: number;         // For pagination
 }
@@ -1921,19 +2014,22 @@ returns: {
     source: string;
     title: string;
     summary: string;
+    summaryKind: SummaryKind;
+    extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
     projectName: string | null;
+    origin: string | null;
     createdAt: string;
   }>;
   totalCount: number;
   warnings?: ClogWarning[];
 }
 
-// List staged conversations (same schema as clog_list_saved)
+// List staged conversations (same response schema as clog_list_saved)
 tool: "clog_list_staged"
-// Same input/output as clog_list_saved, scoped to staged conversations.
-// Useful for agents helping curate — find conversations that need summaries or tags.
+// Same input/output as clog_list_saved except `origin`, scoped to staged conversations.
+// Useful for agents helping curate — find conversations that don't have summaries or tags.
 
 // Get conversation content (parses raw JSONL on demand, truncated by default)
 // Only works on staged or saved conversations — returns an error for discovered.
@@ -1951,9 +2047,12 @@ returns: {
   source: string;
   title: string;
   summary: string;
+  summaryKind: SummaryKind;
+  extraction: SummaryExtraction | null;
   tags: string[];
   author: string;
   projectName: string | null;
+  origin: string | null;
   state: string;
   createdAt: string;
   messages: Message[];       // Requested message slice
@@ -2006,6 +2105,8 @@ input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
   title?: string;          // New title
   summary?: string;        // New summary
+  extraction?: SummaryExtraction | null; // Structured summary fields
+  summaryKind?: "generated" | "curated"; // Override who produced the prose summary
   addTags?: string[];      // Tags to add (lowercased, trimmed, deduped)
   removeTags?: string[];   // Tags to remove
 }
@@ -2015,16 +2116,49 @@ returns: {
     source: string;
     title: string;
     summary: string;
+    summaryKind: SummaryKind;
+    extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
     projectName: string | null;
+    origin: string | null;
     state: string;
     createdAt: string;
     modifiedAt: string;
   };
 }
 
-If the requested update would not change the conversation's title, summary, or tags, `clog_update` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
+If the requested update would not change the conversation's title, summary, summary kind, extraction, or tags, `clog_update` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
+
+`clog_update` summary-kind rules are applied in order:
+
+1. If the call clears both prose summary and extraction, `summaryKind` becomes `none` regardless of an explicit `summaryKind`.
+2. Else if the caller passes `summaryKind`, that value wins. MCP accepts only `generated` and `curated`; agents use `curated` only for user-directed summary fixes.
+3. Else if the prose summary text actually changes and ends non-blank, `summaryKind` becomes `generated`.
+4. Else the existing `summaryKind` is preserved. Adding extraction to curated prose, clearing prose while leaving extraction, or touching only tags does not silently downgrade the prose kind.
+
+
+// Read before summarizing clog conversations
+tool: "clog_summarization_guide"
+input: {}
+returns: {
+  version: number;
+  guide: string;            // Markdown instructions for summary and extraction quality
+}
+
+// Opinionated analyses an exploration agent can offer the user
+tool: "clog_analysis_suggestions"
+input: {}
+returns: {
+  version: number;
+  suggestions: Array<{
+    id: string;
+    name: string;
+    description: string;
+    audience: "solo" | "team" | "both";
+    suggestedPrompt: string;
+  }>;
+}
 
 // List available tags, projects, authors (for discovery)
 tool: "clog_browse"
@@ -2038,6 +2172,12 @@ returns: {
   }>;
 }
 ```
+
+`clog_summarization_guide` returns a bundled markdown guide. The guide tells a summarizing agent why summaries are useful, the exact `clog_update` input shape for `summary` plus `extraction`, quality guidelines for prose summaries, how to triage long conversations with `clog_get` windowing, and when to pass `summaryKind: "curated"` instead of relying on the default generated behavior.
+
+`clog_analysis_suggestions` returns a small, versioned, clog-authored library of exploration prompts. The v1 library includes suggestions for intro prompt quality, missed assumptions, iteration outliers, abandoned tasks by project, tool usage patterns, noise patterns, and team outliers. The tool returns starting prompts only; the agent performs analysis by calling the regular list/search/get tools.
+
+The summarization workflow is agent-assisted. clog exposes storage and MCP tools, but it does not call an LLM itself. A typical flow is: `clog save` hints that some saved conversations do not have summaries, `clog talk` or `clog summarize` opens the user's agent, the agent reads `clog_summarization_guide`, the user confirms scope, and the agent calls `clog_get` plus `clog_update` for each selected saved local conversation.
 
 ### 6.3 Resources
 
@@ -2281,7 +2421,7 @@ High-signal conversation content is embedded for search. Low-signal bulk (tool o
 | Title | Conversation title |
 | Summary | Conversation summary |
 
-Tags are **not** embedded. They are metadata filters applied from the local database before or alongside semantic search, not part of vector similarity scoring.
+Tags are **not** embedded. They are metadata filters applied from the local database before or alongside semantic search, not part of vector similarity scoring. `summaryKind` and `summaryExtraction` are not embedded; only the prose `summary` contributes to vector text.
 
 **Tool metadata format** — a one-liner capturing what the tool did, without the full output:
 
@@ -2358,7 +2498,7 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness marker:** `indexed_at = null` is the authoritative signal that a saved conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `saved_at`, `saved_message_count`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
+**Staleness marker:** `indexed_at = null` is the authoritative signal that a saved conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, `saved_at`, `saved_message_count`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
 **Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
@@ -2409,10 +2549,10 @@ The search index follows the lifecycle of conversations in the database:
 |-----------|-----------|---------------|
 | `save` | Conversation enters `saved` state; `saved_at`, `modified_at`, and `saved_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set. If search is unconfigured or indexing fails, save still succeeds and `indexed_at` remains `null`, so the conversation is saved but not searchable until indexed. |
 | `edit`, MCP `clog_update` title/summary change on a saved conversation | Conversation remains `saved`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
-| `tag`, `untag`, MCP `clog_update` tag change on a saved conversation | Conversation remains `saved`; DB metadata filters change | No vector re-index occurs because tags are not part of the embedded search content. Tag-based filtering reflects the new DB state immediately. `indexed_at` is unchanged. No-op tag updates do not bump `modified_at`. |
+| `tag`, `untag`, MCP `clog_update` tag, `summaryKind`, or `summaryExtraction` change on a saved conversation | Conversation remains `saved`; DB metadata filters or agent-analysis metadata change | No vector re-index occurs because tags and structured extraction are not part of the embedded search content. Tag-based filtering and MCP metadata reads reflect the new DB state immediately. `indexed_at` is unchanged. No-op updates do not bump `modified_at`. |
 | Local scan detects source mtime change on a saved conversation | Conversation remains `saved`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The saved/searchable content has not changed until `clog add <id>` refreshes the raw copy or explicit `clog save <id>` pushthrough refreshes and resaves it. |
 | A command detects a raw copy mtime newer than `saved_at` or `indexed_at` | Conversation remains `saved`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
-| Remote reconciliation metadata update on a saved conversation | Conversation remains `saved`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, or slug do not clear `indexed_at`. |
+| Remote reconciliation metadata update on a saved conversation | Conversation remains `saved`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, slug, `summaryKind`, or `summaryExtraction` do not clear `indexed_at`. |
 | `unsave` | Conversation leaves `saved` state and `indexed_at` is set to `null` | Conversation ceases to be searchable; vectors are deleted |
 | `reset` | Only operates on staged conversations; `filePath` is cleared and the conversation returns to `discovered` | No search effect; staged conversations are not searchable |
 | `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
@@ -2434,6 +2574,7 @@ input: {
   tags?: string[];         // Filter by tags
   project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
   author?: string;         // Filter by author
+  origin?: "local" | "remote"; // Filter local vs remote saved conversations
   limit?: number;          // Default 10, max 50
 }
 returns: {
@@ -2442,9 +2583,12 @@ returns: {
     source: string;
     title: string;
     summary: string;
+    summaryKind: SummaryKind;
+    extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
     projectName: string | null;
+    origin: string | null;
     createdAt: string;
     relevanceScore: number;
     snippet: string;       // Matched content excerpt
@@ -2472,7 +2616,7 @@ Phase 2 requires changes to existing Phase 1 code:
 
 **Save** (`clog save`): After saving, auto-index the newly saved conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`. The conversation is saved but not searchable until `clog index` or a later save indexes it successfully.
 
-**Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a saved conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and summary changes. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
+**Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a saved conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and prose summary changes. Changes only to `summaryKind` or `summaryExtraction` do not re-index because the structured extraction is not embedded in the vector index. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
 
 **Tagging** (`clog tag`, `clog untag`, and MCP `clog_update` tag changes): Tags are DB-side metadata filters, not embedded vector content. Tag changes do not trigger re-indexing and do not change `indexed_at`. Tag-based filtering reflects the new DB state immediately.
 
@@ -2635,6 +2779,13 @@ Remote import identity is `(source, id)`, not `id` alone.
   "id": "abc123-...",
   "title": "Fix authentication bug",
   "summary": "Debugged JWT token expiration...",
+  "summaryKind": "generated",
+  "summaryExtraction": {
+    "topics": ["auth", "jwt"],
+    "outcome": "fixed",
+    "toolsUsed": ["Edit", "Bash"],
+    "notableMoments": [{ "why": "user caught a wrong initial assumption" }]
+  },
   "tags": ["auth", "debugging"],
   "author": "alice",
   "projectName": "myapp",
@@ -2655,6 +2806,8 @@ On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL
 | `id` | string | Conversation UUID from the source. Also used as `sourceId` in the DB for built-in sources |
 | `title` | string | Curated or auto-generated title |
 | `summary` | string | Curated or extracted summary |
+| `summaryKind` | `"none"`, `"imported"`, `"generated"`, or `"curated"` | Who or what produced the prose summary. Optional for backward compatibility; missing values are interpreted as `curated` when `summary` is non-empty, otherwise `none` |
+| `summaryExtraction` | object or null | Structured summary fields (`topics`, `outcome`, `toolsUsed`, `notableMoments`). Optional for backward compatibility; missing values are interpreted as null |
 | `tags` | string[] | Curated tags |
 | `author` | string | Who curated this conversation |
 | `projectName` | string or null | User-facing project name the conversation is associated with. Remote metadata does not include local project paths |
@@ -2673,6 +2826,8 @@ Remote metadata is valid only when:
 - `source` is a supported source key
 - `source` matches the source directory in the path
 - `id` matches the filename stem in both the `.meta.json` and `.jsonl` path
+
+Older remote metadata files without `summaryKind` or `summaryExtraction` remain valid. Import treats a non-empty legacy `summary` as `summaryKind = "curated"` and treats a blank legacy `summary` as `summaryKind = "none"`; `summaryExtraction` defaults to `null`.
 
 **Fields derived during import** (not in meta.json):
 
@@ -2946,7 +3101,7 @@ This complements the import-side guards in §11.8 (`clogignore` remote gating an
 **Export phase** (write local state to checkout):
 
 3. For each locally-originated saved conversation (`origin IS NULL AND state = 'saved'`) where `author = config.author`:
-   - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName` but not local-only `projectPath`
+   - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName`, `summaryKind`, and `summaryExtraction`, but not local-only `projectPath`
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
 4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a locally-saved conversation or a pre-reconcile remote-origin conversation: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
 
@@ -3014,11 +3169,11 @@ A remote conversation is retracted only when the complete pair is absent from di
 
 Remote reconciliation is scoped to the configured remote only. Conversations imported from a different remote origin are left untouched, even if they also have `origin IS NOT NULL`. Reconciliation keys remote conversations by `(source, id)`.
 
-**Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns. The derived local `savedMessageCount` is refreshed from the parsed JSONL whenever the remote row is inserted or updated, but it is not part of remote metadata comparison. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
+**Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns, including `summaryKind` and `summaryExtraction`. The derived local `savedMessageCount` is refreshed from the parsed JSONL whenever the remote row is inserted or updated, but it is not part of remote metadata comparison. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
 
 Reconciliation also compares the derived checkout path for the conversation. If the same imported conversation now lives at a different checkout path (for example because the author directory changed), update `sourcePath` and `filePath` in place on the existing DB row rather than treating it as a delete plus re-import.
 
-For search coherence, imported conversations follow the same stale-index rule as local edits: changes to search-visible metadata (`title`, `summary`, or `tags`) or content-indicating fields (`sourcePath`, `filePath`) clear `indexed_at`. Changes only to non-search metadata such as `author`, `projectName`, `projectPath`, or `slug` do not.
+For search coherence, imported conversations follow the same stale-index rule as local edits: changes to search-visible metadata (`title`, `summary`, or `tags`) or content-indicating fields (`sourcePath`, `filePath`) clear `indexed_at`. Changes only to non-search metadata such as `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, or `summaryExtraction` do not.
 
 **Unsupported source directories:** If an author directory contains a source directory that clog does not support, skip it and print a warning. Unknown source directories are never modified or deleted by clog.
 
@@ -3253,7 +3408,7 @@ See §13.2 and §13.4 for the sync test inventory (`sync-meta.test.ts`, `sync-pu
 
 | Step | Task |
 |------|------|
-| 4.1 | Auto-summarization (call an LLM to generate summaries) |
+| 4.1 | Provider-backed automatic summarization, if agent-assisted summarization proves insufficient |
 | 4.2 | Web UI for browsing the team knowledge base |
 | 4.3 | Conversation analytics (what topics are your team asking about most?) |
 | 4.4 | Import from exported Claude.ai conversations |
@@ -3293,6 +3448,7 @@ tests/
 ├── scan.test.ts             # Scan pipeline, ignore/config filtering, stale entry pruning
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
 ├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
+├── summaries.test.ts        # Agent-assisted summarization fields, MCP guides, and lifecycle rules
 ├── workflow.test.ts         # Multi-step workflows: add → save, etc.
 ├── sync-meta.test.ts        # .meta.json serialization/deserialization (Phase 3)
 ├── sync-pull.test.ts        # Reconciliation logic: import, update, delete (Phase 3)
@@ -3359,11 +3515,19 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **MCP tests** (`mcp.test.ts`):
 
-- Tool handler tests for `clog_list_saved`, `clog_list_staged`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`
+- Tool handler tests for `clog_list_saved`, `clog_list_staged`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`, `clog_summarization_guide`, and `clog_analysis_suggestions`
 - Input validation and error responses
 - Filter behavior (tags, project, author, grep)
-- `source` metadata in list/get/search payloads
+- `source`, `summaryKind`, `extraction`, and `origin` metadata in list/get/search payloads
 - Structured scan warnings surfaced as top-level `warnings`
+
+**Summaries tests** (`summaries.test.ts`):
+
+- Schema v5 migration and round-trip persistence for `summaryKind` and `summaryExtraction`
+- MCP `clog_update` summary-kind rules, including generated defaults, curated overrides, clearing behavior, and extraction-only edits
+- `clog edit --summary` curation behavior
+- Unsummarized predicate used by `clog talk` and the post-save hint
+- Bundled summarization guide and analysis suggestions tool payloads
 
 **Search coherence tests** (`search-coherence.test.ts`):
 
@@ -3375,6 +3539,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Models tests** (`models.test.ts`):
 
 - Zod schema validation for `ConversationMeta` and `Message` types
+- Summary kind, outcome, and extraction schema validation
 - Required vs optional field handling
 - Edge cases in schema parsing (missing fields, extra fields, type coercion)
 
@@ -3413,6 +3578,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - `.meta.json` Zod schema validation
 - Read/write round-trip for meta files
 - Conversion from meta format to `ConversationMeta`
+- `summaryKind` and `summaryExtraction` serialization plus backward-compatible defaults for older meta files
 - `.meta.json` does not contain `savedMessageCount`
 
 **Sync pull tests** (`sync-pull.test.ts`, Phase 3):

@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 
 import { z } from "zod";
 
-import type { ConversationMeta } from "../models/conversation.js";
+import type { ConversationMeta, SummaryExtraction } from "../models/conversation.js";
+import { summaryExtractionSchema, summaryKindSchema } from "../models/conversation.js";
 import { BUILTIN_SOURCES } from "../utils/paths.js";
 
 // Accept the standard ISO 8601 date-time shapes clog produces and consumes:
@@ -18,10 +19,12 @@ const isoTimestamp = z
     { message: "must be an ISO 8601 timestamp" },
   );
 
-export const remoteMetaSchema = z.object({
+const remoteMetaInputSchema = z.object({
   id: z.string().min(1),
   title: z.string(),
   summary: z.string(),
+  summaryKind: summaryKindSchema.optional(),
+  summaryExtraction: summaryExtractionSchema.nullable().optional(),
   tags: z.array(z.string()),
   author: z.string().min(1),
   projectName: z.string().nullable(),
@@ -31,6 +34,13 @@ export const remoteMetaSchema = z.object({
   createdAt: isoTimestamp,
   slug: z.string().nullable(),
 });
+
+export const remoteMetaSchema = remoteMetaInputSchema.transform((meta) => ({
+  ...meta,
+  summaryKind:
+    meta.summaryKind ?? (meta.summary.trim() ? "curated" : "none"),
+  summaryExtraction: meta.summaryExtraction ?? null,
+}));
 
 export type RemoteMeta = z.infer<typeof remoteMetaSchema>;
 
@@ -47,6 +57,8 @@ export function conversationToRemoteMeta(
     id: conversation.id,
     title: conversation.title,
     summary: conversation.summary,
+    summaryKind: conversation.summaryKind,
+    summaryExtraction: cloneExtraction(conversation.summaryExtraction),
     tags: [...conversation.tags],
     author: conversation.author,
     projectName: conversation.projectName,
@@ -56,6 +68,14 @@ export function conversationToRemoteMeta(
     createdAt: conversation.createdAt,
     slug: conversation.slug,
   };
+}
+
+function cloneExtraction(
+  extraction: SummaryExtraction | null,
+): SummaryExtraction | null {
+  if (extraction == null) return null;
+  // Defensive copy so callers can't mutate the conversation's stored object.
+  return JSON.parse(JSON.stringify(extraction)) as SummaryExtraction;
 }
 
 export function serializeRemoteMeta(meta: RemoteMeta): string {

@@ -2,7 +2,19 @@ import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
 import { browseValues, getConversationById, listConversations, resolveConversationId, updateConversation } from "../db/index.js";
-import { type ConversationMeta } from "../models/conversation.js";
+import {
+  type ConversationMeta,
+  summaryExtractionInputSchema,
+  type SummaryExtraction,
+} from "../models/conversation.js";
+import {
+  ANALYSIS_SUGGESTIONS,
+  ANALYSIS_SUGGESTIONS_VERSION,
+} from "./guides/analysis-suggestions.js";
+import {
+  SUMMARIZATION_GUIDE,
+  SUMMARIZATION_GUIDE_VERSION,
+} from "./guides/summarization.js";
 import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
@@ -48,13 +60,17 @@ interface SelectedRange {
   requestedOffset?: number;
 }
 
-const updateInputSchema = z.object({
-  id: z.string(),
-  title: z.string().optional(),
-  summary: z.string().optional(),
-  addTags: z.array(z.string()).optional(),
-  removeTags: z.array(z.string()).optional(),
-});
+export const updateInputSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().optional(),
+    summary: z.string().optional(),
+    extraction: summaryExtractionInputSchema.nullable().optional(),
+    summaryKind: z.enum(["generated", "curated"]).optional(),
+    addTags: z.array(z.string()).optional(),
+    removeTags: z.array(z.string()).optional(),
+  })
+  .strict();
 
 const browseInputSchema = z.object({
   by: z.enum(["tags", "projects", "authors"]),
@@ -99,9 +115,12 @@ export async function handleGet(input: unknown) {
     source: conversation.source,
     title: conversation.title,
     summary: conversation.summary,
+    summaryKind: conversation.summaryKind,
+    extraction: conversation.summaryExtraction,
     tags: conversation.tags,
     author: conversation.author,
     projectName: conversation.projectName,
+    origin: conversation.origin,
     state: conversation.state,
     createdAt: conversation.createdAt,
     messages: messages.slice(range.startIndex, range.endIndex),
@@ -229,16 +248,54 @@ export async function handleUpdate(input: unknown) {
     (tag) => !removeTags.has(tag),
   );
 
+  const nextSummary = parsed.summary ?? conversation.summary;
+  const summaryProvided = parsed.summary !== undefined;
+  const extractionProvided = parsed.extraction !== undefined;
+  const nextExtraction = extractionProvided
+    ? (parsed.extraction as SummaryExtraction | null)
+    : conversation.summaryExtraction;
+
+  // summaryKind reflects who wrote the prose summary. Adding structure to an
+  // existing curated summary does not change that — the prose is still curated.
+  // Defaults:
+  //   - prose changes via MCP: 'generated' (agent wrote it), unless the caller
+  //     explicitly passes 'curated' to mark a user-directed fix.
+  //   - clearing both prose and extraction: 'none'.
+  //   - extraction changes only: leave summaryKind as is.
+  let nextSummaryKind = conversation.summaryKind;
+  const summaryTextChanged =
+    summaryProvided && nextSummary !== conversation.summary;
+  const hasNoSummaryMetadata = !nextSummary.trim() && nextExtraction == null;
+
+  if (hasNoSummaryMetadata) {
+    nextSummaryKind = "none";
+  } else if (parsed.summaryKind !== undefined) {
+    nextSummaryKind = parsed.summaryKind;
+  } else if (summaryTextChanged && nextSummary.trim()) {
+    // Only default to 'generated' when there's actual prose. Clearing the
+    // prose while leaving an extraction behind shouldn't claim the result
+    // was newly generated; the existing kind is more honest.
+    nextSummaryKind = "generated";
+  }
+
   const updated = {
     ...conversation,
     title: parsed.title ?? conversation.title,
-    summary: parsed.summary ?? conversation.summary,
+    summary: nextSummary,
+    summaryKind: nextSummaryKind,
+    summaryExtraction: nextExtraction,
     tags: nextTags,
   };
+
+  const extractionChanged =
+    JSON.stringify(conversation.summaryExtraction ?? null) !==
+    JSON.stringify(updated.summaryExtraction ?? null);
 
   const changed =
     updated.title !== conversation.title ||
     updated.summary !== conversation.summary ||
+    updated.summaryKind !== conversation.summaryKind ||
+    extractionChanged ||
     JSON.stringify(updated.tags) !== JSON.stringify(conversation.tags);
 
   if (!changed) {
@@ -349,9 +406,12 @@ export async function handleSearch(input: unknown) {
         source: conversation.source,
         title: conversation.title,
         summary: conversation.summary,
+        summaryKind: conversation.summaryKind,
+        extraction: conversation.summaryExtraction,
         tags: conversation.tags,
         author: conversation.author,
         projectName: conversation.projectName,
+        origin: conversation.origin,
         createdAt: conversation.createdAt,
         relevanceScore: hit.score,
         snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
@@ -401,9 +461,12 @@ async function listConversationsForState(
       source: conversation.source,
       title: conversation.title,
       summary: conversation.summary,
+      summaryKind: conversation.summaryKind,
+      extraction: conversation.summaryExtraction,
       tags: conversation.tags,
       author: conversation.author,
       projectName: conversation.projectName,
+      origin: conversation.origin,
       createdAt: conversation.createdAt,
     }));
 
@@ -433,12 +496,29 @@ function summarizeConversation(conversation: ConversationMeta) {
     source: conversation.source,
     title: conversation.title,
     summary: conversation.summary,
+    summaryKind: conversation.summaryKind,
+    extraction: conversation.summaryExtraction,
     tags: conversation.tags,
     author: conversation.author,
     projectName: conversation.projectName,
+    origin: conversation.origin,
     state: conversation.state,
     createdAt: conversation.createdAt,
     modifiedAt: conversation.modifiedAt,
+  };
+}
+
+export async function handleSummarizationGuide() {
+  return {
+    version: SUMMARIZATION_GUIDE_VERSION,
+    guide: SUMMARIZATION_GUIDE,
+  };
+}
+
+export async function handleAnalysisSuggestions() {
+  return {
+    version: ANALYSIS_SUGGESTIONS_VERSION,
+    suggestions: ANALYSIS_SUGGESTIONS,
   };
 }
 

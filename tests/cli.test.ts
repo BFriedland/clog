@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ vi.mock("node:child_process", async () => {
   return {
     ...actual,
     execFile: vi.fn(),
+    spawn: vi.fn(actual.spawn),
   };
 });
 
@@ -68,7 +70,11 @@ const mockedPromptConfirm = vi.mocked(promptsModule.confirm);
 const mockedPromptSelect = vi.mocked(promptsModule.select);
 
 const childProcessModule = await import("node:child_process");
+const actualChildProcessModule = await vi.importActual<typeof import("node:child_process")>(
+  "node:child_process",
+);
 const mockedExecFile = vi.mocked(childProcessModule.execFile);
+const mockedSpawn = vi.mocked(childProcessModule.spawn);
 
 const searchInitModule = await import("../src/cli/search-init.js");
 const mockedRunSearchInitCommand = vi.mocked(searchInitModule.runSearchInitCommand);
@@ -96,6 +102,7 @@ import { buildRenameAuthorCommand } from "../src/cli/rename-author.js";
 import { buildResetCommand } from "../src/cli/reset.js";
 import { buildShowCommand } from "../src/cli/show.js";
 import { buildStatusCommand } from "../src/cli/status.js";
+import { buildSummarizeCommand, buildTalkCommand } from "../src/cli/talk.js";
 import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnsaveCommand } from "../src/cli/unsave.js";
 import { buildUntagCommand } from "../src/cli/untag.js";
@@ -137,6 +144,8 @@ describe("cli", () => {
     mockedPromptSelect.mockReset();
     mockedRunSearchInitCommand.mockClear();
     mockedExecFile.mockReset();
+    mockedSpawn.mockReset();
+    mockedSpawn.mockImplementation(actualChildProcessModule.spawn);
     mockedGetSearchProviders.mockImplementation(actualSearchDepsModule.getSearchProviders);
     mockedSearchAvailable.mockImplementation(actualSearchDepsModule.searchAvailable);
   });
@@ -344,6 +353,57 @@ describe("cli", () => {
 
       await expect(runBuiltCommand(buildMcpCommand, ["setup", "claude"])).rejects.toThrow(
         /Claude Code is not installed or not on PATH/,
+      );
+    });
+  });
+
+  describe("talk", () => {
+    it("launches an explicit client", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      mockSpawnExit();
+
+      await runBuiltCommand(buildTalkCommand, ["claude"]);
+
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "claude",
+        [expect.stringContaining("clog's `talk` command")],
+        { stdio: "inherit", shell: false },
+      );
+    });
+
+    it("prompts for a client when none is supplied", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      mockedPromptSelect.mockResolvedValueOnce("claude");
+      mockSpawnExit();
+
+      await runBuiltCommand(buildTalkCommand, []);
+
+      expect(mockedPromptSelect).toHaveBeenCalledWith({
+        message: "Which agent should open?",
+        choices: [
+          { value: "claude", name: "Claude Code" },
+          { value: "codex", name: "Codex CLI" },
+        ],
+      });
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "claude",
+        [expect.stringContaining("clog's `talk` command")],
+        { stdio: "inherit", shell: false },
+      );
+    });
+  });
+
+  describe("summarize", () => {
+    it("launches an agent with the summarize framing", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      mockSpawnExit();
+
+      await runBuiltCommand(buildSummarizeCommand, ["claude"]);
+
+      expect(mockedSpawn).toHaveBeenCalledWith(
+        "claude",
+        [expect.stringContaining("clog's `summarize` command")],
+        { stdio: "inherit", shell: false },
       );
     });
   });
@@ -827,6 +887,8 @@ describe("cli", () => {
         "source",
         "title",
         "summary",
+        "summaryKind",
+        "extraction",
         "author",
         "projectName",
         "tags",
@@ -2886,6 +2948,18 @@ function mockExecFileMissing(): void {
       callback(error, "", "");
       return {} as ReturnType<typeof childProcessModule.execFile>;
     }) as typeof childProcessModule.execFile,
+  );
+}
+
+function mockSpawnExit(exitCode = 0): void {
+  mockedSpawn.mockImplementationOnce(
+    ((_command: string, _args?: readonly string[]) => {
+      const child = new EventEmitter();
+      process.nextTick(() => {
+        child.emit("exit", exitCode);
+      });
+      return child as ReturnType<typeof childProcessModule.spawn>;
+    }) as typeof childProcessModule.spawn,
   );
 }
 

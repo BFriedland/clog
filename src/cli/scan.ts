@@ -12,6 +12,7 @@ import {
   deleteConversationInDb,
 } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
+import { summaryKindForDiscoveredSummary } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { nowIso } from "../utils/time.js";
 import {
@@ -140,6 +141,8 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
           ...found,
           title: candidate.metadata.title,
           summary: candidate.metadata.summary,
+          summaryKind: summaryKindForDiscoveredSummary(candidate.metadata.summary),
+          summaryExtraction: null,
           projectName: candidate.metadata.projectName,
           projectPath: candidate.metadata.projectPath,
           slug: candidate.metadata.slug,
@@ -203,6 +206,8 @@ function buildDiscoveredConversation(
     source: candidate.source,
     title: candidate.metadata.title,
     summary: candidate.metadata.summary,
+    summaryKind: summaryKindForDiscoveredSummary(candidate.metadata.summary),
+    summaryExtraction: null,
     author,
     projectName: candidate.metadata.projectName,
     projectPath: candidate.metadata.projectPath,

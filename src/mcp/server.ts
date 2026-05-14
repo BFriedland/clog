@@ -8,12 +8,15 @@ import { loadConfig } from "../config/index.js";
 import { getScanWarningsForCommand, renderWarnings } from "../cli/common.js";
 import { scanLocalSources } from "../cli/scan.js";
 import {
+  handleAnalysisSuggestions,
   handleBrowse,
   handleGet,
   handleListSaved,
   handleSearch,
   handleListStaged,
+  handleSummarizationGuide,
   handleUpdate,
+  updateInputSchema,
 } from "./handlers.js";
 
 export async function startMcpServer(): Promise<void> {
@@ -80,16 +83,39 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_update",
     {
-      description: "Update staged or saved conversation metadata.",
-      inputSchema: {
-        id: z.string(),
-        title: z.string().optional(),
-        summary: z.string().optional(),
-        addTags: z.array(z.string()).optional(),
-        removeTags: z.array(z.string()).optional(),
-      },
+      description:
+        "Update staged or saved conversation metadata. For summarization work, pass `summary` and `extraction` together. Default summaryKind is 'generated'; pass 'curated' only when the user directs a specific edit.",
+      inputSchema: updateInputSchema,
     },
     async (input) => toToolResult(await handleUpdate(input), "Updated conversation metadata."),
+  );
+
+  server.registerTool(
+    "clog_summarization_guide",
+    {
+      description:
+        "Read this before summarizing clog conversations. Returns the markdown guide describing the extraction shape and quality guidelines.",
+      inputSchema: {},
+    },
+    async () =>
+      toToolResult(
+        await handleSummarizationGuide(),
+        "Returned the clog summarization guide.",
+      ),
+  );
+
+  server.registerTool(
+    "clog_analysis_suggestions",
+    {
+      description:
+        "Returns an opinionated library of analyses to offer the user when helping them explore their saved conversations.",
+      inputSchema: {},
+    },
+    async () =>
+      toToolResult(
+        await handleAnalysisSuggestions(),
+        "Returned analysis suggestions.",
+      ),
   );
 
   server.registerTool(

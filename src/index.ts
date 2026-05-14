@@ -24,6 +24,7 @@ import { buildResetCommand } from "./cli/reset.js";
 import { buildSyncCommand } from "./cli/sync.js";
 import { buildShowCommand } from "./cli/show.js";
 import { buildStatusCommand } from "./cli/status.js";
+import { buildSummarizeCommand, buildTalkCommand } from "./cli/talk.js";
 import { buildTagCommand } from "./cli/tag.js";
 import { buildUnexcludeCommand } from "./cli/unexclude.js";
 import { buildUnsaveCommand } from "./cli/unsave.js";
@@ -72,6 +73,8 @@ async function main(): Promise<void> {
   program.addCommand(buildRemoteCommand());
   program.addCommand(buildSyncCommand());
   program.addCommand(buildRefreshCommand());
+  program.addCommand(buildTalkCommand());
+  program.addCommand(buildSummarizeCommand());
   program
     .command("index")
     .description("Index saved conversations for semantic search")

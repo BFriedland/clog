@@ -461,6 +461,8 @@ function baseConversation() {
     source: "claude-code",
     title: "Debug auth",
     summary: "",
+    summaryKind: "none" as const,
+    summaryExtraction: null,
     author: "alice",
     projectName: "api-service",
     projectPath: "/tmp/api-service",

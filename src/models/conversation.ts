@@ -8,6 +8,57 @@ export const conversationStateSchema = z.enum([
 
 export type ConversationState = z.infer<typeof conversationStateSchema>;
 
+export const summaryKindSchema = z.enum([
+  "none",
+  "imported",
+  "generated",
+  "curated",
+]);
+
+export type SummaryKind = z.infer<typeof summaryKindSchema>;
+
+export const summaryOutcomeSchema = z.enum([
+  "fixed",
+  "partial",
+  "abandoned",
+  "exploratory",
+  "blocked",
+  "noise",
+  "unclear",
+]);
+
+export type SummaryOutcome = z.infer<typeof summaryOutcomeSchema>;
+
+// Two variants on purpose:
+//   - summaryExtractionSchema is tolerant. It's used on read paths (DB load,
+//     remote .meta.json parse) where data may have been written by a future
+//     clog version that added a new field. Unknown keys are silently stripped
+//     so older clogs keep importing remote conversations across version skew.
+//   - summaryExtractionInputSchema is strict. It's used on the agent-write
+//     path (MCP clog_update) so an LLM that invents or misspells a field
+//     gets a hard error instead of silent data loss.
+export const summaryExtractionSchema = z.object({
+  topics: z.array(z.string()).optional(),
+  outcome: summaryOutcomeSchema.optional(),
+  toolsUsed: z.array(z.string()).optional(),
+  notableMoments: z
+    .array(z.object({ why: z.string() }))
+    .optional(),
+});
+
+export const summaryExtractionInputSchema = z
+  .object({
+    topics: z.array(z.string()).optional(),
+    outcome: summaryOutcomeSchema.optional(),
+    toolsUsed: z.array(z.string()).optional(),
+    notableMoments: z
+      .array(z.object({ why: z.string() }).strict())
+      .optional(),
+  })
+  .strict();
+
+export type SummaryExtraction = z.infer<typeof summaryExtractionSchema>;
+
 export const messageRoleSchema = z.enum([
   "user",
   "assistant",
@@ -33,6 +84,8 @@ export const conversationMetaSchema = z.object({
   source: z.string(),
   title: z.string(),
   summary: z.string(),
+  summaryKind: summaryKindSchema.default("none"),
+  summaryExtraction: summaryExtractionSchema.nullable().default(null),
   author: z.string(),
   projectName: z.string().nullable(),
   projectPath: z.string().nullable(),
@@ -53,3 +106,38 @@ export const conversationMetaSchema = z.object({
 });
 
 export type ConversationMeta = z.infer<typeof conversationMetaSchema>;
+
+export function summaryKindForDiscoveredSummary(summary: string): SummaryKind {
+  return summary.trim() ? "imported" : "none";
+}
+
+// A conversation is "summarized" iff the user has curated it or an agent has
+// written a structured extraction. Anything else (empty, source-only, or
+// prose-only generated) can still benefit from agent-written structure.
+export function isUnsummarized(conversation: ConversationMeta): boolean {
+  return (
+    conversation.summaryKind !== "curated" &&
+    conversation.summaryExtraction == null
+  );
+}
+
+export function parseSummaryExtraction(raw: unknown): SummaryExtraction | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    if (!raw.trim()) return null;
+    try {
+      return summaryExtractionSchema.parse(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  const result = summaryExtractionSchema.safeParse(raw);
+  return result.success ? result.data : null;
+}
+
+export function serializeSummaryExtraction(
+  extraction: SummaryExtraction | null,
+): string | null {
+  if (extraction == null) return null;
+  return JSON.stringify(extraction);
+}

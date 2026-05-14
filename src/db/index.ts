@@ -9,6 +9,8 @@ import {
   type ConversationMeta,
   conversationMetaSchema,
   type ConversationState,
+  parseSummaryExtraction,
+  serializeSummaryExtraction,
 } from "../models/conversation.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
@@ -230,6 +232,8 @@ export function insertConversationInDb(
         source,
         title,
         summary,
+        summary_kind,
+        summary_extraction,
         author,
         project_name,
         project_path,
@@ -247,7 +251,7 @@ export function insertConversationInDb(
         source_mtime,
         indexed_at,
         origin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     conversationToParams(conversation),
   );
@@ -265,6 +269,8 @@ export function updateConversationInDb(
         source = ?,
         title = ?,
         summary = ?,
+        summary_kind = ?,
+        summary_extraction = ?,
         author = ?,
         project_name = ?,
         project_path = ?,
@@ -289,6 +295,8 @@ export function updateConversationInDb(
       conversation.source,
       conversation.title,
       conversation.summary,
+      normalizeSummaryKind(conversation),
+      serializeSummaryExtraction(conversation.summaryExtraction),
       conversation.author,
       conversation.projectName,
       conversation.projectPath,
@@ -450,6 +458,8 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.source,
     conversation.title,
     conversation.summary,
+    normalizeSummaryKind(conversation),
+    serializeSummaryExtraction(conversation.summaryExtraction),
     conversation.author,
     conversation.projectName,
     conversation.projectPath,
@@ -468,6 +478,31 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.indexedAt,
     conversation.origin,
   ];
+}
+
+function normalizeSummaryKind(
+  conversation: Pick<ConversationMeta, "summary" | "summaryKind">,
+): ConversationMeta["summaryKind"] {
+  if (conversation.summaryKind) {
+    return conversation.summaryKind;
+  }
+  return conversation.summary.trim() ? "curated" : "none";
+}
+
+function normalizeSummaryKindFromRow(
+  raw: unknown,
+  summary: string,
+): ConversationMeta["summaryKind"] {
+  const value = typeof raw === "string" ? raw : null;
+  if (
+    value === "none" ||
+    value === "imported" ||
+    value === "generated" ||
+    value === "curated"
+  ) {
+    return value;
+  }
+  return summary.trim() ? "curated" : "none";
 }
 
 function firstConversation(
@@ -498,12 +533,15 @@ function rowsFromResult(result?: QueryExecResult): Array<Record<string, unknown>
 }
 
 function rowToConversation(row: Record<string, unknown>): ConversationMeta {
+  const summaryText = String(row.summary ?? "");
   return conversationMetaSchema.parse({
     id: String(row.id),
     sourceId: String(row.source_id),
     source: String(row.source),
     title: String(row.title),
-    summary: String(row.summary ?? ""),
+    summary: summaryText,
+    summaryKind: normalizeSummaryKindFromRow(row.summary_kind, summaryText),
+    summaryExtraction: parseSummaryExtraction(row.summary_extraction),
     author: String(row.author),
     projectName: nullableString(row.project_name),
     projectPath: nullableString(row.project_path),
