@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -30,6 +30,11 @@ export function applyMigrations(db: Database): void {
     migrateToV4(db);
     setSchemaVersion(db, 4);
   }
+
+  if (currentVersion < 5) {
+    migrateToV5(db);
+    setSchemaVersion(db, 5);
+  }
 }
 
 function createLatestSchema(db: Database): void {
@@ -50,6 +55,9 @@ function createConversationsTable(db: Database): void {
       source TEXT NOT NULL,
       title TEXT NOT NULL,
       summary TEXT DEFAULT '',
+      summary_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(summary_kind IN ('none','imported','generated','curated')),
+      summary_extraction TEXT,
       author TEXT NOT NULL,
       project_name TEXT,
       project_path TEXT,
@@ -130,6 +138,26 @@ function migrateToV4(db: Database): void {
 
     DROP TABLE conversations;
     ALTER TABLE conversations_v4 RENAME TO conversations;
+  `);
+}
+
+function migrateToV5(db: Database): void {
+  // SQLite's ADD COLUMN supports NOT NULL when a non-null DEFAULT is supplied.
+  // The column-level CHECK references only the new column.
+  addColumnIfMissing(
+    db,
+    "conversations",
+    "summary_kind",
+    "TEXT NOT NULL DEFAULT 'none' CHECK(summary_kind IN ('none','imported','generated','curated'))",
+  );
+  addColumnIfMissing(db, "conversations", "summary_extraction", "TEXT");
+
+  // Existing non-empty summaries become 'curated': conservative, so auto-summary
+  // does not overwrite text the user has had a chance to edit.
+  db.exec(`
+    UPDATE conversations
+    SET summary_kind = 'curated'
+    WHERE summary_kind = 'none' AND COALESCE(summary, '') != '';
   `);
 }
 

@@ -25,17 +25,36 @@ export function buildEditCommand(): Command {
 
       const conversation = await resolveConversationOrFail(id);
       assertNotRemote(conversation, "clog edit");
-      const updated = {
+      const summaryProvided = options.summary !== undefined;
+      const nextSummary = options.summary ?? conversation.summary;
+      const updated: ConversationMeta = {
         ...conversation,
         title: options.title ?? conversation.title,
-        summary: options.summary ?? conversation.summary,
+        summary: nextSummary,
         author: options.author ?? conversation.author,
       };
+
+      if (summaryProvided) {
+        // Passing --summary at all is the curation gesture, even if the text
+        // happens to match what was already there: the user is claiming this
+        // exact summary as their curated choice. Clearing ("--summary ''")
+        // resets summaryKind to 'none' and drops the structured extraction
+        // so the conversation looks unsummarized again. No-op behavior is
+        // then decided from the resulting metadata below.
+        if (updated.summary.trim()) {
+          updated.summaryKind = "curated";
+        } else {
+          updated.summaryKind = "none";
+          updated.summaryExtraction = null;
+        }
+      }
 
       const changed =
         updated.title !== conversation.title ||
         updated.summary !== conversation.summary ||
-        updated.author !== conversation.author;
+        updated.author !== conversation.author ||
+        updated.summaryKind !== conversation.summaryKind ||
+        updated.summaryExtraction !== conversation.summaryExtraction;
 
       if (!changed) {
         process.stdout.write("Nothing changed.\n");

@@ -75,6 +75,13 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`) |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
+### Agent Sessions
+
+| Command | What it does |
+|---------|-------------|
+| `clog talk [claude\|codex]` | Open an MCP-capable agent in this terminal, primed with the current clog state |
+| `clog summarize [claude\|codex]` | Open an agent and ask it to summarize unsummarized saved conversations |
+
 ### Semantic Search
 
 | Command | What it does |
@@ -131,9 +138,23 @@ This gives agents the following tools:
 | `clog_list_saved` | List saved conversations (filterable by origin, project, etc.) |
 | `clog_list_staged` | List staged conversations for agent-assisted curation |
 | `clog_get` | Load a conversation's messages |
-| `clog_update` | Edit title, summary, or tags |
+| `clog_update` | Edit title, summary, structured extraction, or tags |
 | `clog_browse` | List tags, projects, or authors |
 | `clog_search` | Semantic search (requires `clog search --init`) |
+| `clog_summarization_guide` | Read before summarizing — explains why summaries help, the extraction shape, and the quality bar |
+| `clog_analysis_suggestions` | Opinionated library of analyses an agent can offer the user |
+
+## Agent-Assisted Summarization
+
+clog can store structured summaries for saved conversations so that later analyst agents can scan many conversations cheaply. Summaries are written by an MCP-capable agent, not by clog itself, and clog remains useful without them.
+
+```bash
+clog save             # saves conversations as usual; ends with a hint about saved conversations without summaries
+clog talk             # opens your agent and primes it with the current clog state
+clog summarize        # opens your agent with a summarization-focused intro
+```
+
+The agent reads the `clog_summarization_guide` MCP tool, then works through unsummarized conversations and calls `clog_update` with a prose `summary` plus a structured `extraction` (topics, outcome, tools used, notable moments). User-edited summaries (`clog edit --summary`) are marked `curated` and are not overwritten.
 
 ## Semantic Search
 

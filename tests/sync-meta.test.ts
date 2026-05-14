@@ -31,6 +31,8 @@ describe("sync meta", () => {
       id: "abc12345-1234-1234-1234-123456789012",
       title: "Fix auth",
       summary: "JWT expiration",
+      summaryKind: "curated",
+      summaryExtraction: null,
       tags: ["auth", "debugging"],
       author: "alice",
       projectName: "api-service",
@@ -119,6 +121,34 @@ describe("sync meta", () => {
     }
   });
 
+  it("tolerates unknown future fields inside summaryExtraction on read", () => {
+    // Forward-compat contract: a newer clog may add fields to the extraction
+    // shape and push them to a shared remote. Older clogs pulling that remote
+    // must still accept the conversation. Unknown keys are silently dropped
+    // rather than rejecting the whole meta file (which would skip the
+    // conversation from the pull entirely).
+    const baseline = conversationToRemoteMeta(makeConversation());
+    const withFutureFields = {
+      ...baseline,
+      summaryExtraction: {
+        topics: ["auth"],
+        outcome: "fixed",
+        confidence: 0.8,
+        notableMoments: [{ why: "user spotted bug", severity: "high" }],
+      },
+    };
+
+    const result = parseRemoteMeta(JSON.stringify(withFutureFields));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.meta.summaryExtraction).toEqual({
+        topics: ["auth"],
+        outcome: "fixed",
+        notableMoments: [{ why: "user spotted bug" }],
+      });
+    }
+  });
+
   it("refuses to serialize a not-yet-saved conversation", () => {
     const notSaved = { ...makeConversation(), savedAt: null };
     expect(() => conversationToRemoteMeta(notSaved)).toThrow(
@@ -134,6 +164,8 @@ function makeConversation(): ConversationMeta {
     source: "claude-code",
     title: "Fix auth",
     summary: "JWT expiration",
+    summaryKind: "curated",
+    summaryExtraction: null,
     author: "alice",
     projectName: "api-service",
     projectPath: "/tmp/api-service",

@@ -407,6 +407,8 @@ function buildConversationFromRemote(
     source: pair.meta.source,
     title: pair.meta.title,
     summary: pair.meta.summary,
+    summaryKind: pair.meta.summaryKind,
+    summaryExtraction: pair.meta.summaryExtraction,
     author: pair.meta.author,
     projectName: pair.meta.projectName,
     projectPath: null,
@@ -440,6 +442,10 @@ function mergeRemoteInto(
   const contentPathChanged =
     existing.sourcePath !== pair.jsonlPath || existing.filePath !== pair.jsonlPath;
 
+  const extractionChanged =
+    JSON.stringify(existing.summaryExtraction ?? null) !==
+    JSON.stringify(pair.meta.summaryExtraction ?? null);
+
   const metadataChanged =
     searchVisibleChanged ||
     existing.author !== pair.meta.author ||
@@ -448,7 +454,9 @@ function mergeRemoteInto(
     existing.createdAt !== pair.meta.createdAt ||
     existing.modifiedAt !== pair.meta.modifiedAt ||
     existing.savedAt !== pair.meta.savedAt ||
-    existing.savedMessageCount !== pair.messageCount;
+    existing.savedMessageCount !== pair.messageCount ||
+    existing.summaryKind !== pair.meta.summaryKind ||
+    extractionChanged;
 
   if (!metadataChanged && !contentPathChanged) {
     return null;
@@ -458,6 +466,8 @@ function mergeRemoteInto(
     ...existing,
     title: pair.meta.title,
     summary: pair.meta.summary,
+    summaryKind: pair.meta.summaryKind,
+    summaryExtraction: pair.meta.summaryExtraction,
     author: pair.meta.author,
     projectName: pair.meta.projectName,
     tags: [...pair.meta.tags],

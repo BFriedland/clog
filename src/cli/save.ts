@@ -7,7 +7,7 @@ import {
   listConversationsNeedingIndex,
   updateConversation,
 } from "../db/index.js";
-import type { ConversationMeta } from "../models/conversation.js";
+import { isUnsummarized, type ConversationMeta } from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { searchAvailable } from "../search/deps.js";
 import { nowIso } from "../utils/time.js";
@@ -137,7 +137,25 @@ export function buildSaveCommand(): Command {
 
       process.stdout.write(`Saved ${conversations.length} conversation(s).\n`);
       await maybePrintUnindexedHint(config);
+      await maybePrintSummarizationHint();
     });
+}
+
+export async function maybePrintSummarizationHint(): Promise<void> {
+  const saved = await listConversations({
+    states: ["saved"],
+    origin: "local",
+  });
+
+  const unsummarized = saved.filter(isUnsummarized);
+
+  if (unsummarized.length === 0) {
+    return;
+  }
+
+  process.stdout.write(
+    `\n${chalk.bold(`${unsummarized.length} saved conversation(s) don't have structured summaries.`)} Run \`clog talk\` to start an agent session.\n`,
+  );
 }
 
 function resolveFilePathOrFallback(
