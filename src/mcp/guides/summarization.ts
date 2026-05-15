@@ -1,7 +1,7 @@
 // First-draft summarization guide. The user expects this to be refined based
 // on early use; the wording here is provisional but functional.
 
-export const SUMMARIZATION_GUIDE_VERSION = 1;
+export const SUMMARIZATION_GUIDE_VERSION = 2;
 
 export const SUMMARIZATION_GUIDE = `# How to Summarize clog Conversations
 
@@ -147,6 +147,11 @@ encounter rows that should be skipped (curated, remote, or anything you
 decide on after reading), keep going until you have written the number the
 user asked for, or until you run out of eligible candidates. Report at the
 end how many you wrote, how many you skipped, and why.
+
+\`clog_list_saved\` is paginated. When collecting candidates, start with a
+reasonable \`limit\` such as 20. If the response has \`hasMore: true\`, request
+the next page with \`offset: nextOffset\` and the same \`limit\` until you have
+enough candidates for the user's requested scope.
 
 ## What to skip
 

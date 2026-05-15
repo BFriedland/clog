@@ -306,7 +306,7 @@ This is intentional. clog does not use a composite key for the built-in sources 
 
 **Summary freshness:** v1 does not track whether a generated summary/extraction still covers the current saved checkpoint. If a conversation is summarized, later extended, and saved again, the existing `summary`, `summaryKind`, and `summaryExtraction` remain in place until the user or an agent clears or refreshes them. `clog_get` remains the source of truth for transcript content. Future freshness tracking should derive from a content hash of the summarized window rather than an agent-reported message count.
 
-**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the user-facing project label, usually the basename of `projectPath`. User-facing table columns, `--project <name>`, MCP filters, and remote metadata use `projectName` and label it "project." Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
+**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the stored project label, usually the basename of `projectPath`. User-facing table columns and `--project <name>` label it "project." MCP tool inputs and responses expose the field as `project` so agents see one name for the concept. Remote metadata uses `projectName` for wire compatibility with the stored model. Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
 
 ### 3.2 Message Format (On-Demand Parsing)
 
@@ -2001,12 +2001,14 @@ MCP tools that accept a conversation ID use the same resolver grammar as CLI com
 tool: "clog_list_saved"
 input: {
   tags?: string[];         // Filter by tags (OR — conversations with at least one matching tag)
-  project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
-  author?: string;         // Filter by author
+  project?: string;        // Case-insensitive substring match on project
+  author?: string;         // Case-insensitive substring match on author
   grep?: string;           // Case-insensitive substring match on title, summary, or message content
   origin?: "local" | "remote"; // Filter local vs remote saved conversations
   limit?: number;          // Default 20, max 100
   offset?: number;         // For pagination
+  sortBy?: "createdAt" | "savedAt" | "modifiedAt" | "title" | "project" | "author";
+  sortDirection?: "asc" | "desc"; // Default desc
 }
 returns: {
   conversations: Array<{
@@ -2018,11 +2020,22 @@ returns: {
     extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
-    projectName: string | null;
+    project: string | null;
     origin: string | null;
     createdAt: string;
+    modifiedAt: string;
+    savedAt: string | null;
+    savedMessageCount: number | null;
   }>;
   totalCount: number;
+  limit: number;           // Effective page size
+  offset: number;          // Effective zero-based result offset
+  sortBy: string;          // Effective sort field
+  sortDirection: "asc" | "desc"; // Effective sort direction
+  returnedCount: number;   // Number of conversations in this page
+  hasMore: boolean;        // True when another page is available
+  nextOffset?: number;     // Offset to request next with the same limit
+  paginationNote?: string; // Present when hasMore is true; tells agents how to page
   warnings?: ClogWarning[];
 }
 
@@ -2051,7 +2064,7 @@ returns: {
   extraction: SummaryExtraction | null;
   tags: string[];
   author: string;
-  projectName: string | null;
+  project: string | null;
   origin: string | null;
   state: string;
   createdAt: string;
@@ -2120,7 +2133,7 @@ returns: {
     extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
-    projectName: string | null;
+    project: string | null;
     origin: string | null;
     state: string;
     createdAt: string;
@@ -2173,9 +2186,24 @@ returns: {
 }
 ```
 
+`clog_list_saved` and `clog_list_staged` always return explicit pagination
+metadata. Agents should treat `hasMore: true` as an instruction to request the
+next page with `offset: nextOffset` and the same `limit` when the task requires
+the full result set. Sorting applies after all filters, and pagination applies
+after sorting. The default sort is `createdAt` descending with `id` ascending as
+the stable tiebreaker.
+
+For MCP list tools, `project` and `author` are forgiving agent-facing filters:
+the supplied value is trimmed and matched as a case-insensitive substring
+against the stored project or author value. Rows with no project do not match a
+`project` filter. MCP responses expose the project as `project`; they do not
+expose the internal `projectName` model field. This intentionally differs from
+the CLI's exact metadata selectors so agents do not miss relevant rows when the
+user supplies a partial or differently-cased project or author name.
+
 `clog_summarization_guide` returns a bundled markdown guide. The guide tells a summarizing agent why summaries are useful, the exact `clog_update` input shape for `summary` plus `extraction`, quality guidelines for prose summaries, how to triage long conversations with `clog_get` windowing, and when to pass `summaryKind: "curated"` instead of relying on the default generated behavior.
 
-`clog_analysis_suggestions` returns a small, versioned, clog-authored library of exploration prompts. The v1 library includes suggestions for intro prompt quality, missed assumptions, iteration outliers, abandoned tasks by project, tool usage patterns, noise patterns, and team outliers. The tool returns starting prompts only; the agent performs analysis by calling the regular list/search/get tools.
+`clog_analysis_suggestions` returns a small, versioned, clog-authored library of exploration prompts. The v2 library includes suggestions for intro prompt quality, missed assumptions, iteration outliers, abandoned tasks by project, tool usage patterns, noise patterns, and team outliers. The tool returns starting prompts only; the agent performs analysis by calling the regular list/search/get tools.
 
 The summarization workflow is agent-assisted. clog exposes storage and MCP tools, but it does not call an LLM itself. A typical flow is: `clog save` hints that some saved conversations do not have summaries, `clog talk` or `clog summarize` opens the user's agent, the agent reads `clog_summarization_guide`, the user confirms scope, and the agent calls `clog_get` plus `clog_update` for each selected saved local conversation.
 
@@ -2572,8 +2600,8 @@ tool: "clog_search"
 input: {
   query: string;           // Natural language search query
   tags?: string[];         // Filter by tags
-  project?: string;        // Filter by projectName; named "project" for user-facing ergonomics
-  author?: string;         // Filter by author
+  project?: string;        // Case-insensitive substring match on project
+  author?: string;         // Case-insensitive substring match on author
   origin?: "local" | "remote"; // Filter local vs remote saved conversations
   limit?: number;          // Default 10, max 50
 }
@@ -2587,7 +2615,7 @@ returns: {
     extraction: SummaryExtraction | null;
     tags: string[];
     author: string;
-    projectName: string | null;
+    project: string | null;
     origin: string | null;
     createdAt: string;
     relevanceScore: number;
@@ -2603,6 +2631,10 @@ returns: {
 ```
 
 `clog_search` only searches **saved** conversations, consistent with `clog_list_saved` and `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
+
+`clog_search` uses the same MCP metadata filter semantics as `clog_list_saved`:
+`project` and `author` are trimmed case-insensitive substring filters, tags are
+normalized exact OR filters, and `origin` filters local vs remote saved rows.
 
 Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with non-null `indexed_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
 

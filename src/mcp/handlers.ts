@@ -22,6 +22,16 @@ import { searchConversations } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
 import { filterConversationsByGrep, parseConversationMessages } from "../cli/common.js";
 
+const listSortBySchema = z.enum([
+  "createdAt",
+  "savedAt",
+  "modifiedAt",
+  "title",
+  "project",
+  "author",
+]);
+const listSortDirectionSchema = z.enum(["asc", "desc"]);
+
 const listInputSchema = z.object({
   tags: z.array(z.string()).optional(),
   project: z.string().optional(),
@@ -30,6 +40,8 @@ const listInputSchema = z.object({
   origin: z.enum(["local", "remote"]).optional(),
   limit: z.number().int().positive().max(100).default(20),
   offset: z.number().int().nonnegative().default(0),
+  sortBy: listSortBySchema.default("createdAt"),
+  sortDirection: listSortDirectionSchema.default("desc"),
 });
 
 const getInputSchema = z.object({
@@ -59,6 +71,9 @@ interface SelectedRange {
   range: MessageRange;
   requestedOffset?: number;
 }
+
+type ListSortBy = z.infer<typeof listSortBySchema>;
+type ListSortDirection = z.infer<typeof listSortDirectionSchema>;
 
 export const updateInputSchema = z
   .object({
@@ -119,7 +134,7 @@ export async function handleGet(input: unknown) {
     extraction: conversation.summaryExtraction,
     tags: conversation.tags,
     author: conversation.author,
-    projectName: conversation.projectName,
+    project: conversation.projectName,
     origin: conversation.origin,
     state: conversation.state,
     createdAt: conversation.createdAt,
@@ -339,10 +354,9 @@ export async function handleSearch(input: unknown) {
   const { embedding, vectorStore } = await requireSearchProviders();
   let saved = await listConversations({
     states: ["saved"],
-    projectName: parsed.project,
-    author: parsed.author,
     origin: parsed.origin,
   });
+  saved = filterConversationsByMcpMetadata(saved, parsed);
 
   if (parsed.tags && parsed.tags.length > 0) {
     const tags = new Set(normalizeTags(parsed.tags));
@@ -410,7 +424,7 @@ export async function handleSearch(input: unknown) {
         extraction: conversation.summaryExtraction,
         tags: conversation.tags,
         author: conversation.author,
-        projectName: conversation.projectName,
+        project: conversation.projectName,
         origin: conversation.origin,
         createdAt: conversation.createdAt,
         relevanceScore: hit.score,
@@ -436,10 +450,9 @@ async function listConversationsForState(
 ) {
   let conversations = await listConversations({
     states: [state],
-    projectName: input.project,
-    author: input.author,
     origin: input.origin,
   });
+  conversations = filterConversationsByMcpMetadata(conversations, input);
 
   if (input.tags && input.tags.length > 0) {
     const tags = new Set(normalizeTags(input.tags));
@@ -453,6 +466,12 @@ async function listConversationsForState(
     conversations = await filterConversationsByGrep(config, input.grep, conversations);
   }
 
+  conversations = sortConversationsForMcpList(
+    conversations,
+    input.sortBy,
+    input.sortDirection,
+  );
+
   const totalCount = conversations.length;
   const page = conversations
     .slice(input.offset, input.offset + input.limit)
@@ -465,15 +484,143 @@ async function listConversationsForState(
       extraction: conversation.summaryExtraction,
       tags: conversation.tags,
       author: conversation.author,
-      projectName: conversation.projectName,
+      project: conversation.projectName,
       origin: conversation.origin,
       createdAt: conversation.createdAt,
+      modifiedAt: conversation.modifiedAt,
+      savedAt: conversation.savedAt,
+      savedMessageCount: conversation.savedMessageCount,
     }));
+  const returnedCount = page.length;
+  const nextOffset = input.offset + input.limit;
+  const hasMore = nextOffset < totalCount;
 
   return {
     conversations: page,
     totalCount,
+    limit: input.limit,
+    offset: input.offset,
+    sortBy: input.sortBy,
+    sortDirection: input.sortDirection,
+    returnedCount,
+    hasMore,
+    nextOffset: hasMore ? nextOffset : undefined,
+    paginationNote: hasMore
+      ? `More conversations are available. Request offset ${nextOffset} with limit ${input.limit} for the next page.`
+      : undefined,
   };
+}
+
+function sortConversationsForMcpList(
+  conversations: ConversationMeta[],
+  sortBy: ListSortBy,
+  sortDirection: ListSortDirection,
+): ConversationMeta[] {
+  return [...conversations].sort((left, right) => {
+    const compared = compareConversationListField(left, right, sortBy, sortDirection);
+    return compared === 0 ? left.id.localeCompare(right.id) : compared;
+  });
+}
+
+function compareConversationListField(
+  left: ConversationMeta,
+  right: ConversationMeta,
+  sortBy: ListSortBy,
+  sortDirection: ListSortDirection,
+): number {
+  switch (sortBy) {
+    case "createdAt":
+      return compareNullableNumbers(
+        Date.parse(left.createdAt),
+        Date.parse(right.createdAt),
+        sortDirection,
+      );
+    case "savedAt":
+      return compareNullableNumbers(
+        parseSortableTimestamp(left.savedAt),
+        parseSortableTimestamp(right.savedAt),
+        sortDirection,
+      );
+    case "modifiedAt":
+      return compareNullableNumbers(
+        Date.parse(left.modifiedAt),
+        Date.parse(right.modifiedAt),
+        sortDirection,
+      );
+    case "title":
+      return compareNullableText(left.title, right.title, sortDirection);
+    case "project":
+      return compareNullableText(left.projectName, right.projectName, sortDirection);
+    case "author":
+      return compareNullableText(left.author, right.author, sortDirection);
+  }
+}
+
+function parseSortableTimestamp(value: string | null): number | null {
+  if (value == null) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function compareNullableNumbers(
+  left: number | null,
+  right: number | null,
+  sortDirection: ListSortDirection,
+): number {
+  const normalizedLeft = left != null && !Number.isNaN(left) ? left : null;
+  const normalizedRight = right != null && !Number.isNaN(right) ? right : null;
+
+  if (normalizedLeft == null && normalizedRight == null) return 0;
+  if (normalizedLeft == null) return 1;
+  if (normalizedRight == null) return -1;
+
+  const compared = normalizedLeft - normalizedRight;
+  return sortDirection === "asc" ? compared : -compared;
+}
+
+function compareNullableText(
+  left: string | null,
+  right: string | null,
+  sortDirection: ListSortDirection,
+): number {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+
+  const compared = left.localeCompare(right, undefined, { sensitivity: "base" });
+  return sortDirection === "asc" ? compared : -compared;
+}
+
+function filterConversationsByMcpMetadata(
+  conversations: ConversationMeta[],
+  input: { project?: string; author?: string },
+): ConversationMeta[] {
+  const project = normalizeFilterText(input.project);
+  const author = normalizeFilterText(input.author);
+
+  return conversations.filter((conversation) => {
+    if (project && !matchesCaseInsensitiveSubstring(conversation.projectName, project)) {
+      return false;
+    }
+
+    if (author && !matchesCaseInsensitiveSubstring(conversation.author, author)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function matchesCaseInsensitiveSubstring(value: string | null, query: string): boolean {
+  return value != null && value.toLowerCase().includes(query);
+}
+
+function normalizeFilterText(value: string | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
 }
 
 async function resolveConversationByInput(input: string): Promise<ConversationMeta> {
@@ -500,7 +647,7 @@ function summarizeConversation(conversation: ConversationMeta) {
     extraction: conversation.summaryExtraction,
     tags: conversation.tags,
     author: conversation.author,
-    projectName: conversation.projectName,
+    project: conversation.projectName,
     origin: conversation.origin,
     state: conversation.state,
     createdAt: conversation.createdAt,

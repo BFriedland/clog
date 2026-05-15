@@ -104,6 +104,8 @@ describe("mcp handlers", () => {
     const result = await handleGet({ id: "abc12345", maxMessages: 20 });
     expect(result.totalMessages).toBe(2);
     expect(result.messages[0]?.content).toBe("Debug auth flow");
+    expect(result.project).toBe("api-service");
+    expect(result).not.toHaveProperty("projectName");
     expect(result.range).toMatchObject({
       mode: "tail",
       startIndex: 0,
@@ -138,6 +140,8 @@ describe("mcp handlers", () => {
 
     expect(result.conversation.title).toBe("Updated title");
     expect(result.conversation.tags).toContain("debugging");
+    expect(result.conversation.project).toBe("api-service");
+    expect(result.conversation).not.toHaveProperty("projectName");
   });
 
   it("leaves indexedAt unchanged for tag-only updates", async () => {
@@ -245,17 +249,52 @@ describe("mcp handlers", () => {
   it("filters by project and author", async () => {
     await insertOtherSaved("b2222222-2222-2222-2222-222222222222", {
       title: "Other service",
-      author: "bob",
-      projectName: "other-service",
+      author: "Bob Xander",
+      projectName: "Mobile API",
     });
 
-    const byProject = await handleListSaved({ project: "api-service" });
-    expect(byProject.totalCount).toBe(1);
-    expect(byProject.conversations[0]?.projectName).toBe("api-service");
+    const byProject = await handleListSaved({ project: "API" });
+    expect(byProject.totalCount).toBe(2);
+    expect(byProject.conversations.map((conversation) => conversation.project)).toEqual([
+      "api-service",
+      "Mobile API",
+    ]);
 
-    const byAuthor = await handleListSaved({ author: "bob" });
+    const combined = await handleListSaved({ project: "mobile", author: "xand" });
+    expect(combined.totalCount).toBe(1);
+    expect(combined.conversations[0]?.project).toBe("Mobile API");
+
+    const exactish = await handleListSaved({ project: "api-service" });
+    expect(exactish.totalCount).toBe(1);
+    expect(exactish.conversations[0]?.project).toBe("api-service");
+
+    const byAuthor = await handleListSaved({ author: "BOB" });
     expect(byAuthor.totalCount).toBe(1);
-    expect(byAuthor.conversations[0]?.author).toBe("bob");
+    expect(byAuthor.conversations[0]?.author).toBe("Bob Xander");
+  });
+
+  it("filters staged conversations by project and author substrings", async () => {
+    await insertOtherSaved("b2a2a2a2-2222-2222-2222-222222222222", {
+      title: "Staged mobile API",
+      author: "Xander",
+      projectName: "Mobile API",
+      state: "staged",
+    });
+
+    const result = await handleListStaged({ project: "mobile", author: "xand" });
+    expect(result.totalCount).toBe(1);
+    expect(result.conversations[0]?.title).toBe("Staged mobile API");
+  });
+
+  it("keeps project filter from matching null projects", async () => {
+    await insertOtherSaved("b2b2b2b2-2222-2222-2222-222222222222", {
+      title: "No project",
+      projectName: null,
+    });
+
+    const byProject = await handleListSaved({ project: "api" });
+    expect(byProject.totalCount).toBe(1);
+    expect(byProject.conversations[0]?.project).toBe("api-service");
   });
 
   it("filters by grep against title and summary", async () => {
@@ -281,9 +320,71 @@ describe("mcp handlers", () => {
     const first = await handleListSaved({ limit: 3, offset: 0 });
     expect(first.conversations).toHaveLength(3);
     expect(first.totalCount).toBe(6); // the original + 5 new
+    expect(first).toMatchObject({
+      limit: 3,
+      offset: 0,
+      sortBy: "createdAt",
+      sortDirection: "desc",
+      returnedCount: 3,
+      hasMore: true,
+      nextOffset: 3,
+    });
+    expect(first.paginationNote).toContain("Request offset 3 with limit 3");
 
     const second = await handleListSaved({ limit: 3, offset: 3 });
     expect(second.conversations).toHaveLength(3);
+    expect(second).toMatchObject({
+      limit: 3,
+      offset: 3,
+      sortBy: "createdAt",
+      sortDirection: "desc",
+      returnedCount: 3,
+      hasMore: false,
+    });
+    expect(second.nextOffset).toBeUndefined();
+    expect(second.paginationNote).toBeUndefined();
+  });
+
+  it("sorts list results and returns cheap metadata fields", async () => {
+    await insertOtherSaved("b5a5a5a5-5555-5555-5555-555555555555", {
+      title: "Zulu",
+      author: "sorter",
+      projectName: "Sort Project",
+      modifiedAt: "2026-02-03T10:00:00.000Z",
+      savedAt: "2026-02-03T10:00:00.000Z",
+      savedMessageCount: 7,
+    });
+    await insertOtherSaved("b5b5b5b5-5555-5555-5555-555555555555", {
+      title: "Alpha",
+      author: "sorter",
+      projectName: "Sort Project",
+      modifiedAt: "2026-02-02T10:00:00.000Z",
+      savedAt: "2026-02-02T10:00:00.000Z",
+      savedMessageCount: 3,
+    });
+
+    const result = await handleListSaved({
+      author: "sort",
+      sortBy: "title",
+      sortDirection: "asc",
+    });
+
+    expect(result).toMatchObject({
+      sortBy: "title",
+      sortDirection: "asc",
+      totalCount: 2,
+    });
+    expect(result.conversations.map((conversation) => conversation.title)).toEqual([
+      "Alpha",
+      "Zulu",
+    ]);
+    expect(result.conversations[0]).toMatchObject({
+      project: "Sort Project",
+      modifiedAt: "2026-02-02T10:00:00.000Z",
+      savedAt: "2026-02-02T10:00:00.000Z",
+      savedMessageCount: 3,
+    });
+    expect(result.conversations[0]).not.toHaveProperty("projectName");
   });
 
   it("lists staged conversations separately from saved", async () => {
@@ -588,10 +689,55 @@ describe("mcp handlers", () => {
     const result = await handleSearch({ query: "auth" });
     expect(result.results).toHaveLength(1);
     expect(result.results[0]?.id).toBe(searchableId);
+    expect(result.results[0]?.project).toBe("api-service");
+    expect(result.results[0]).not.toHaveProperty("projectName");
     expect(result.results[0]?.relevanceScore).toBe(0.9);
     expect(result.results[0]?.snippet).toContain("debug JWT refresh");
     expect(result.indexCoverage.indexed).toBe(1);
     expect(result.warning).toBeUndefined();
+  });
+
+  it("clog_search filters project and author by case-insensitive substrings", async () => {
+    const otherId = "ba111111-1111-1111-1111-111111111111";
+    await insertOtherSaved(otherId, {
+      title: "Mobile API debug",
+      author: "Bob Xander",
+      projectName: "Mobile API",
+    });
+
+    const seededId = "abc12345-1234-1234-1234-123456789012";
+    const hits: SearchHit[] = [
+      {
+        id: `${seededId}:0`,
+        score: 0.95,
+        text: "Auth flow in api-service",
+        metadata: { conversationId: seededId },
+      },
+      {
+        id: `${otherId}:0`,
+        score: 0.9,
+        text: "Mobile API auth flow",
+        metadata: { conversationId: otherId },
+      },
+    ];
+
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore(hits),
+    });
+
+    const result = await handleSearch({
+      query: "auth",
+      project: "mobile",
+      author: "xand",
+    });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.id).toBe(otherId);
+    expect(result.results[0]?.project).toBe("Mobile API");
+    expect(result.indexCoverage).toEqual({
+      indexed: 1,
+      saved: 1,
+    });
   });
 
   it("clog_search wraps unknown vector-store errors with a rebuild hint", async () => {

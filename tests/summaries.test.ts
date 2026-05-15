@@ -654,9 +654,9 @@ describe("agent-assisted summarization", () => {
       expect(result.guide).toContain("extraction");
     });
 
-    it("returns the analysis suggestions library with v1 entries", async () => {
+    it("returns the analysis suggestions library with v2 entries", async () => {
       const result = await handleAnalysisSuggestions();
-      expect(result.version).toBe(1);
+      expect(result.version).toBe(2);
       expect(result.suggestions.length).toBeGreaterThan(3);
       for (const suggestion of result.suggestions) {
         expect(suggestion.id).toBeTruthy();

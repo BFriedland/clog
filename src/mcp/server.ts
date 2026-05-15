@@ -34,15 +34,50 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_list_saved",
     {
-      description: "List saved conversations with optional filters.",
+      description:
+        "List saved conversations with optional filters. Results are paginated; use limit and offset, then follow hasMore/nextOffset in the response.",
       inputSchema: {
-        tags: z.array(z.string()).optional(),
-        project: z.string().optional(),
-        author: z.string().optional(),
-        grep: z.string().optional(),
-        origin: z.enum(["local", "remote"]).optional(),
-        limit: z.number().int().positive().max(100).optional(),
-        offset: z.number().int().nonnegative().optional(),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by tags using OR semantics after tag normalization."),
+        project: z
+          .string()
+          .optional()
+          .describe("Filter by project using case-insensitive substring matching."),
+        author: z
+          .string()
+          .optional()
+          .describe("Filter by author metadata using case-insensitive substring matching."),
+        grep: z
+          .string()
+          .optional()
+          .describe("Case-insensitive substring match on title, summary, or message content."),
+        origin: z
+          .enum(["local", "remote"])
+          .optional()
+          .describe("Use local for origin null rows, remote for synced read-only rows."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional()
+          .describe("Maximum conversations to return. Defaults to 20; maximum is 100."),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
+        sortBy: z
+          .enum(["createdAt", "savedAt", "modifiedAt", "title", "project", "author"])
+          .optional()
+          .describe("Sort field. Defaults to createdAt."),
+        sortDirection: z
+          .enum(["asc", "desc"])
+          .optional()
+          .describe("Sort direction. Defaults to desc."),
       },
     },
     async (input) => toToolResult(await handleListSaved(input), "Listed saved conversations."),
@@ -51,14 +86,46 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "clog_list_staged",
     {
-      description: "List staged conversations with optional filters.",
+      description:
+        "List staged conversations with optional filters. Results are paginated; use limit and offset, then follow hasMore/nextOffset in the response.",
       inputSchema: {
-        tags: z.array(z.string()).optional(),
-        project: z.string().optional(),
-        author: z.string().optional(),
-        grep: z.string().optional(),
-        limit: z.number().int().positive().max(100).optional(),
-        offset: z.number().int().nonnegative().optional(),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Filter by tags using OR semantics after tag normalization."),
+        project: z
+          .string()
+          .optional()
+          .describe("Filter by project using case-insensitive substring matching."),
+        author: z
+          .string()
+          .optional()
+          .describe("Filter by author metadata using case-insensitive substring matching."),
+        grep: z
+          .string()
+          .optional()
+          .describe("Case-insensitive substring match on title, summary, or message content."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional()
+          .describe("Maximum conversations to return. Defaults to 20; maximum is 100."),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
+        sortBy: z
+          .enum(["createdAt", "savedAt", "modifiedAt", "title", "project", "author"])
+          .optional()
+          .describe("Sort field. Defaults to createdAt."),
+        sortDirection: z
+          .enum(["asc", "desc"])
+          .optional()
+          .describe("Sort direction. Defaults to desc."),
       },
     },
     async (input) => toToolResult(await handleListStaged(input), "Listed staged conversations."),
@@ -125,8 +192,14 @@ export async function startMcpServer(): Promise<void> {
       inputSchema: {
         query: z.string(),
         tags: z.array(z.string()).optional(),
-        project: z.string().optional(),
-        author: z.string().optional(),
+        project: z
+          .string()
+          .optional()
+          .describe("Filter by project using case-insensitive substring matching."),
+        author: z
+          .string()
+          .optional()
+          .describe("Filter by author metadata using case-insensitive substring matching."),
         origin: z.enum(["local", "remote"]).optional(),
         limit: z.number().int().positive().max(50).optional(),
       },
