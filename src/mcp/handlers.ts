@@ -105,11 +105,6 @@ export async function handleListSaved(input: unknown) {
   return listConversationsForState("saved", parsed);
 }
 
-export async function handleListStaged(input: unknown) {
-  const parsed = listInputSchema.parse(input ?? {});
-  return listConversationsForState("staged", parsed);
-}
-
 export async function handleGet(input: unknown) {
   const parsed = getInputSchema.parse(input);
   validateRangeControls(parsed);
@@ -117,7 +112,7 @@ export async function handleGet(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "discovered") {
-    throw new Error("clog_get only works on staged or saved conversations.");
+    throw new Error("clog_get only works on saved conversations.");
   }
 
   const messages = await parseConversationMessages(config, conversation);
@@ -248,7 +243,7 @@ export async function handleUpdate(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "discovered") {
-    throw new Error("clog_update only works on staged or saved conversations.");
+    throw new Error("clog_update only works on saved conversations.");
   }
 
   if (conversation.origin != null) {
@@ -445,7 +440,7 @@ export async function handleSearch(input: unknown) {
 }
 
 async function listConversationsForState(
-  state: "staged" | "saved",
+  state: "saved",
   input: z.infer<typeof listInputSchema>,
 ) {
   let conversations = await listConversations({

@@ -62,7 +62,7 @@ export function buildDrainCommand(): Command {
     .option("--raw", "Emit the exact underlying source file")
     .option("--force", "Overwrite an existing output file or directory entry")
     .option("--refresh", "Refresh local discovery before resolving the export set")
-    .option("-s, --state <state>", "Exact state filter: discovered, staged, or saved")
+    .option("-s, --state <state>", "Exact state filter: discovered or saved")
     .option("-p, --project <name>", "Exact project metadata filter")
     .option("-a, --author <name>", "Exact author metadata filter")
     .option("-t, --tag <tag>", "Exact tag metadata filter")
@@ -150,7 +150,7 @@ function validateDrainOptions(
 
   if (options.state != null && !isConversationState(options.state)) {
     throw new UsageError(
-      `--state must be "discovered", "staged", or "saved", got "${options.state}".`,
+      `--state must be "discovered" or "saved", got "${options.state}".`,
     );
   }
 
@@ -174,7 +174,7 @@ async function resolveDrainConversations(
   const states: ConversationState[] | undefined = stateFilter
     ? [stateFilter]
     : defaultScope
-      ? ["staged", "saved"]
+      ? ["saved"]
       : undefined;
 
   const filteredConversations = hasFilters || defaultScope
@@ -492,7 +492,7 @@ async function readRawPayload(conversation: ConversationMeta): Promise<Buffer> {
       }
 
       throw new ClogError(
-        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
+        `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
       );
     }
 
@@ -644,5 +644,5 @@ function hasFilterOptions(options: DrainOptions): boolean {
 }
 
 function isConversationState(value: string): value is ConversationState {
-  return value === "discovered" || value === "staged" || value === "saved";
+  return value === "discovered" || value === "saved";
 }

@@ -17,6 +17,15 @@ import { getAdapter } from "../adapters/registry.js";
 import { colorizeStateLabel, colorizeUserMessage } from "./colors.js";
 import type { ScanResult } from "./scan.js";
 
+export class SourceFileMissingError extends ClogError {
+  constructor(conversationId: string) {
+    super(
+      `Source file is missing for ${conversationId}. Run "clog status" to refresh discovery.`,
+    );
+    this.name = "SourceFileMissingError";
+  }
+}
+
 export interface DisplayRow {
   id: string;
   createdAt: string;
@@ -600,31 +609,12 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
 }> {
   if (conversation.state === "discovered") {
     if (!(await pathExists(conversation.sourcePath))) {
-      throw new ClogError(
-        `Source file is missing for ${conversation.id}. Run "clog status" to refresh discovery.`,
-      );
+      throw new SourceFileMissingError(conversation.id);
     }
 
     return {
       path: conversation.sourcePath,
       shouldRefreshRawCopy: true,
-    };
-  }
-
-  if (conversation.state === "staged") {
-    if (!conversation.filePath) {
-      throw new ClogError(`Conversation ${conversation.id} has no staged raw file.`);
-    }
-
-    if (!(await pathExists(conversation.filePath))) {
-      throw new ClogError(
-        `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
-      );
-    }
-
-    return {
-      path: conversation.filePath,
-      shouldRefreshRawCopy: false,
     };
   }
 
@@ -681,14 +671,12 @@ function wrapMissingContentError(
   }
 
   if (conversation.state === "discovered") {
-    return new ClogError(
-      `Source file is missing for ${conversation.id}. Run "clog status" to refresh discovery.`,
-    );
+    return new SourceFileMissingError(conversation.id);
   }
 
   if (conversation.filePath && attemptedPath === conversation.filePath) {
     return new ClogError(
-      `Curated raw file is missing for ${conversation.id}. Run "clog add ${conversation.id.slice(0, 8)}" to recreate it.`,
+      `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
     );
   }
 

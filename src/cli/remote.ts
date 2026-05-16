@@ -180,7 +180,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   if (!options.yes) {
     process.stdout.write(
       `This will remove the remote and delete ${remoteRows.length} conversation(s) pulled from it.\n` +
-        `Conversations you discovered, staged, or saved locally are not affected.\n`,
+        `Conversations you discovered or saved locally are not affected.\n`,
     );
     const proceed = await confirm({ message: "Continue?", default: false });
     if (!proceed) {

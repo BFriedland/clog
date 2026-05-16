@@ -5,12 +5,10 @@ import path from "node:path";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildAddCommand } from "../src/cli/add.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildExcludeCommand } from "../src/cli/exclude.js";
 import { buildSaveCommand } from "../src/cli/save.js";
 import { buildRemoveCommand } from "../src/cli/remove.js";
-import { buildResetCommand } from "../src/cli/reset.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnexcludeCommand } from "../src/cli/unexclude.js";
@@ -46,18 +44,20 @@ describe("workflow", () => {
     vi.restoreAllMocks();
   });
 
-  it("progresses through add → edit → tag → save (SPEC §5.2)", async () => {
+  it("progresses through save → edit → tag → resave", async () => {
     const convId = "aaaaaaaa-1111-2222-3333-444444444444";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Help me debug this");
 
     await insertConversation(makeDiscoveredConversation({ sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     let conv = await getConversationById(convId);
-    expect(conv?.state).toBe("staged");
+    expect(conv?.state).toBe("saved");
     expect(conv?.filePath).toBeTruthy();
     expect(conv?.filePath).toBe(getRawConversationPath("claude-code", convId));
+    expect(conv?.saveVersion).toBe(1);
+    expect(conv?.savedAt).toBeTruthy();
 
     await runBuiltCommand(buildEditCommand, [convId, "--title", "Debug JWT refresh"]);
     conv = await getConversationById(convId);
@@ -70,20 +70,20 @@ describe("workflow", () => {
     await runBuiltCommand(buildSaveCommand, [convId]);
     conv = await getConversationById(convId);
     expect(conv?.state).toBe("saved");
-    expect(conv?.saveVersion).toBe(1);
+    expect(conv?.saveVersion).toBe(2);
     expect(conv?.savedAt).toBeTruthy();
     // The fixture has 1 user + 1 assistant message.
     expect(conv?.savedMessageCount).toBe(2);
   });
 
-  it("add copies the source file into ~/.clog/raw/<source>/<id>.jsonl (SPEC §5.5)", async () => {
+  it("save copies the source file into ~/.clog/raw/<source>/<id>.jsonl", async () => {
     const convId = "bbbbbbbb-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Copy me");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
 
     const expectedRawPath = getRawConversationPath("claude-code", convId);
     await expect(fs.access(expectedRawPath)).resolves.toBeUndefined();
@@ -93,70 +93,6 @@ describe("workflow", () => {
     expect(rawContent).toBe(sourceContent);
   });
 
-  it("reset clears active save fields and deletes the raw copy (SPEC §5.2.1)", async () => {
-    const convId = "cccccccc-3333-4444-5555-666666666666";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Reset me");
-
-    // Seed a staged conversation that had previously been saved and then unsaved —
-    // savedAt/savedMessageCount/saveVersion remain as the last-save checkpoint.
-    const rawPath = getRawConversationPath("claude-code", convId);
-    await fs.mkdir(path.dirname(rawPath), { recursive: true });
-    await fs.copyFile(sourcePath, rawPath);
-
-    await insertConversation(
-      makeDiscoveredConversation({
-        id: convId,
-        sourceId: convId,
-        sourcePath,
-        state: "staged",
-        filePath: rawPath,
-        savedAt: "2026-02-01T12:00:00.000Z",
-        savedMessageCount: 2,
-        saveVersion: 1,
-      }),
-    );
-
-    await runBuiltCommand(buildResetCommand, [convId]);
-
-    const conv = await getConversationById(convId);
-    expect(conv?.state).toBe("discovered");
-    expect(conv?.filePath).toBeNull();
-    expect(conv?.savedAt).toBeNull();
-    expect(conv?.savedMessageCount).toBeNull();
-    expect(conv?.saveVersion).toBe(0);
-    await expect(fs.access(rawPath)).rejects.toThrow();
-  });
-
-  it("reset refuses a saved conversation (SPEC §5.2.1)", async () => {
-    const convId = "dddddddd-4444-5555-6666-777777777777";
-    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-    await writeClaudeJsonl(sourcePath, "Cannot reset saved");
-
-    const rawPath = getRawConversationPath("claude-code", convId);
-    await fs.mkdir(path.dirname(rawPath), { recursive: true });
-    await fs.copyFile(sourcePath, rawPath);
-
-    await insertConversation(
-      makeDiscoveredConversation({
-        id: convId,
-        sourceId: convId,
-        sourcePath,
-        state: "saved",
-        filePath: rawPath,
-        savedAt: "2026-02-01T12:00:00.000Z",
-        savedMessageCount: 2,
-        saveVersion: 1,
-      }),
-    );
-
-    await expect(runBuiltCommand(buildResetCommand, [convId])).rejects.toThrow(/unsave/i);
-
-    // State must be preserved after the failed reset.
-    const conv = await getConversationById(convId);
-    expect(conv?.state).toBe("saved");
-  });
-
   it("save increments saveVersion on resave (SPEC §5.6)", async () => {
     const convId = "eeeeeeee-5555-6666-7777-888888888888";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
@@ -164,37 +100,36 @@ describe("workflow", () => {
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     let conv = await getConversationById(convId);
-    expect(conv?.saveVersion).toBe(1);
+    expect(conv?.saveVersion).toBe(2);
 
     await runBuiltCommand(buildEditCommand, [convId, "--title", "v2 title"]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     conv = await getConversationById(convId);
-    expect(conv?.saveVersion).toBe(2);
+    expect(conv?.saveVersion).toBe(3);
     expect(conv?.title).toBe("v2 title");
   });
 
-  it("add refreshes a saved raw copy while preserving state=saved (SPEC §5.5)", async () => {
+  it("explicit save refreshes a saved raw copy from changed source content", async () => {
     const convId = "11111111-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const saved = await getConversationById(convId);
     expect(saved?.state).toBe("saved");
     const firstSavedAt = saved?.savedAt;
     const firstSaveVersion = saved?.saveVersion;
-    const firstSavedMessageCount = saved?.savedMessageCount;
     expect(firstSavedAt).toBeTruthy();
-    expect(firstSaveVersion).toBe(1);
+    expect(firstSaveVersion).toBe(2);
 
     // Grow the source: adds a second user+assistant turn.
     await writeJsonl(sourcePath, [
@@ -204,15 +139,13 @@ describe("workflow", () => {
       assistantTextLine("Here you go", "msg_02", "2026-02-01T10:05:01.000Z"),
     ]);
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
 
     const refreshed = await getConversationById(convId);
     expect(refreshed?.state).toBe("saved");
-    // Save fields are preserved until the next save.
-    expect(refreshed?.savedAt).toBe(firstSavedAt);
-    expect(refreshed?.saveVersion).toBe(firstSaveVersion);
-    expect(refreshed?.savedMessageCount).toBe(firstSavedMessageCount);
-    // modifiedAt advanced because content changed.
+    expect(refreshed?.savedAt).not.toBe(firstSavedAt);
+    expect(refreshed?.saveVersion).toBe((firstSaveVersion ?? 0) + 1);
+    expect(refreshed?.savedMessageCount).toBe(4);
     expect(refreshed?.modifiedAt).not.toBe(saved?.modifiedAt);
 
     // The raw copy is now byte-identical to the updated source.
@@ -221,19 +154,19 @@ describe("workflow", () => {
     expect(rawContent).toBe(sourceContent);
   });
 
-  it("bare save resaves a ready saved conversation after clog add (SPEC §5.4)", async () => {
+  it("bare save does not save source changes until the user selects the conversation", async () => {
     const convId = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const firstSave = await getConversationById(convId);
     const firstSavedAt = firstSave?.savedAt;
-    expect(firstSave?.saveVersion).toBe(1);
+    expect(firstSave?.saveVersion).toBe(2);
     expect(firstSave?.savedMessageCount).toBe(2);
 
     await writeJsonl(sourcePath, [
@@ -243,14 +176,13 @@ describe("workflow", () => {
       assistantTextLine("Here you go", "msg_02", "2026-02-01T10:05:01.000Z"),
     ]);
 
-    await runBuiltCommand(buildAddCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, []);
 
-    const resaved = await getConversationById(convId);
-    expect(resaved?.state).toBe("saved");
-    expect(resaved?.saveVersion).toBe(2);
-    expect(resaved?.savedMessageCount).toBe(4);
-    expect(resaved?.savedAt).not.toBe(firstSavedAt);
+    const unchanged = await getConversationById(convId);
+    expect(unchanged?.state).toBe("saved");
+    expect(unchanged?.saveVersion).toBe(2);
+    expect(unchanged?.savedMessageCount).toBe(2);
+    expect(unchanged?.savedAt).toBe(firstSavedAt);
   });
 
   it("status and bare save agree on metadata-only resave readiness", async () => {
@@ -260,17 +192,17 @@ describe("workflow", () => {
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const firstSave = await getConversationById(convId);
     const firstSavedAt = firstSave?.savedAt;
-    expect(firstSave?.saveVersion).toBe(1);
+    expect(firstSave?.saveVersion).toBe(2);
 
     await runBuiltCommand(buildEditCommand, [convId, "--title", "Metadata-only resave"]);
 
     const status = await runBuiltCommand(buildStatusCommand, []);
-    expect(status.stdout).toContain("Conversations to be saved:");
+    expect(status.stdout).toContain("Saved conversations to resave:");
     expect(status.stdout).toContain("webapp");
     expect(status.stdout).toContain("1 modified");
 
@@ -279,19 +211,19 @@ describe("workflow", () => {
     const resaved = await getConversationById(convId);
     expect(resaved?.state).toBe("saved");
     expect(resaved?.title).toBe("Metadata-only resave");
-    expect(resaved?.saveVersion).toBe(2);
+    expect(resaved?.saveVersion).toBe(3);
     expect(resaved?.savedAt).not.toBe(firstSavedAt);
     expect(resaved?.modifiedAt).toBe(resaved?.savedAt);
   });
 
-  it("add on an unchanged saved raw copy is a content no-op (SPEC §5.5)", async () => {
+  it("explicit save can resave an unchanged saved conversation", async () => {
     const convId = "22222222-3333-4444-5555-666666666666";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Unchanged");
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const saved = await getConversationById(convId);
@@ -303,16 +235,15 @@ describe("workflow", () => {
       modifiedAt: saved?.modifiedAt,
     };
 
-    // Run add again without changing the source.
-    await runBuiltCommand(buildAddCommand, [convId]);
+    // Run save again without changing the source.
+    await runBuiltCommand(buildSaveCommand, [convId]);
 
     const after = await getConversationById(convId);
     expect(after?.state).toBe("saved");
-    expect(after?.savedAt).toBe(frozen.savedAt);
-    expect(after?.saveVersion).toBe(frozen.saveVersion);
+    expect(after?.savedAt).not.toBe(frozen.savedAt);
+    expect(after?.saveVersion).toBe((frozen.saveVersion ?? 0) + 1);
     expect(after?.savedMessageCount).toBe(frozen.savedMessageCount);
-    // Content unchanged → modifiedAt NOT advanced.
-    expect(after?.modifiedAt).toBe(frozen.modifiedAt);
+    expect(after?.modifiedAt).not.toBe(frozen.modifiedAt);
   });
 
   it("explicit save <id> pushthrough on a modified saved source (SPEC §5.6)", async () => {
@@ -322,7 +253,7 @@ describe("workflow", () => {
 
     await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildAddCommand, [convId]);
+    await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const firstSave = await getConversationById(convId);
@@ -340,7 +271,7 @@ describe("workflow", () => {
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const resaved = await getConversationById(convId);
-    expect(resaved?.saveVersion).toBe(2);
+    expect(resaved?.saveVersion).toBe(3);
     expect(resaved?.savedMessageCount).toBe(4);
     expect(resaved?.savedAt).not.toBe(firstSave?.savedAt);
   });

@@ -254,7 +254,7 @@ describe("db", () => {
       makeConversation({
         id: "a2345678-1234-1234-1234-123456789012",
         sourceId: "a2345678-1234-1234-1234-123456789012",
-        state: "staged",
+        state: "saved",
       }),
     );
     await insertConversation(
@@ -265,9 +265,9 @@ describe("db", () => {
       }),
     );
 
-    const curated = await listConversations({ states: ["staged", "saved"] });
+    const curated = await listConversations({ states: ["saved"] });
     expect(curated).toHaveLength(2);
-    expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["staged", "saved"]));
+    expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["saved"]));
   });
 
   it("filters by indexed (null vs non-null indexed_at)", async () => {
@@ -403,12 +403,12 @@ describe("db", () => {
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
-    // Staged + null → excluded (only saved is searchable)
+    // Discovered + null → excluded (only saved is searchable)
     await insertConversation(
       makeConversation({
         id: "d2222222-1234-1234-1234-123456789012",
         sourceId: "d2222222-1234-1234-1234-123456789012",
-        state: "staged",
+        state: "discovered",
         indexedAt: null,
       }),
     );
@@ -429,7 +429,7 @@ describe("db", () => {
       makeConversation({
         id: "d3333333-1234-1234-1234-123456789012",
         sourceId: "d3333333-1234-1234-1234-123456789012",
-        state: "staged",
+        state: "discovered",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
@@ -437,9 +437,9 @@ describe("db", () => {
     await clearSavedIndexedAt();
 
     const saved = await getConversationById("a1234567-1234-1234-1234-123456789012");
-    const staged = await getConversationById("d3333333-1234-1234-1234-123456789012");
+    const discovered = await getConversationById("d3333333-1234-1234-1234-123456789012");
     expect(saved?.indexedAt).toBeNull();
-    expect(staged?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+    expect(discovered?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
   });
 });
 

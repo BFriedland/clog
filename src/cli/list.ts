@@ -41,6 +41,7 @@ export function buildListCommand(): Command {
       const scanResult = await scanLocalSources(config);
       renderWarnings(getScanWarningsForCommand(scanResult));
       const columns = parseColumnsOption(options.columns);
+      const stateFilter = parseStateFilter(options.state);
       const hasFilters = Boolean(
         options.state ||
           options.project ||
@@ -61,11 +62,11 @@ export function buildListCommand(): Command {
           : null;
 
       let conversations = await listConversations({
-        states: options.state
-          ? [options.state]
+        states: stateFilter
+          ? [stateFilter]
           : options.all
             ? undefined
-            : ["staged", "saved"],
+            : ["saved"],
         projectName: options.project,
         author: options.author,
         tag: options.tag,
@@ -81,7 +82,7 @@ export function buildListCommand(): Command {
         renderConversationTable(conversations, {
           emptyMessage: hasFilters
             ? "No conversations found."
-            : 'No staged or saved conversations. Use "clog status" or "clog list --state discovered".',
+            : 'No saved conversations. Use "clog status" or "clog list --state discovered".',
           stateLabelMode: true,
           columns,
         });
@@ -252,6 +253,15 @@ function parseOriginFilter(value?: string): "local" | "remote" | undefined {
   if (normalized === "local") return "local";
   if (normalized === "remote") return "remote";
   throw new ClogError(`--origin must be "local" or "remote", got "${value}".`);
+}
+
+function parseStateFilter(value?: string): "discovered" | "saved" | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "discovered" || normalized === "saved") {
+    return normalized;
+  }
+  throw new ClogError(`--state must be "discovered" or "saved", got "${value}".`);
 }
 
 function parseColumnsOption(value?: string): DisplayColumnKey[] | undefined {

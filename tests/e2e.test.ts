@@ -122,9 +122,9 @@ describe("e2e", () => {
     const { stdout } = await run(["status"]);
 
     expect(stdout).toContain("Nothing to save.");
-    expect(stdout).not.toContain("Conversations to be saved:");
-    expect(stdout).not.toContain("Changes not staged for saving:");
-    expect(stdout).not.toContain("Untracked conversations:");
+    expect(stdout).not.toContain("Saved conversations to resave:");
+    expect(stdout).not.toContain("Saved conversations whose source files changed:");
+    expect(stdout).not.toContain("Unsaved conversations:");
   });
 
   it("list performs implicit scanning for discovered conversations", async () => {
@@ -157,11 +157,11 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
+    await run(["save", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["tag", firstId.slice(0, 8), "debugging"]);
     await run(["tag", secondId.slice(0, 8), "bug"]);
 
-    const { stdout } = await run(["list", "--state", "staged", "--tag", "BUG"]);
+    const { stdout } = await run(["list", "--state", "saved", "--tag", "BUG"]);
 
     expect(stdout).toContain("Tagged bug");
     expect(stdout).not.toContain("Tagged debugging");
@@ -175,7 +175,7 @@ describe("e2e", () => {
 
     const { stdout, stderr } = await run(["list"]);
 
-    expect(stdout).toContain("No staged or saved conversations.");
+    expect(stdout).toContain("No saved conversations.");
     expect(stderr).toBe("");
   });
 
@@ -214,7 +214,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
+    await run(["save", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["save"]);
     await run(["edit", secondId.slice(0, 8), "--author", "bob"]);
 
@@ -264,7 +264,7 @@ describe("e2e", () => {
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
 
-  it("add then save then show works for a discovered conversation", async () => {
+  it("save then show works for a discovered conversation", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -274,7 +274,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     await run(["save"]);
 
     const { stdout } = await run(["show", id.slice(0, 8)]);
@@ -339,7 +339,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
 
     const expectedRawPath = path.join(clogHome, "raw", "claude-code", `${id}.jsonl`);
     const showPath = await run(["show", id.slice(0, 8), "--path"]);
@@ -387,7 +387,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     await run(["save"]);
 
     const head = await run(["show", id.slice(0, 8), "--first", "2"]);
@@ -433,24 +433,7 @@ describe("e2e", () => {
     expect(stdout).toContain("Save from discovered");
   });
 
-  it("unsave rejects conversations that are not saved", async () => {
-    const id = "23232323-2323-2323-2323-232323232323";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Unsave wrong state",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
-
-    await expect(run(["unsave", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not saved"),
-    });
-  });
-
-  it("diff uses newer source content for saved conversations before add", async () => {
+  it("diff uses newer source content for saved conversations before explicit resave", async () => {
     const id = "66666666-6666-6666-6666-666666666666";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
@@ -459,7 +442,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Diff source growth", [
@@ -479,45 +462,7 @@ describe("e2e", () => {
     expect(stdout).toContain("since v1");
   });
 
-  it("diff --staged shows staged conversations and uses truncation notes", async () => {
-    const id = "18181818-1818-1818-1818-181818181818";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Diff staged preview",
-      [
-        {
-          type: "assistant",
-          timestamp: "2026-02-01T10:00:02.000Z",
-          message: {
-            id: "msg_2",
-            role: "assistant",
-            content: [{ type: "text", text: "Assistant extra one." }],
-          },
-        },
-        {
-          type: "user",
-          timestamp: "2026-02-01T10:00:03.000Z",
-          message: {
-            role: "user",
-            content: "User extra two.",
-          },
-        },
-      ],
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
-
-    const { stdout } = await run(["diff", "--staged", "--head", "2"]);
-    expect(stdout).toContain("since v0, showing 2 of 4 new messages");
-    expect(stdout).toContain("[USER] Diff staged preview");
-    expect(stdout).toContain("[ASSISTANT] Working on it.");
-    expect(stdout).not.toContain("Assistant extra one.");
-  });
-
-  it("diff rejects staged conversations in default mode", async () => {
+  it("diff rejects discovered conversations", async () => {
     const id = "19191919-1919-1919-1919-191919191919";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -527,32 +472,13 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
 
     await expect(run(["diff", id.slice(0, 8)])).rejects.toMatchObject({
       stderr: expect.stringContaining("is not saved"),
     });
   });
 
-  it("diff --staged rejects saved conversations", async () => {
-    const id = "20202020-2020-2020-2020-202020202020";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Diff staged wrong state",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
-    await run(["save"]);
-
-    await expect(run(["diff", "--staged", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not staged"),
-    });
-  });
-
-  it("add refreshes a saved raw copy without changing state", async () => {
+  it("explicit save refreshes a saved raw copy without changing state", async () => {
     const id = "77777777-7777-7777-7777-777777777777";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
@@ -561,7 +487,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Refresh saved raw copy", [
@@ -576,13 +502,13 @@ describe("e2e", () => {
       },
     ]);
 
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     const { stdout } = await run(["show", id.slice(0, 8)]);
     expect(stdout).toContain("State:   saved");
     expect(stdout).toContain("Refreshed into raw.");
   });
 
-  it("targeted add fails clearly when the conversation disappears during refresh", async () => {
+  it("targeted save fails clearly when the conversation disappears during refresh", async () => {
     const id = "24242424-2424-2424-2424-242424242424";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
     await writeClaudeConversation(filePath, "Targeted add missing source");
@@ -592,109 +518,9 @@ describe("e2e", () => {
     await run(["status"]);
     await fs.rm(filePath);
 
-    await expect(run(["add", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
+    await expect(run(["save", id.slice(0, 8)])).rejects.toMatchObject({
+      stderr: expect.stringContaining(`No conversation matches "${id.slice(0, 8)}"`),
     });
-  });
-
-  it("reset moves a staged conversation back to discovered", async () => {
-    const id = "88888888-8888-8888-8888-888888888888";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Reset staged conversation",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
-    await run(["reset", id.slice(0, 8)]);
-
-    const { stdout } = await run(["list", "--state", "discovered"]);
-    expect(stdout).toContain("88888888");
-    expect(stdout).toContain("discovered");
-  });
-
-  it("reset with no args resets every staged conversation", async () => {
-    const firstId = "89898989-8989-8989-8989-898989898989";
-    const secondId = "8a8a8a8a-8a8a-8a8a-8a8a-8a8a8a8a8a8a";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
-      "Reset staged conversation one",
-    );
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
-      "Reset staged conversation two",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
-    await run(["reset"]);
-
-    const { stdout } = await run(["list", "--state", "discovered"]);
-    expect(stdout).toContain("89898989");
-    expect(stdout).toContain("8a8a8a8a");
-  });
-
-  it("reset rejects conversations that are not staged", async () => {
-    const id = "25252525-2525-2525-2525-252525252525";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Reset wrong state",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-
-    await expect(run(["reset", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not staged"),
-    });
-  });
-
-  it("unsave preserves the conversation as staged", async () => {
-    const id = "99999999-9999-9999-9999-999999999999";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
-      "Unsave conversation",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
-    await run(["save"]);
-    await run(["unsave", id.slice(0, 8)]);
-
-    const { stdout } = await run(["show", id.slice(0, 8)]);
-    expect(stdout).toContain("State:   staged");
-  });
-
-  it("unsave with no args unstages every saved conversation", async () => {
-    const firstId = "9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a";
-    const secondId = "9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${firstId}.jsonl`),
-      "Unsave one",
-    );
-    await writeClaudeConversation(
-      path.join(claudeRoot, "-Users-alice-api-service", `${secondId}.jsonl`),
-      "Unsave two",
-    );
-
-    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
-    await run(["status"]);
-    await run(["add", firstId.slice(0, 8), secondId.slice(0, 8)]);
-    await run(["save"]);
-    await run(["unsave"]);
-
-    const first = await run(["show", firstId.slice(0, 8)]);
-    const second = await run(["show", secondId.slice(0, 8)]);
-    expect(first.stdout).toContain("State:   staged");
-    expect(second.stdout).toContain("State:   staged");
   });
 
   it("exclude writes clogignore and unexclude removes the exact rule again", async () => {
@@ -763,7 +589,7 @@ describe("e2e", () => {
     await expect(fs.readFile(path.join(clogHome, "clogignore"), "utf8")).resolves.toBe("other\n");
   });
 
-  it("status reports saved source changes as changes not staged for saving", async () => {
+  it("status reports saved source changes", async () => {
     const id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
 
@@ -772,7 +598,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
-    await run(["add", id.slice(0, 8)]);
+    await run(["save", id.slice(0, 8)]);
     await run(["save"]);
 
     await writeClaudeConversation(filePath, "Status modified saved", [
@@ -788,12 +614,12 @@ describe("e2e", () => {
     ]);
 
     const { stdout } = await run(["status"]);
-    expect(stdout).toContain("Changes not staged for saving:");
+    expect(stdout).toContain("Saved conversations whose source files changed:");
     expect(stdout).toContain(
-      'use "clog add <id>" to refresh the curated copy, or "clog save <id>" to save directly',
+      'use "clog save <id>" to refresh the saved copy from its source file',
     );
     expect(stdout).toContain("api-service");
-    expect(stdout).toContain("1 modified");
+    expect(stdout).toContain("1 conversation");
   });
 
   it("status ignores the legacy excluded file and still succeeds", async () => {
