@@ -8,7 +8,6 @@ import {
   handleBrowse,
   handleGet,
   handleListSaved,
-  handleListStaged,
   handleSearch,
   handleUpdate,
 } from "../src/mcp/handlers.js";
@@ -121,7 +120,7 @@ describe("mcp handlers", () => {
     await fs.rm(path.join(tempDir, "raw", "claude-code", "abc12345-1234-1234-1234-123456789012.jsonl"));
 
     await expect(handleGet({ id: "abc12345", maxMessages: 20 })).rejects.toThrow(
-      'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog add abc12345" to recreate it.',
+      'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog save abc12345" to recreate it from source if the source file is still available.',
     );
   });
 
@@ -182,11 +181,6 @@ describe("mcp handlers", () => {
     const authors = await handleBrowse({ by: "authors" });
     expect(tags.items).toEqual([{ name: "auth", count: 1 }]);
     expect(authors.items).toEqual([{ name: "alice", count: 1 }]);
-  });
-
-  it("lists staged separately", async () => {
-    const result = await handleListStaged({});
-    expect(result.totalCount).toBe(0);
   });
 
   it("filters clog_list_saved by origin", async () => {
@@ -273,17 +267,17 @@ describe("mcp handlers", () => {
     expect(byAuthor.conversations[0]?.author).toBe("Bob Xander");
   });
 
-  it("filters staged conversations by project and author substrings", async () => {
+  it("filters saved conversations by project and author substrings", async () => {
     await insertOtherSaved("b2a2a2a2-2222-2222-2222-222222222222", {
-      title: "Staged mobile API",
+      title: "Saved mobile API",
       author: "Xander",
       projectName: "Mobile API",
-      state: "staged",
+      state: "saved",
     });
 
-    const result = await handleListStaged({ project: "mobile", author: "xand" });
+    const result = await handleListSaved({ project: "mobile", author: "xand" });
     expect(result.totalCount).toBe(1);
-    expect(result.conversations[0]?.title).toBe("Staged mobile API");
+    expect(result.conversations[0]?.title).toBe("Saved mobile API");
   });
 
   it("keeps project filter from matching null projects", async () => {
@@ -385,21 +379,6 @@ describe("mcp handlers", () => {
       savedMessageCount: 3,
     });
     expect(result.conversations[0]).not.toHaveProperty("projectName");
-  });
-
-  it("lists staged conversations separately from saved", async () => {
-    await insertOtherSaved("b5555555-5555-5555-5555-555555555555", {
-      title: "A staged one",
-      state: "staged",
-    });
-
-    const saved = await handleListSaved({});
-    const staged = await handleListStaged({});
-
-    expect(saved.totalCount).toBe(1);
-    expect(saved.conversations[0]?.title).toBe("Debug auth flow");
-    expect(staged.totalCount).toBe(1);
-    expect(staged.conversations[0]?.title).toBe("A staged one");
   });
 
   // ============================================================
@@ -578,7 +557,7 @@ describe("mcp handlers", () => {
       state: "discovered",
     });
     await expect(handleGet({ id: "b6666666" })).rejects.toThrow(
-      /staged or saved/,
+      /saved/,
     );
   });
 
@@ -597,7 +576,7 @@ describe("mcp handlers", () => {
 
     await expect(
       handleUpdate({ id: "b7777777", title: "New title" }),
-    ).rejects.toThrow(/staged or saved/);
+    ).rejects.toThrow(/saved/);
   });
 
   it("clog_update refuses a remote conversation (SPEC §11.1)", async () => {

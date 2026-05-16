@@ -6,10 +6,6 @@ export function colorizeStateLabel(
   label: string,
   conversation: ConversationMeta,
 ): string {
-  if (conversation.state === "staged") {
-    return chalk.green(label);
-  }
-
   if (conversation.state === "discovered") {
     return chalk.red(label);
   }
@@ -19,9 +15,9 @@ export function colorizeStateLabel(
 
 export function colorizeStatusLabel(
   label: string,
-  stagingState: "staged" | "unstaged",
+  tone: "ready" | "attention",
 ): string {
-  return stagingState === "staged" ? chalk.green(label) : chalk.red(label);
+  return tone === "ready" ? chalk.green(label) : chalk.red(label);
 }
 
 export function dimText(value: string): string {

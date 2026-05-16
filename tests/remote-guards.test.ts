@@ -49,7 +49,7 @@ describe("assertNotRemote", () => {
       state: "saved",
     });
     await insertConversation(remote);
-    expect(() => assertNotRemote(remote, "clog unsave")).toThrow();
+    expect(() => assertNotRemote(remote, "clog edit")).toThrow();
   });
 });
 

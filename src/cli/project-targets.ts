@@ -1,15 +1,12 @@
 import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
-import { isSavedReadyForResave } from "./common.js";
-
-export async function collectProjectAddTargets(): Promise<ConversationMeta[]> {
-  // Project-scoped add should behave like repeated `clog add <id>` for every
-  // local conversation in the project, including staged and saved rows.
-  return listConversations({ origin: "local" });
-}
+import {
+  classifySavedDelta,
+  isSavedReadyForResave,
+  isSavedReadyForResaveWithDelta,
+} from "./common.js";
 
 export async function collectBareSaveTargets(): Promise<ConversationMeta[]> {
-  const staged = await listConversations({ states: ["staged"], origin: "local" });
   const saved = await listConversations({ states: ["saved"], origin: "local" });
   const readySaved: ConversationMeta[] = [];
   for (const conversation of saved) {
@@ -17,34 +14,26 @@ export async function collectBareSaveTargets(): Promise<ConversationMeta[]> {
       readySaved.push(conversation);
     }
   }
-  return [...staged, ...readySaved];
+  return readySaved;
 }
 
 export async function collectProjectSaveTargets(): Promise<ConversationMeta[]> {
   const discovered = await listConversations({ states: ["discovered"], origin: "local" });
-  return [...discovered, ...(await collectBareSaveTargets())];
+  const saved = await listConversations({ states: ["saved"], origin: "local" });
+  return [...discovered, ...saved];
 }
 
-export async function collectProjectResetTargets(): Promise<ConversationMeta[]> {
-  return listConversations({
-    states: ["staged"],
-    origin: "local",
-  });
-}
-
-export async function collectBareResetTargets(): Promise<ConversationMeta[]> {
-  return collectProjectResetTargets();
-}
-
-export async function collectProjectUnsaveTargets(): Promise<ConversationMeta[]> {
-  return listConversations({
-    states: ["saved"],
-    origin: "local",
-  });
-}
-
-export async function collectBareUnsaveTargets(): Promise<ConversationMeta[]> {
-  return collectProjectUnsaveTargets();
+export async function collectAllSaveTargets(): Promise<ConversationMeta[]> {
+  const discovered = await listConversations({ states: ["discovered"], origin: "local" });
+  const saved = await listConversations({ states: ["saved"], origin: "local" });
+  const saveableSaved: ConversationMeta[] = [];
+  for (const conversation of saved) {
+    const delta = await classifySavedDelta(conversation);
+    if (delta === "source_ahead" || isSavedReadyForResaveWithDelta(conversation, delta)) {
+      saveableSaved.push(conversation);
+    }
+  }
+  return [...discovered, ...saveableSaved];
 }
 
 export async function collectProjectDrainTargets(

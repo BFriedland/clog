@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -35,6 +35,11 @@ export function applyMigrations(db: Database): void {
     migrateToV5(db);
     setSchemaVersion(db, 5);
   }
+
+  if (currentVersion < 6) {
+    migrateToV6(db);
+    setSchemaVersion(db, 6);
+  }
 }
 
 function createLatestSchema(db: Database): void {
@@ -67,7 +72,7 @@ function createConversationsTable(db: Database): void {
       discovered_at TEXT NOT NULL,
       modified_at TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'discovered'
-        CHECK(state IN ('discovered','staged','saved')),
+        CHECK(state IN ('discovered','saved')),
       saved_at TEXT,
       saved_message_count INTEGER,
       save_version INTEGER DEFAULT 0,
@@ -161,6 +166,67 @@ function migrateToV5(db: Database): void {
   `);
 }
 
+function migrateToV6(db: Database): void {
+  if (!tableExists(db, "conversations")) {
+    return;
+  }
+
+  const stagedCount = countRows(db, "SELECT COUNT(*) FROM conversations WHERE state = 'staged'");
+  if (stagedCount > 0) {
+    throw new Error(
+      "This clog database contains staged conversations from an unsupported older schema. Remove or archive the old CLOG_HOME and run clog init to create a fresh database.",
+    );
+  }
+
+  db.exec(`
+    CREATE TABLE conversations_v6 (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      summary_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(summary_kind IN ('none','imported','generated','curated')),
+      summary_extraction TEXT,
+      author TEXT NOT NULL,
+      project_name TEXT,
+      project_path TEXT,
+      tags_json TEXT DEFAULT '[]',
+      slug TEXT,
+      created_at TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'discovered'
+        CHECK(state IN ('discovered','saved')),
+      saved_at TEXT,
+      saved_message_count INTEGER,
+      save_version INTEGER DEFAULT 0,
+      source_path TEXT NOT NULL,
+      file_path TEXT,
+      source_mtime TEXT,
+      indexed_at TEXT,
+      origin TEXT DEFAULT NULL,
+      UNIQUE(source, source_id)
+    );
+
+    INSERT INTO conversations_v6 (
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at, state, saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at, origin
+    )
+    SELECT
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at, state, saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at, origin
+    FROM conversations;
+
+    DROP TABLE conversations;
+    ALTER TABLE conversations_v6 RENAME TO conversations;
+  `);
+}
+
 function getSchemaVersion(db: Database): number {
   const result = db.exec("SELECT version FROM schema_version LIMIT 1");
 
@@ -203,4 +269,9 @@ function addColumnIfMissing(
   }
 
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
+function countRows(db: Database, sql: string): number {
+  const result = db.exec(sql);
+  return Number(result[0]?.values[0]?.[0] ?? 0);
 }

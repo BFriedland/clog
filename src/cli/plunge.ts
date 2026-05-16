@@ -114,7 +114,7 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
 ];
 
 const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
-const VALID_STATES = new Set(["discovered", "staged", "saved"]);
+const VALID_STATES = new Set(["discovered", "saved"]);
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
@@ -488,7 +488,7 @@ async function inspectDatabase(
       continue;
     }
 
-    if (row.state !== "staged" && row.state !== "saved") {
+    if (row.state !== "saved") {
       continue;
     }
 
@@ -533,7 +533,7 @@ async function inspectDatabase(
         message: `Curated raw file could not be parsed by the ${row.source} adapter: ${error instanceof Error ? error.message : "unknown parse error"}`,
         recovery:
           await pathExists(String(row.source_path))
-            ? `Run "clog add ${row.id}" to recreate the curated raw file.`
+            ? `Run "clog save ${row.id}" to recreate the curated raw file from source.`
             : "Inspect the raw file manually.",
         paths: [verifiedFilePath],
         sortKey: row.id,
@@ -947,7 +947,7 @@ function rawRecoveryForRow(row: RawConversationRow): string {
     return `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`;
   }
 
-  return `Run "clog add ${row.id}" to recreate the curated raw file.`;
+  return "Investigate this row manually.";
 }
 
 function nullableString(value: unknown): string | null {

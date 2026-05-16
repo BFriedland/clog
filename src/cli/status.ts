@@ -15,18 +15,18 @@ import {
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
-type StatusLabel = "added" | "modified" | "discovered";
-type StatusStagingState = "staged" | "unstaged";
+type StatusLabel = "discovered" | "modified" | "source";
+type StatusTone = "ready" | "attention";
 
 interface StatusEntry {
   conversation: ConversationMeta;
   label: StatusLabel;
-  stagingState: StatusStagingState;
+  tone: StatusTone;
 }
 
 export function buildStatusCommand(): Command {
   return new Command("status")
-    .description("Show staged, modified, and discovered project summaries")
+    .description("Show discovered conversations and saved conversations needing attention")
     .option("--source", "show conversation rows with the source column after the short ID")
     .option("-c, --conversations", "show one row per conversation")
     .option("--undiscoverable", "list conversations skipped due to missing project path")
@@ -38,7 +38,6 @@ export function buildStatusCommand(): Command {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
       renderWarnings(getScanWarningsForCommand(scanResult, { suppressUndiscoverable: true }));
-      const staged = await listConversations({ states: ["staged"], origin: "local" });
       const saved = await listConversations({ states: ["saved"], origin: "local" });
       const discovered = await listConversations({ states: ["discovered"], origin: "local" });
       const readySaved: ConversationMeta[] = [];
@@ -61,20 +60,14 @@ export function buildStatusCommand(): Command {
 
       const sections: Array<() => void> = [];
 
-      if (staged.length > 0 || readySaved.length > 0) {
+      if (readySaved.length > 0) {
         sections.push(() => {
-          process.stdout.write("Conversations to be saved:\n");
+          process.stdout.write("Saved conversations to resave:\n");
           process.stdout.write(
-            `${dimText(formatToBeSavedHint({
-              stagedCount: staged.length,
-              modifiedCount: readySaved.length,
-            }))}\n`,
+            `${dimText('  (use "clog save" to save these updates)')}\n`,
           );
           renderStatusEntries(
-            [
-              ...toStatusEntries(staged, "added", "staged"),
-              ...toStatusEntries(readySaved, "modified", "staged"),
-            ],
+            toStatusEntries(readySaved, "modified", "ready"),
             {
               includeSource: options.source === true,
               showConversations,
@@ -85,11 +78,11 @@ export function buildStatusCommand(): Command {
 
       if (sourceAheadSaved.length > 0) {
         sections.push(() => {
-          process.stdout.write("Changes not staged for saving:\n");
+          process.stdout.write("Saved conversations whose source files changed:\n");
           process.stdout.write(
-            `${dimText('  (use "clog add <id>" to refresh the curated copy, or "clog save <id>" to save directly)')}\n`,
+            `${dimText('  (use "clog save <id>" to refresh the saved copy from its source file)')}\n`,
           );
-          renderStatusEntries(toStatusEntries(sourceAheadSaved, "modified", "unstaged"), {
+          renderStatusEntries(toStatusEntries(sourceAheadSaved, "source", "attention"), {
             includeSource: options.source === true,
             showConversations,
           });
@@ -98,11 +91,11 @@ export function buildStatusCommand(): Command {
 
       if (discovered.length > 0) {
         sections.push(() => {
-          process.stdout.write("Untracked conversations:\n");
+          process.stdout.write("Unsaved conversations:\n");
           process.stdout.write(
-            `${dimText('  (use "clog add <id>" to stage for saving)')}\n`,
+            `${dimText('  (use "clog save <id>" or "clog save <project>" to save)')}\n`,
           );
-          renderStatusEntries(toStatusEntries(discovered, "discovered", "unstaged"), {
+          renderStatusEntries(toStatusEntries(discovered, "discovered", "attention"), {
             includeSource: options.source === true,
             showConversations,
           });
@@ -117,7 +110,7 @@ export function buildStatusCommand(): Command {
           );
         } else {
           process.stdout.write(
-            `${dimText('Use "clog add" or "clog status" after new conversations appear.')}\n`,
+            `${dimText('Use "clog status" after new conversations appear.')}\n`,
           );
         }
       } else {
@@ -208,12 +201,12 @@ async function renderRemoteSection(
 function toStatusEntries(
   conversations: ConversationMeta[],
   label: StatusLabel,
-  stagingState: StatusStagingState,
+  tone: StatusTone,
 ): StatusEntry[] {
   return conversations.map((conversation) => ({
     conversation,
     label,
-    stagingState,
+    tone,
   }));
 }
 
@@ -239,7 +232,7 @@ function renderStatusLikeRows(
 
   for (const entry of entries) {
     const { conversation } = entry;
-    const prefix = colorizeStatusLabel(`${entry.label}:`.padEnd(12), entry.stagingState);
+    const prefix = colorizeStatusLabel(`${entry.label}:`.padEnd(12), entry.tone);
     const id = `${conversation.id.slice(0, 8)}`.padEnd(10);
     const source = options.includeSource ? `${conversation.source}`.padEnd(13) : "";
     const date = formatDate(conversation.createdAt).padEnd(12);
@@ -267,7 +260,7 @@ function renderProjectStatusRows(entries: StatusEntry[]): void {
       const counts = formatProjectCounts(group.entries).padEnd(countsWidth);
       const date = formatLatestConversationDate(group.entries);
       process.stdout.write(
-        `    ${project}${colorizeStatusLabel(counts, group.stagingState)}${date}\n`,
+        `    ${project}${colorizeStatusLabel(counts, group.tone)}${date}\n`,
       );
     }
   }
@@ -284,7 +277,7 @@ function hasStatusProject(entry: StatusEntry): boolean {
 function groupStatusEntriesByProject(entries: StatusEntry[]): Array<{
   projectName: string;
   entries: StatusEntry[];
-  stagingState: StatusStagingState;
+  tone: StatusTone;
 }> {
   const groupsByProject = new Map<string, StatusEntry[]>();
 
@@ -303,7 +296,7 @@ function groupStatusEntriesByProject(entries: StatusEntry[]): Array<{
     .map(([projectName, groupEntries]) => ({
       projectName,
       entries: groupEntries,
-      stagingState: groupEntries[0]?.stagingState ?? "unstaged",
+      tone: groupEntries[0]?.tone ?? "attention",
       latestTimestamp: getLatestConversationTimestamp(groupEntries),
     }))
     .sort(compareProjectStatusGroups);
@@ -347,10 +340,18 @@ function formatProjectCounts(entries: StatusEntry[]): string {
     counts.set(entry.label, (counts.get(entry.label) ?? 0) + 1);
   }
 
-  return (["added", "modified", "discovered"] satisfies StatusLabel[])
+  return (["discovered", "source", "modified"] satisfies StatusLabel[])
     .filter((label) => (counts.get(label) ?? 0) > 0)
-    .map((label) => `${counts.get(label)} ${label}`)
+    .map((label) => formatProjectCount(label, counts.get(label) ?? 0))
     .join(", ");
+}
+
+function formatProjectCount(label: StatusLabel, count: number): string {
+  if (label === "source") {
+    return `${count} conversation${count === 1 ? "" : "s"}`;
+  }
+
+  return `${count} ${label}`;
 }
 
 function formatLatestConversationDate(entries: StatusEntry[]): string {
@@ -410,19 +411,4 @@ function getStatusProjectWidth(conversations: ConversationMeta[]): number {
   }, 0);
 
   return Math.max("PROJECT".length, widestProject) + 1;
-}
-
-function formatToBeSavedHint(counts: {
-  stagedCount: number;
-  modifiedCount: number;
-}): string {
-  if (counts.stagedCount > 0 && counts.modifiedCount > 0) {
-    return '  (use "clog save" to save everything here; "clog reset <id>" only unstages added conversations)';
-  }
-
-  if (counts.stagedCount > 0) {
-    return '  (use "clog reset <id>" to unstage)';
-  }
-
-  return '  (use "clog save" to save these modified conversations)';
 }

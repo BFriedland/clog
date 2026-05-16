@@ -185,7 +185,7 @@ describeIfGit("sync integration (requires git)", () => {
       await runSyncPush();
     });
 
-    // Now unsave (delete the local row) and push again — retraction expected.
+    // Now delete the local row and push again — retraction expected.
     const { deleteConversation } = await import("../src/db/index.js");
     await deleteConversation(id);
 

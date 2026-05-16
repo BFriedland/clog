@@ -87,7 +87,6 @@ const mockedGetSearchProviders = vi.mocked(searchDepsModule.getSearchProviders);
 const mockedSearchAvailable = vi.mocked(searchDepsModule.searchAvailable);
 
 import { buildConfigCommand } from "../src/cli/config.js";
-import { buildAddCommand } from "../src/cli/add.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
@@ -99,12 +98,10 @@ import { buildSaveCommand } from "../src/cli/save.js";
 import { buildRefreshCommand } from "../src/cli/refresh.js";
 import { buildRemoteCommand } from "../src/cli/remote.js";
 import { buildRenameAuthorCommand } from "../src/cli/rename-author.js";
-import { buildResetCommand } from "../src/cli/reset.js";
 import { buildShowCommand } from "../src/cli/show.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildSummarizeCommand, buildTalkCommand } from "../src/cli/talk.js";
 import { buildTagCommand } from "../src/cli/tag.js";
-import { buildUnsaveCommand } from "../src/cli/unsave.js";
 import { buildUntagCommand } from "../src/cli/untag.js";
 import { runIndexCommand } from "../src/cli/index-cmd.js";
 import { runSearchCommand } from "../src/cli/search.js";
@@ -414,7 +411,7 @@ describe("cli", () => {
 
   describe("edit (SPEC §5.4)", () => {
     it("prints help when no flags are provided", async () => {
-      const conv = await seedStagedConversation("11111111-1111-1111-1111-111111111111");
+      const conv = await seedSavedConversation("11111111-1111-1111-1111-111111111111");
       const { stdout } = await runBuiltCommand(buildEditCommand, [conv.id]);
       expect(stdout).toContain("Usage:");
       expect(stdout).toContain("--title");
@@ -423,7 +420,7 @@ describe("cli", () => {
     });
 
     it("updates title, summary, and author together", async () => {
-      const conv = await seedStagedConversation("12121212-1212-1212-1212-121212121212");
+      const conv = await seedSavedConversation("12121212-1212-1212-1212-121212121212");
       await runBuiltCommand(buildEditCommand, [
         conv.id,
         "--title",
@@ -440,7 +437,7 @@ describe("cli", () => {
     });
 
     it("is a no-op when every supplied value already matches the current metadata", async () => {
-      const conv = await seedStagedConversation("13131313-1313-1313-1313-131313131313", {
+      const conv = await seedSavedConversation("13131313-1313-1313-1313-131313131313", {
         title: "Same title",
         summary: "Same summary",
       });
@@ -536,7 +533,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           title: "Drain object",
           tags: ["debug"],
@@ -557,7 +554,7 @@ describe("cli", () => {
         slug: null,
         createdAt: "2026-02-01T10:00:00.000Z",
         savedAt: null,
-        state: "staged",
+        state: "saved",
       });
       expect(parsed.messages).toEqual([
         {
@@ -587,7 +584,7 @@ describe("cli", () => {
         makeConversation({
           id: firstId,
           sourceId: firstId,
-          state: "staged",
+          state: "saved",
           filePath: firstRaw,
           title: "Later",
           createdAt: "2026-02-01T10:00:02.000Z",
@@ -628,7 +625,7 @@ describe("cli", () => {
         makeConversation({
           id: aliceId,
           sourceId: aliceId,
-          state: "staged",
+          state: "saved",
           filePath: aliceRaw,
           author: "alice",
           title: "Alice export",
@@ -638,7 +635,7 @@ describe("cli", () => {
         makeConversation({
           id: bobId,
           sourceId: bobId,
-          state: "staged",
+          state: "saved",
           filePath: bobRaw,
           author: "bob",
           title: "Bob export",
@@ -654,7 +651,7 @@ describe("cli", () => {
     });
 
     it("includes same-author remote conversations in bare directory mode when config.author is set", async () => {
-      const local = await seedStagedConversation("d1010101-1010-1010-1010-101010101010", {
+      const local = await seedSavedConversation("d1010101-1010-1010-1010-101010101010", {
         title: "Local export",
       });
       const remotePath = path.join(tempDir, "remote-export.jsonl");
@@ -682,7 +679,7 @@ describe("cli", () => {
       config.author = "";
       await saveConfig(config);
 
-      await seedStagedConversation("d3030303-3030-3030-3030-303030303030", {
+      await seedSavedConversation("d3030303-3030-3030-3030-303030303030", {
         title: "Local only",
       });
       await seedRemoteConversation("d4040404-4040-4040-4040-404040404040", {
@@ -717,7 +714,7 @@ describe("cli", () => {
         makeConversation({
           id: goodId,
           sourceId: goodId,
-          state: "staged",
+          state: "saved",
           filePath: goodRaw,
           title: "Good export",
           tags: ["atomicity"],
@@ -727,7 +724,7 @@ describe("cli", () => {
         makeConversation({
           id: badId,
           sourceId: badId,
-          state: "staged",
+          state: "saved",
           filePath: path.join(tempDir, "missing.jsonl"),
           title: "Bad export",
           tags: ["atomicity"],
@@ -757,10 +754,10 @@ describe("cli", () => {
     });
 
     it("requires exactly one match for markdown stdout", async () => {
-      const first = await seedStagedConversation("d4444444-4444-4444-4444-444444444444", {
+      const first = await seedSavedConversation("d4444444-4444-4444-4444-444444444444", {
         title: "First markdown",
       });
-      const second = await seedStagedConversation("d5555555-5555-5555-5555-555555555555", {
+      const second = await seedSavedConversation("d5555555-5555-5555-5555-555555555555", {
         title: "Second markdown",
       });
 
@@ -780,7 +777,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           title: "Markdown fences",
         }),
@@ -800,7 +797,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           title: "Collision title",
         }),
@@ -831,7 +828,7 @@ describe("cli", () => {
         makeConversation({
           id: goodId,
           sourceId: goodId,
-          state: "staged",
+          state: "saved",
           filePath: goodRaw,
           title: "Directory success",
           tags: ["dir-partial"],
@@ -841,7 +838,7 @@ describe("cli", () => {
         makeConversation({
           id: badId,
           sourceId: badId,
-          state: "staged",
+          state: "saved",
           filePath: path.join(tempDir, "missing-dir.jsonl"),
           title: "Directory failure",
           tags: ["dir-partial"],
@@ -928,7 +925,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           title: "Single file",
         }),
@@ -951,7 +948,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           title: "Force overwrite",
         }),
@@ -972,11 +969,11 @@ describe("cli", () => {
     });
 
     it("rejects multi-conversation export with --to and points to --to-dir", async () => {
-      await seedStagedConversation("dc2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c", {
+      await seedSavedConversation("dc2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c", {
         title: "First file mode",
         tags: ["multi-to"],
       });
-      await seedStagedConversation("dc3c3c3c-3c3c-3c3c-3c3c-3c3c3c3c3c3c", {
+      await seedSavedConversation("dc3c3c3c-3c3c-3c3c-3c3c-3c3c3c3c3c3c", {
         title: "Second file mode",
         tags: ["multi-to"],
       });
@@ -994,7 +991,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
         }),
       );
@@ -1015,7 +1012,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
           author: "alice",
         }),
@@ -1039,7 +1036,7 @@ describe("cli", () => {
 
   describe("tag and untag (SPEC §5.4.1)", () => {
     it("adds tags and normalizes them (trim, lowercase, dedupe)", async () => {
-      const conv = await seedStagedConversation("21212121-2121-2121-2121-212121212121");
+      const conv = await seedSavedConversation("21212121-2121-2121-2121-212121212121");
       await runBuiltCommand(buildTagCommand, [
         conv.id,
         "Debug",
@@ -1052,7 +1049,7 @@ describe("cli", () => {
     });
 
     it("reports no-new-tags and does not bump modifiedAt when every tag is already present", async () => {
-      const conv = await seedStagedConversation("22222222-2222-2222-2222-222222222222", {
+      const conv = await seedSavedConversation("22222222-2222-2222-2222-222222222222", {
         tags: ["auth"],
       });
       const original = conv.modifiedAt;
@@ -1065,7 +1062,7 @@ describe("cli", () => {
     });
 
     it("untag removes existing tags", async () => {
-      const conv = await seedStagedConversation("23232323-2323-2323-2323-232323232323", {
+      const conv = await seedSavedConversation("23232323-2323-2323-2323-232323232323", {
         tags: ["bug", "urgent", "frontend"],
       });
 
@@ -1076,7 +1073,7 @@ describe("cli", () => {
     });
 
     it("untag no-op when the tag is not present (SPEC §5.4.1)", async () => {
-      const conv = await seedStagedConversation("24242424-2424-2424-2424-242424242424", {
+      const conv = await seedSavedConversation("24242424-2424-2424-2424-242424242424", {
         tags: ["keep-me"],
       });
       const original = conv.modifiedAt;
@@ -1107,159 +1104,13 @@ describe("cli", () => {
   });
 
   // ========================================
-  // reset
-  // ========================================
-
-  describe("reset (SPEC §5.2.1)", () => {
-    it("prints a helpful message when called with no args and nothing is staged", async () => {
-      const { stdout } = await runBuiltCommand(buildResetCommand, []);
-      expect(stdout).toContain("No staged conversations");
-    });
-
-    it("explains when only modified saved conversations remain", async () => {
-      const convId = "32323232-aaaa-bbbb-cccc-323232323232";
-      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
-      await writeJsonl(sourcePath, [
-        userLine("First prompt", "2026-02-01T10:00:00.000Z"),
-        assistantLine("First reply", "msg_01", "2026-02-01T10:00:01.000Z"),
-        userLine("Second prompt", "2026-02-01T10:00:02.000Z"),
-        assistantLine("Second reply", "msg_02", "2026-02-01T10:00:03.000Z"),
-      ]);
-      const rawPath = getRawConversationPath("claude-code", convId);
-      await fs.mkdir(path.dirname(rawPath), { recursive: true });
-      await fs.copyFile(sourcePath, rawPath);
-
-      await insertConversation(
-        makeConversation({
-          id: convId,
-          sourceId: convId,
-          sourcePath,
-          filePath: rawPath,
-          state: "saved",
-          savedAt: "2026-02-01T10:00:00.000Z",
-          savedMessageCount: 2,
-          saveVersion: 1,
-        }),
-      );
-
-      const { stdout } = await runBuiltCommand(buildResetCommand, []);
-
-      expect(stdout).toContain("No added conversations to reset.");
-      expect(stdout).toContain('use "clog save" to save them');
-    });
-
-    it("rejects a discovered conversation with a helpful message", async () => {
-      const conv = await seedConversation("31313131-3131-3131-3131-313131313131", {
-        state: "discovered",
-      });
-      await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
-        /not staged/i,
-      );
-    });
-
-    it("resets all staged conversations when called with no args", async () => {
-      const first = await seedStagedConversation("30303030-3030-3030-3030-303030303030");
-      const second = await seedStagedConversation("31303030-3030-3030-3030-303030303030");
-
-      const { stdout } = await runBuiltCommand(buildResetCommand, []);
-
-      expect(stdout).toContain("Reset 2 conversation(s)");
-      expect((await getConversationById(first.id))?.state).toBe("discovered");
-      expect((await getConversationById(second.id))?.state).toBe("discovered");
-    });
-
-    it("refuses a remote conversation (SPEC §5.2.1, §11.1)", async () => {
-      const conv = await seedRemoteConversation("32323232-3232-3232-3232-323232323232");
-      await expect(runBuiltCommand(buildResetCommand, [conv.id])).rejects.toThrow(
-        /remote.*read-only/i,
-      );
-    });
-  });
-
-  // ========================================
-  // unsave
-  // ========================================
-
-  describe("unsave (SPEC §5.7)", () => {
-    it("prints a helpful message when called with no args and nothing is saved", async () => {
-      const { stdout } = await runBuiltCommand(buildUnsaveCommand, []);
-      expect(stdout).toContain("No saved conversations");
-    });
-
-    it("moves a saved conversation back to staged and clears indexedAt", async () => {
-      const convId = "41414141-4141-4141-4141-414141414141";
-      const rawPath = getRawConversationPath("claude-code", convId);
-      await fs.mkdir(path.dirname(rawPath), { recursive: true });
-      await fs.writeFile(rawPath, "", "utf8");
-
-      await insertConversation(
-        makeConversation({
-          id: convId,
-          sourceId: convId,
-          state: "saved",
-          filePath: rawPath,
-          savedAt: "2026-02-01T10:00:00.000Z",
-          saveVersion: 1,
-          indexedAt: "2026-02-01T10:00:00.000Z",
-        }),
-      );
-
-      await runBuiltCommand(buildUnsaveCommand, [convId]);
-
-      const reloaded = await getConversationById(convId);
-      expect(reloaded?.state).toBe("staged");
-      expect(reloaded?.indexedAt).toBeNull();
-      // savedAt / savedMessageCount / saveVersion are preserved as the checkpoint.
-      expect(reloaded?.savedAt).toBe("2026-02-01T10:00:00.000Z");
-      expect(reloaded?.saveVersion).toBe(1);
-    });
-
-    it("unsaves all saved conversations when called with no args", async () => {
-      const first = await seedSavedConversationWithRawMessages(
-        "40404040-4040-4040-4040-404040404040",
-        1,
-        1,
-      );
-      const second = await seedSavedConversationWithRawMessages(
-        "41404040-4040-4040-4040-404040404040",
-        1,
-        1,
-      );
-
-      const { stdout } = await runBuiltCommand(buildUnsaveCommand, []);
-
-      expect(stdout).toContain("Unsaved 2 conversation(s)");
-      expect((await getConversationById(first.id))?.state).toBe("staged");
-      expect((await getConversationById(second.id))?.state).toBe("staged");
-    });
-
-    it("throws when the conversation is not saved", async () => {
-      const conv = await seedStagedConversation("42424242-4242-4242-4242-424242424242");
-      await expect(runBuiltCommand(buildUnsaveCommand, [conv.id])).rejects.toThrow(
-        /not saved/i,
-      );
-    });
-
-    it("refuses a remote conversation (SPEC §11.1)", async () => {
-      const conv = await seedRemoteConversation("43434343-4343-4343-4343-434343434343", {
-        state: "saved",
-        savedAt: "2026-02-01T10:00:00.000Z",
-        saveVersion: 1,
-      });
-      await expect(runBuiltCommand(buildUnsaveCommand, [conv.id])).rejects.toThrow(
-        /remote/i,
-      );
-    });
-  });
-
-  // ========================================
   // save
   // ========================================
 
   describe("save (SPEC §5.6)", () => {
-    it("prints a helpful message when called with no args and nothing is staged", async () => {
+    it("prints a helpful message when called with no args and nothing needs saving", async () => {
       const { stdout } = await runBuiltCommand(buildSaveCommand, []);
-      expect(stdout).toContain("No staged conversations");
+      expect(stdout).toContain("No conversations need saving");
     });
 
     it("throws when a targeted ID is not found", async () => {
@@ -1294,7 +1145,7 @@ describe("cli", () => {
           sourceId: convId,
           sourcePath,
           filePath: rawPath,
-          state: "staged",
+          state: "saved",
         }),
       );
 
@@ -1346,6 +1197,52 @@ describe("cli", () => {
       expect(reloaded?.modifiedAt).toBe(reloaded?.savedAt);
     });
 
+    it("--all saves discovered conversations and refreshes saved conversations with source changes", async () => {
+      const discoveredId = "54545454-5454-5454-5454-545454545454";
+      const discoveredSource = claudeDiscoveredSourcePath(sourceDir, "api-service", discoveredId);
+      await writeMinimalClaudeJsonl(discoveredSource, "New discovered conversation");
+      await seedConversation(discoveredId, {
+        sourcePath: discoveredSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const sourceAheadId = "55555555-5555-5555-5555-555555555555";
+      const sourceAheadSource = claudeDiscoveredSourcePath(sourceDir, "api-service", sourceAheadId);
+      await writeMinimalClaudeJsonl(sourceAheadSource, "Initial prompt");
+      await seedConversation(sourceAheadId, {
+        sourcePath: sourceAheadSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await runBuiltCommand(buildSaveCommand, [sourceAheadId]);
+      const firstSaved = await getConversationById(sourceAheadId);
+      await writeJsonl(sourceAheadSource, [
+        userLine("Initial prompt"),
+        assistantLine("Response", "msg_01"),
+        userLine("Follow-up", "2026-02-01T10:05:00.000Z"),
+        assistantLine("Updated response", "msg_02", "2026-02-01T10:05:01.000Z"),
+      ]);
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["--all"]);
+      expect(stdout).toContain("Saved 2 conversation(s)");
+
+      expect((await getConversationById(discoveredId))?.state).toBe("saved");
+
+      const refreshed = await getConversationById(sourceAheadId);
+      expect(refreshed?.savedMessageCount).toBe(4);
+      expect(refreshed?.saveVersion).toBe((firstSaved?.saveVersion ?? 0) + 1);
+      const rawContent = await fs.readFile(refreshed!.filePath!, "utf8");
+      const sourceContent = await fs.readFile(sourceAheadSource, "utf8");
+      expect(rawContent).toBe(sourceContent);
+    });
+
+    it("rejects --all when selectors are also present", async () => {
+      await expect(runBuiltCommand(buildSaveCommand, ["--all", "api-service"])).rejects.toThrow(
+        /Cannot combine --all with selectors/,
+      );
+    });
+
     it("hints at unindexed saved conversations when search is configured", async () => {
       const config = await loadConfig();
       config.search = {
@@ -1368,7 +1265,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildSaveCommand, []);
-      expect(stdout).toContain("No staged conversations");
+      expect(stdout).toContain("No conversations need saving");
       expect(stdout).toContain("1 saved conversation(s) still unindexed");
       expect(stdout).toContain("Run `clog index` to finish");
     });
@@ -1388,7 +1285,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildSaveCommand, []);
-      expect(stdout).toContain("No staged conversations");
+      expect(stdout).toContain("No conversations need saving");
       expect(stdout).not.toContain("still unindexed");
       expect(stdout).not.toContain("clog index");
     });
@@ -1432,7 +1329,7 @@ describe("cli", () => {
       mockedGetSearchProviders.mockRejectedValue(new SearchDepsError(["vectra"]));
 
       const id = "c5555555-5555-5555-5555-555555555555";
-      await seedStagedConversationWithMessages(id, 2);
+      await seedSavedConversationWithMessages(id, 2);
 
       const result = await runBuiltCommand(buildSaveCommand, [id]);
 
@@ -1500,7 +1397,7 @@ describe("cli", () => {
   });
 
   describe("project-aware selectors", () => {
-    it("stages discovered conversations by bare project name", async () => {
+    it("saves discovered conversations by bare project name", async () => {
       const firstId = "71111111-1111-1111-1111-111111111111";
       const secondId = "72222222-2222-2222-2222-222222222222";
       const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
@@ -1522,14 +1419,40 @@ describe("cli", () => {
         projectName: "webapp",
       });
 
-      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
 
-      expect(stdout).toContain("Added 2 conversations");
-      expect((await getConversationById(firstId))?.state).toBe("staged");
-      expect((await getConversationById(secondId))?.state).toBe("staged");
+      expect(stdout).toContain("Saved 2 conversation(s)");
+      expect((await getConversationById(firstId))?.state).toBe("saved");
+      expect((await getConversationById(secondId))?.state).toBe("saved");
       expect((await getConversationById("73333333-3333-3333-3333-333333333333"))?.state).toBe(
         "discovered",
       );
+    });
+
+    it("skips and removes a discovered row whose source file is missing while saving the rest", async () => {
+      const missingId = "7eeeeeee-1111-1111-1111-111111111111";
+      const goodId = "7eeeeeee-2222-2222-2222-222222222222";
+      const goodSource = claudeDiscoveredSourcePath(sourceDir, "api-service", goodId);
+      await writeMinimalClaudeJsonl(goodSource, "Still available");
+
+      await seedConversation(missingId, {
+        sourcePath: path.join(tempDir, "outside-scan-root", `${missingId}.jsonl`),
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+      await seedConversation(goodId, {
+        sourcePath: goodSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout, stderr } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
+
+      expect(stdout).toContain("Saved 1 conversation(s)");
+      expect(stderr).toContain(`warning: skipped ${missingId.slice(0, 8)}`);
+      expect(stderr).toContain("source file is missing");
+      expect(await getConversationById(missingId)).toBeNull();
+      expect((await getConversationById(goodId))?.state).toBe("saved");
     });
 
     it("scans before resolving a project selector so newly discovered project conversations are included", async () => {
@@ -1546,11 +1469,11 @@ describe("cli", () => {
         projectPath: "/Users/testuser/projects/api-service",
       });
 
-      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
 
-      expect(stdout).toContain("Added 2 conversations");
-      expect((await getConversationById(existingId))?.state).toBe("staged");
-      expect((await getConversationById(newId))?.state).toBe("staged");
+      expect(stdout).toContain("Saved 2 conversation(s)");
+      expect((await getConversationById(existingId))?.state).toBe("saved");
+      expect((await getConversationById(newId))?.state).toBe("saved");
     });
 
     it("refreshes saved conversations by project selector", async () => {
@@ -1564,7 +1487,7 @@ describe("cli", () => {
         projectPath: "/Users/testuser/projects/api-service",
       });
 
-      await runBuiltCommand(buildAddCommand, [convId]);
+      await runBuiltCommand(buildSaveCommand, [convId]);
       await runBuiltCommand(buildSaveCommand, [convId]);
 
       const firstSaved = await getConversationById(convId);
@@ -1572,7 +1495,6 @@ describe("cli", () => {
       const firstModifiedAt = firstSaved?.modifiedAt;
       const firstSavedAt = firstSaved?.savedAt;
       const firstSaveVersion = firstSaved?.saveVersion;
-      const firstSavedMessageCount = firstSaved?.savedMessageCount;
 
       await writeJsonl(sourcePath, [
         userLine("Initial prompt"),
@@ -1581,19 +1503,52 @@ describe("cli", () => {
         assistantLine("Updated response", "msg_02", "2026-02-01T10:05:01.000Z"),
       ]);
 
-      const { stdout } = await runBuiltCommand(buildAddCommand, ["api-service"]);
-      expect(stdout).toContain("Added 1 conversation");
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
+      expect(stdout).toContain("Saved 1 conversation(s)");
 
       const refreshed = await getConversationById(convId);
       expect(refreshed?.state).toBe("saved");
       expect(refreshed?.modifiedAt).not.toBe(firstModifiedAt);
-      expect(refreshed?.savedAt).toBe(firstSavedAt);
-      expect(refreshed?.saveVersion).toBe(firstSaveVersion);
-      expect(refreshed?.savedMessageCount).toBe(firstSavedMessageCount);
+      expect(refreshed?.savedAt).not.toBe(firstSavedAt);
+      expect(refreshed?.saveVersion).toBe((firstSaveVersion ?? 0) + 1);
+      expect(refreshed?.savedMessageCount).toBe(4);
 
       const rawContent = await fs.readFile(refreshed!.filePath!, "utf8");
       const sourceContent = await fs.readFile(sourcePath, "utf8");
       expect(rawContent).toBe(sourceContent);
+    });
+
+    it("resaves clean saved conversations by project selector", async () => {
+      const convId = "7ddddddd-1111-2222-3333-444444444444";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", convId);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(sourcePath, "Already saved");
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          filePath: rawPath,
+          state: "saved",
+          projectName: "api-service",
+          projectPath: "/Users/testuser/projects/api-service",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          savedMessageCount: 2,
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
+
+      expect(stdout).toContain("Saved 1 conversation(s)");
+      const reloaded = await getConversationById(convId);
+      expect(reloaded?.state).toBe("saved");
+      expect(reloaded?.saveVersion).toBe(2);
+      expect(reloaded?.savedMessageCount).toBe(2);
+      expect(reloaded?.savedAt).not.toBe("2026-02-01T10:00:00.000Z");
     });
 
     it("resolves a short bare token as a project name", async () => {
@@ -1606,15 +1561,15 @@ describe("cli", () => {
         projectPath: "/Users/testuser/projects/ui",
       });
 
-      const { stdout } = await runBuiltCommand(buildAddCommand, ["ui"]);
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["ui"]);
 
-      expect(stdout).toContain("Added 1 conversation");
-      expect((await getConversationById(id))?.state).toBe("staged");
+      expect(stdout).toContain("Saved 1 conversation(s)");
+      expect((await getConversationById(id))?.state).toBe("saved");
     });
 
     it("rejects a short source-qualified token with the ID-length error", async () => {
       await expect(
-        runBuiltCommand(buildAddCommand, ["ab@claude-code"]),
+        runBuiltCommand(buildSaveCommand, ["ab@claude-code"]),
       ).rejects.toThrow(/at least 4 characters/);
     });
 
@@ -1637,7 +1592,7 @@ describe("cli", () => {
         projectPath: "/Users/testuser/projects/ab",
       });
 
-      await expect(runBuiltCommand(buildAddCommand, ["ab"])).rejects.toThrow(/ambiguous/i);
+      await expect(runBuiltCommand(buildSaveCommand, ["ab"])).rejects.toThrow(/ambiguous/i);
     });
 
     it("reports ambiguity when a bare selector matches both an id prefix and a project", async () => {
@@ -1664,26 +1619,10 @@ describe("cli", () => {
         projectPath: "/Users/testuser/projects/webapp",
       });
 
-      await expect(runBuiltCommand(buildAddCommand, ["webapp"])).rejects.toThrow(/ambiguous/i);
+      await expect(runBuiltCommand(buildSaveCommand, ["webapp"])).rejects.toThrow(/ambiguous/i);
     });
 
-    it("resets staged conversations by project selector", async () => {
-      const first = await seedStagedConversation("75555555-5555-5555-5555-555555555555", {
-        projectName: "api-service",
-        projectPath: "/Users/testuser/projects/api-service",
-      });
-      const second = await seedStagedConversation("76666666-6666-6666-6666-666666666666", {
-        projectName: "api-service",
-        projectPath: "/Users/testuser/projects/api-service",
-      });
-
-      await runBuiltCommand(buildResetCommand, ["api-service"]);
-
-      expect((await getConversationById(first.id))?.state).toBe("discovered");
-      expect((await getConversationById(second.id))?.state).toBe("discovered");
-    });
-
-    it("saves and unsaves by project selector", async () => {
+    it("saves by project selector", async () => {
       const firstId = "77777777-7777-7777-7777-777777777771";
       const secondId = "77777777-7777-7777-7777-777777777772";
       const firstSource = claudeDiscoveredSourcePath(sourceDir, "api-service", firstId);
@@ -1705,10 +1644,6 @@ describe("cli", () => {
       await runBuiltCommand(buildSaveCommand, ["project:api-service"]);
       expect((await getConversationById(firstId))?.state).toBe("saved");
       expect((await getConversationById(secondId))?.state).toBe("saved");
-
-      await runBuiltCommand(buildUnsaveCommand, ["api-service"]);
-      expect((await getConversationById(firstId))?.state).toBe("staged");
-      expect((await getConversationById(secondId))?.state).toBe("staged");
     });
 
     it("resolves drain project selectors against the filtered candidate set", async () => {
@@ -1720,14 +1655,14 @@ describe("cli", () => {
       await writeMinimalClaudeJsonl(bobRaw, "Bob API");
 
       await seedConversation(aliceId, {
-        state: "staged",
+        state: "saved",
         filePath: aliceRaw,
         author: "alice",
         projectName: "api-service",
         projectPath: "/Users/testuser/projects/api-service",
       });
       await seedConversation(bobId, {
-        state: "staged",
+        state: "saved",
         filePath: bobRaw,
         author: "bob",
         projectName: "api-service",
@@ -1884,7 +1819,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           filePath: rawPath,
         }),
       );
@@ -1923,7 +1858,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "staged",
+          state: "saved",
           sourcePath,
           filePath: rawPath,
           title: "Hello header",
@@ -1940,7 +1875,7 @@ describe("cli", () => {
     });
 
     it("show rejects a non-positive --head value with a clear error", async () => {
-      const conv = await seedStagedConversation("74747474-7474-7474-7474-747474747474");
+      const conv = await seedSavedConversation("74747474-7474-7474-7474-747474747474");
       await expect(
         runBuiltCommand(buildShowCommand, [conv.id, "--head", "0"]),
       ).rejects.toThrow(/positive integer/);
@@ -1972,24 +1907,6 @@ describe("cli", () => {
       ).rejects.toThrow(/positive integer/);
     });
 
-    it("rejects a staged conversation in default mode with a pointer to --staged", async () => {
-      const conv = await seedStagedConversation("82828282-8282-8282-8282-828282828282");
-      await expect(
-        runBuiltCommand(buildDiffCommand, [conv.id]),
-      ).rejects.toThrow(/not saved.*--staged/i);
-    });
-
-    it("rejects a saved conversation in --staged mode with a pointer to default", async () => {
-      const conv = await seedSavedConversationWithRawMessages(
-        "83838383-8383-8383-8383-838383838383",
-        2,
-        2,
-      );
-      await expect(
-        runBuiltCommand(buildDiffCommand, ["--staged", conv.id]),
-      ).rejects.toThrow(/not staged.*clog diff/i);
-    });
-
     it("prints new-since-save messages and a descriptive header line", async () => {
       // Raw has 4 messages, saved checkpoint is at 2 → 2 new messages to show.
       const conv = await seedSavedConversationWithRawMessages(
@@ -2016,16 +1933,6 @@ describe("cli", () => {
       ).rejects.toThrow(/fewer parsed messages/);
     });
 
-    it("--staged mode prints the full transcript of a staged conversation", async () => {
-      const conv = await seedStagedConversationWithMessages(
-        "86868686-8686-8686-8686-868686868686",
-        3,
-      );
-      const { stdout } = await runBuiltCommand(buildDiffCommand, ["--staged", conv.id]);
-      expect(stdout).toContain(conv.id.slice(0, 8));
-      expect(stdout).toContain("[USER]");
-    });
-
     it("--head trims the diff output with a truncation note in the header", async () => {
       // 5 new messages, only the first 2 should appear.
       const conv = await seedSavedConversationWithRawMessages(
@@ -2045,18 +1952,18 @@ describe("cli", () => {
   describe("list (SPEC §5.3, §11.10)", () => {
     it("prints the empty-default message when there is nothing curated", async () => {
       const { stdout } = await runBuiltCommand(buildListCommand, []);
-      expect(stdout).toContain("No staged or saved conversations");
+      expect(stdout).toContain("No saved conversations");
     });
 
-    it("shows staged and saved by default", async () => {
-      await seedStagedConversation("a1111111-1111-1111-1111-111111111111", {
-        title: "Staged one",
+    it("shows saved conversations by default", async () => {
+      await seedSavedConversation("a1111111-1111-1111-1111-111111111111", {
+        title: "Saved one",
       });
       await insertConversation(
         makeConversation({
           id: "a2222222-2222-2222-2222-222222222222",
           sourceId: "a2222222-2222-2222-2222-222222222222",
-          title: "Saved one",
+          title: "Saved two",
           state: "saved",
           filePath: "/tmp/fake.jsonl",
           savedAt: "2026-02-01T10:00:00.000Z",
@@ -2065,8 +1972,8 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildListCommand, []);
-      expect(stdout).toContain("Staged one");
       expect(stdout).toContain("Saved one");
+      expect(stdout).toContain("Saved two");
     });
 
     it("--state discovered filters to discovered rows only", async () => {
@@ -2078,20 +1985,20 @@ describe("cli", () => {
           state: "discovered",
         }),
       );
-      await seedStagedConversation("a4444444-4444-4444-4444-444444444444", {
-        title: "Staged one",
+      await seedSavedConversation("a4444444-4444-4444-4444-444444444444", {
+        title: "Saved one",
       });
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--state", "discovered"]);
       expect(stdout).toContain("Discovered one");
-      expect(stdout).not.toContain("Staged one");
+      expect(stdout).not.toContain("Saved one");
     });
 
     it("--project filters case-insensitively", async () => {
-      await seedStagedConversation("a5555555-5555-5555-5555-555555555555", {
+      await seedSavedConversation("a5555555-5555-5555-5555-555555555555", {
         projectName: "api-service",
       });
-      await seedStagedConversation("a6666666-6666-6666-6666-666666666666", {
+      await seedSavedConversation("a6666666-6666-6666-6666-666666666666", {
         projectName: "webapp",
       });
 
@@ -2101,10 +2008,10 @@ describe("cli", () => {
     });
 
     it("--grep filters by text match on title", async () => {
-      await seedStagedConversation("a7777777-7777-7777-7777-777777777777", {
+      await seedSavedConversation("a7777777-7777-7777-7777-777777777777", {
         title: "Debug JWT refresh race",
       });
-      await seedStagedConversation("a8888888-8888-8888-8888-888888888888", {
+      await seedSavedConversation("a8888888-8888-8888-8888-888888888888", {
         title: "Unrelated work",
       });
 
@@ -2120,8 +2027,8 @@ describe("cli", () => {
     });
 
     it("--origin remote restricts to remote rows", async () => {
-      await seedStagedConversation("a9999999-9999-9999-9999-999999999999", {
-        title: "Local staged",
+      await seedSavedConversation("a9999999-9999-9999-9999-999999999999", {
+        title: "Local saved",
       });
       await insertConversation(
         makeConversation({
@@ -2139,7 +2046,7 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--origin", "remote"]);
       expect(stdout).toContain("Remote saved");
-      expect(stdout).not.toContain("Local staged");
+      expect(stdout).not.toContain("Local saved");
     });
 
     it("--columns rejects an unknown column name", async () => {
@@ -2149,7 +2056,7 @@ describe("cli", () => {
     });
 
     it("--columns all expands to every known column", async () => {
-      await seedStagedConversation("b2222222-2222-2222-2222-222222222222", {
+      await seedSavedConversation("b2222222-2222-2222-2222-222222222222", {
         title: "Headers on",
       });
       const { stdout } = await runBuiltCommand(buildListCommand, ["--columns", "all"]);
@@ -2160,7 +2067,7 @@ describe("cli", () => {
     });
 
     it("prints 'No conversations found.' when a filter excludes everything", async () => {
-      await seedStagedConversation("b9999999-9999-9999-9999-999999999999", {
+      await seedSavedConversation("b9999999-9999-9999-9999-999999999999", {
         projectName: "webapp",
       });
 
@@ -2173,7 +2080,7 @@ describe("cli", () => {
       config.author = "";
       await saveConfig(config);
 
-      await seedStagedConversation("ba000000-0000-0000-0000-000000000001", {
+      await seedSavedConversation("ba000000-0000-0000-0000-000000000001", {
         title: "Author-less local",
         author: "anyone",
       });
@@ -2202,9 +2109,9 @@ describe("cli", () => {
       expect(stdout).toContain("ignored");
     });
 
-    it("--all renders the display table including staged and saved rows", async () => {
-      await seedStagedConversation("b5555555-5555-5555-5555-555555555555", {
-        title: "Staged all",
+    it("--all renders the display table including saved and discovered rows", async () => {
+      await seedSavedConversation("b5555555-5555-5555-5555-555555555555", {
+        title: "Saved all",
       });
       await insertConversation(
         makeConversation({
@@ -2216,7 +2123,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildListCommand, ["--all"]);
-      expect(stdout).toContain("Staged all");
+      expect(stdout).toContain("Saved all");
       expect(stdout).toContain("Discovered all");
     });
 
@@ -2231,7 +2138,7 @@ describe("cli", () => {
         lastSyncHead: "aaaa000000000000000000000000000000000000",
       });
 
-      await seedStagedConversation("b7777777-7777-7777-7777-777777777777");
+      await seedSavedConversation("b7777777-7777-7777-7777-777777777777");
 
       const { stdout } = await runBuiltCommand(buildListCommand, []);
       expect(stdout).toContain("remote checkout has changed outside of clog");
@@ -2244,7 +2151,7 @@ describe("cli", () => {
       config.remote.url = "git@example.com:team/repo.git";
       await saveConfig(config);
 
-      await seedStagedConversation("b3333333-3333-3333-3333-333333333333");
+      await seedSavedConversation("b3333333-3333-3333-3333-333333333333");
       await insertConversation(
         makeConversation({
           id: "b4444444-4444-4444-4444-444444444444",
@@ -2274,20 +2181,20 @@ describe("cli", () => {
       expect(stdout).toContain("Nothing to save.");
     });
 
-    it("shows staged project counts under 'Conversations to be saved:'", async () => {
-      await seedStagedConversation("c1111111-1111-1111-1111-111111111111", {
-        title: "Staged change",
+    it("shows saved rows that need resaving under 'Saved conversations to resave:'", async () => {
+      await seedSavedConversation("c1111111-1111-1111-1111-111111111111", {
+        title: "Saved change",
       });
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Conversations to be saved:");
+      expect(stdout).toContain("Saved conversations to resave:");
       expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 added");
-      expect(stdout).not.toContain("Staged change");
-      expect(stdout).toContain('use "clog reset <id>" to unstage');
+      expect(stdout).toContain("1 modified");
+      expect(stdout).not.toContain("Saved change");
+      expect(stdout).toContain('use "clog save" to save these updates');
     });
 
-    it("shows discovered project counts under 'Untracked conversations:'", async () => {
+    it("shows discovered project counts under 'Unsaved conversations:'", async () => {
       await insertConversation(
         makeConversation({
           id: "c2222222-2222-2222-2222-222222222222",
@@ -2298,7 +2205,7 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Untracked conversations:");
+      expect(stdout).toContain("Unsaved conversations:");
       expect(stdout).toContain("webapp");
       expect(stdout).toContain("1 discovered");
       expect(stdout).not.toContain("Pending discovery");
@@ -2369,27 +2276,26 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Conversations to be saved:");
+      expect(stdout).toContain("Saved conversations to resave:");
       expect(stdout).toContain("webapp");
       expect(stdout).toContain("1 modified");
       expect(stdout).not.toContain("Saved with refreshed raw copy");
-      expect(stdout).toContain('use "clog save" to save these modified conversations');
-      expect(stdout).not.toContain('use "clog reset <id>" to unstage');
+      expect(stdout).toContain('use "clog save" to save these updates');
     });
 
     it("--conversations restores the conversation-level status rows", async () => {
-      await seedStagedConversation("c3434343-3434-3434-3434-343434343434", {
+      await seedSavedConversation("c3434343-3434-3434-3434-343434343434", {
         title: "Conversation fallback",
       });
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, ["--conversations"]);
       expect(stdout).toContain("c3434343");
       expect(stdout).toContain("Conversation fallback");
-      expect(stdout).toContain("added:");
+      expect(stdout).toContain("modified:");
     });
 
     it("--source adds the source column after the short id", async () => {
-      await seedStagedConversation("c4444444-4444-4444-4444-444444444444", {
+      await seedSavedConversation("c4444444-4444-4444-4444-444444444444", {
         title: "With source column",
       });
 
@@ -2442,11 +2348,11 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Conversations to be saved:");
+      expect(stdout).toContain("Saved conversations to resave:");
       expect(stdout).toContain("webapp");
       expect(stdout).toContain("1 modified");
       expect(stdout).not.toContain("Checkpoint lag");
-      expect(stdout).toContain('use "clog save" to save these modified conversations');
+      expect(stdout).toContain('use "clog save" to save these updates');
     });
 
     it("marks a saved conversation as ready when metadata changed after save", async () => {
@@ -2474,24 +2380,31 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Conversations to be saved:");
+      expect(stdout).toContain("Saved conversations to resave:");
       expect(stdout).toContain("webapp");
       expect(stdout).toContain("1 modified");
       expect(stdout).not.toContain("Metadata changed");
-      expect(stdout).toContain('use "clog save" to save these modified conversations');
+      expect(stdout).toContain('use "clog save" to save these updates');
     });
 
-    it("uses a mixed hint when added and modified conversations are both present", async () => {
-      await seedStagedConversation("c7878787-7878-7878-7878-787878787878", {
-        title: "Added conversation",
+    it("shows saved source changes separately from saved rows ready to resave", async () => {
+      await seedSavedConversation("c7878787-7878-7878-7878-787878787878", {
+        title: "Ready saved conversation",
       });
 
       const convId = "c7979797-7979-7979-7979-797979797979";
       const rawPath = getRawConversationPath("claude-code", convId);
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
       await writeJsonl(rawPath, [
         userLine("First"),
         assistantLine("Reply", "msg_01"),
+      ]);
+      await writeJsonl(sourcePath, [
+        userLine("First"),
+        assistantLine("Reply", "msg_01"),
+        userLine("Second"),
+        assistantLine("Reply 2", "msg_02"),
       ]);
 
       await insertConversation(
@@ -2501,7 +2414,7 @@ describe("cli", () => {
           title: "Modified saved conversation",
           state: "saved",
           filePath: rawPath,
-          sourcePath: "/tmp/nonexistent-source.jsonl",
+          sourcePath,
           modifiedAt: "2026-02-01T10:05:00.000Z",
           savedAt: "2026-02-01T10:00:00.000Z",
           savedMessageCount: 2,
@@ -2510,8 +2423,12 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("1 added, 1 modified");
-      expect(stdout).toContain('use "clog save" to save everything here; "clog reset <id>" only unstages added conversations');
+      expect(stdout).toContain("Saved conversations to resave:");
+      expect(stdout).toContain("Saved conversations whose source files changed:");
+      expect(stdout).toContain('use "clog save <id>" to refresh the saved copy from its source file');
+      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("1 conversation");
+      expect(stdout).not.toContain("1 source");
     });
 
     it("shows unindexed saved conversations in a search section when search is configured, even without a remote", async () => {
@@ -2893,7 +2810,7 @@ async function seedConversation(
   return conversation;
 }
 
-async function seedStagedConversation(
+async function seedSavedConversation(
   id: string,
   overrides: Partial<ConversationMeta> = {},
 ): Promise<ConversationMeta> {
@@ -2902,8 +2819,10 @@ async function seedStagedConversation(
   await fs.writeFile(rawPath, "", "utf8");
 
   return seedConversation(id, {
-    state: "staged",
+    state: "saved",
     filePath: rawPath,
+    savedAt: "2026-02-01T10:00:00.000Z",
+    saveVersion: 1,
     ...overrides,
   });
 }
@@ -2987,7 +2906,7 @@ async function seedSavedConversationWithRawMessages(
   });
 }
 
-async function seedStagedConversationWithMessages(
+async function seedSavedConversationWithMessages(
   id: string,
   messageCount: number,
 ): Promise<ConversationMeta> {
@@ -2996,14 +2915,16 @@ async function seedStagedConversationWithMessages(
 
   const lines: Record<string, unknown>[] = [];
   for (let i = 0; i < messageCount; i++) {
-    lines.push(userLine(`Staged ${i + 1}`, `2026-02-01T10:${String(i).padStart(2, "0")}:00.000Z`));
+    lines.push(userLine(`Saved ${i + 1}`, `2026-02-01T10:${String(i).padStart(2, "0")}:00.000Z`));
   }
   await writeJsonl(rawPath, lines);
 
   return seedConversation(id, {
-    state: "staged",
+    state: "saved",
     filePath: rawPath,
     sourcePath: "/tmp/nonexistent-source.jsonl",
+    savedAt: "2026-02-01T10:00:00.000Z",
+    saveVersion: 1,
   });
 }
 

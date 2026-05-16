@@ -25,6 +25,11 @@ export function buildEditCommand(): Command {
 
       const conversation = await resolveConversationOrFail(id);
       assertNotRemote(conversation, "clog edit");
+      if (conversation.state !== "saved") {
+        throw new Error(
+          `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog save ${conversation.id.slice(0, 8)}" before editing metadata.`,
+        );
+      }
       const summaryProvided = options.summary !== undefined;
       const nextSummary = options.summary ?? conversation.summary;
       const updated: ConversationMeta = {

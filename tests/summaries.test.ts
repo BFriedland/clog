@@ -190,7 +190,7 @@ describe("agent-assisted summarization", () => {
       expect(populated?.summaryExtraction).toBeNull();
       expect(blank?.summaryKind).toBe("none");
       expect(blank?.summaryExtraction).toBeNull();
-      expect(CURRENT_SCHEMA_VERSION).toBe(5);
+      expect(CURRENT_SCHEMA_VERSION).toBe(6);
     });
   });
 
@@ -477,7 +477,7 @@ describe("agent-assisted summarization", () => {
   });
 
   describe("state transitions preserve summary metadata", () => {
-    it("unsave (saved → staged) leaves summaryKind and extraction intact", async () => {
+    it("saved metadata updates preserve summaryKind and extraction", async () => {
       const conversation = makeSavedConversation({
         summary: "Auth refactor",
         summaryKind: "generated",
@@ -485,16 +485,14 @@ describe("agent-assisted summarization", () => {
       });
       await insertConversation(conversation);
 
-      // Mirror what `clog unsave` does: state -> staged, indexedAt cleared,
-      // everything else preserved.
       await updateConversation({
         ...conversation,
-        state: "staged",
+        title: "Updated title",
         indexedAt: null,
       });
 
       const loaded = await getConversationById(conversation.id);
-      expect(loaded?.state).toBe("staged");
+      expect(loaded?.state).toBe("saved");
       expect(loaded?.summaryKind).toBe("generated");
       expect(loaded?.summaryExtraction).toEqual({
         topics: ["auth"],
@@ -510,7 +508,7 @@ describe("agent-assisted summarization", () => {
       });
       await insertConversation(conversation);
 
-      // Mirror what `clog add` does for an already-saved conversation: it
+      // Mirror a saved raw-copy refresh: it
       // re-copies the raw file but leaves curation metadata alone.
       await updateConversation({
         ...conversation,

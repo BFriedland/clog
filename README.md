@@ -51,25 +51,22 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog status` | Scan sources and show project summaries for discovered, staged, and modified saved conversations (`--conversations`, `--source`) |
-| `clog list [filters]` | List conversations — staged + saved by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
-| `clog add [selector...]` | Stage conversations from a project or by ID (`--all`) |
-| `clog reset <selector...>` | Move staged conversations back to discovered |
+| `clog status` | Scan sources and show project summaries for unsaved conversations and saved conversations needing attention (`--conversations`, `--source`) |
+| `clog list [filters]` | List conversations — saved by default (`--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
 | `clog edit <id>` | Edit metadata (`--title`, `--summary`, `--author`) |
 | `clog tag <id> <tags...>` | Add tags |
 | `clog untag <id> <tags...>` | Remove tags |
 | `clog exclude <rule...>` | Ignore projects or conversations via `~/.clog/clogignore` |
 | `clog unexclude <rule...>` | Remove exact rules from `~/.clog/clogignore` |
-| `clog remove <rule...>` | Remove currently matching conversations from clog's local DB |
+| `clog remove <rule...>` | Remove matching conversations from clog's local DB and raw storage (`--yes`, `--dry-run`) |
 | `clog rename-author <old> <new>` | Rename an author across local conversations |
 
 ### Saving & Inspection
 
 | Command | What it does |
 |---------|-------------|
-| `clog save [selector...]` | Save staged conversations, or save a project directly |
-| `clog unsave <selector...>` | Move saved conversations back to staged |
-| `clog diff [id...]` | Show new messages since last save (`--staged`, `--head N`, `--tail N`, `--first N`, `--last N`) |
+| `clog save [selector...]` | Save discovered conversations by ID/project, or resave saved conversations (`--all`) |
+| `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
 | `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`) |
@@ -136,9 +133,8 @@ This gives agents the following tools:
 | Tool | What it does |
 |------|-------------|
 | `clog_list_saved` | List saved conversations (filterable by origin, project, etc.) |
-| `clog_list_staged` | List staged conversations for agent-assisted curation |
-| `clog_get` | Load a conversation's messages |
-| `clog_update` | Edit title, summary, structured extraction, or tags |
+| `clog_get` | Load a saved conversation's messages |
+| `clog_update` | Edit title, summary, structured extraction, or tags on saved local conversations |
 | `clog_browse` | List tags, projects, or authors |
 | `clog_search` | Semantic search (requires `clog search --init`) |
 | `clog_summarization_guide` | Read before summarizing — explains why summaries help, the extraction shape, and the quality bar |

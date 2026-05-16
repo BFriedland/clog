@@ -12,6 +12,11 @@ export function buildTagCommand(): Command {
     .action(async (id: string, tags: string[]) => {
       const conversation = await resolveConversationOrFail(id);
       assertNotRemote(conversation, "clog tag");
+      if (conversation.state !== "saved") {
+        throw new Error(
+          `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog save ${conversation.id.slice(0, 8)}" before tagging it.`,
+        );
+      }
       const nextTags = [...new Set([...conversation.tags, ...normalizeTags(tags)])];
 
       if (nextTags.length === conversation.tags.length) {

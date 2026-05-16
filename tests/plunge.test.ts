@@ -95,13 +95,13 @@ describe("plunge", () => {
     );
   });
 
-  it("reports a missing curated raw file on a local staged row", async () => {
+  it("reports a missing curated raw file on a local saved row", async () => {
     await seedConfig();
     await insertConversation(
       makeConversation({
         id: "11111111-1111-1111-1111-111111111111",
         sourceId: "11111111-1111-1111-1111-111111111111",
-        state: "staged",
+        state: "saved",
         filePath: getRawConversationPath("claude-code", "11111111-1111-1111-1111-111111111111"),
       }),
     );
@@ -111,7 +111,7 @@ describe("plunge", () => {
     expect(findCheck(report, 7)?.message).toContain("raw file is missing");
   });
 
-  it("reports an unexpected raw file path on a local staged row", async () => {
+  it("reports an unexpected raw file path on a local saved row", async () => {
     await seedConfig();
     const wrongPath = path.join(tempDir, "wrong.jsonl");
     await fs.writeFile(wrongPath, "", "utf8");
@@ -119,7 +119,7 @@ describe("plunge", () => {
       makeConversation({
         id: "22222222-2222-2222-2222-222222222222",
         sourceId: "22222222-2222-2222-2222-222222222222",
-        state: "staged",
+        state: "saved",
         filePath: wrongPath,
       }),
     );
@@ -129,7 +129,7 @@ describe("plunge", () => {
     expect(findCheck(report, 7)?.message).toContain("outside the expected raw location");
   });
 
-  it("reports raw parse failure on a local staged row", async () => {
+  it("reports raw parse failure on a local saved row", async () => {
     await seedConfig();
     const id = "33333333-3333-3333-3333-333333333333";
     const rawPath = getRawConversationPath("claude-code", id);
@@ -139,7 +139,7 @@ describe("plunge", () => {
       makeConversation({
         id,
         sourceId: id,
-        state: "staged",
+        state: "saved",
         filePath: rawPath,
       }),
     );

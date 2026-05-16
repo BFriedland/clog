@@ -3,6 +3,7 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
+  deleteConversation,
   listConversations,
   listConversationsNeedingIndex,
   updateConversation,
@@ -10,26 +11,45 @@ import {
 import { isUnsummarized, type ConversationMeta } from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { searchAvailable } from "../search/deps.js";
+import { UsageError } from "../utils/errors.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
   defaultSaveFilePath,
   ensureRawCopy,
+  getScanWarningsForCommand,
   getSaveCandidate,
-  parseConversationMessages,
   parseConversationMessagesFromPath,
+  renderWarnings,
+  SourceFileMissingError,
 } from "./common.js";
-import { collectBareSaveTargets, collectProjectSaveTargets } from "./project-targets.js";
+import {
+  collectAllSaveTargets,
+  collectBareSaveTargets,
+  collectProjectSaveTargets,
+} from "./project-targets.js";
+import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
 export function buildSaveCommand(): Command {
   return new Command("save")
     .description("Save conversations")
     .argument("[selectors...]")
-    .action(async (selectors: string[]) => {
+    .option("--all", "Save all discovered conversations")
+    .action(async (selectors: string[], options: { all?: boolean }) => {
+      if (options.all && selectors.length > 0) {
+        throw new UsageError(
+          "Cannot combine --all with selectors. Use either 'clog save --all' or 'clog save <selector...>'.",
+        );
+      }
+
       const config = await loadConfig();
-      const conversations =
-        selectors.length > 0
+      const scanResult = await scanLocalSources(config);
+      renderWarnings(getScanWarningsForCommand(scanResult));
+
+      const conversations = options.all
+        ? await collectAllSaveTargets()
+        : selectors.length > 0
           ? resolveConversationSelectors({
               commandName: "clog save",
               tokens: selectors,
@@ -39,7 +59,7 @@ export function buildSaveCommand(): Command {
           : await collectBareSaveTargets();
 
       if (conversations.length === 0) {
-        process.stdout.write('No staged conversations. Use "clog add <id>" to stage conversations first.\n');
+        process.stdout.write('No conversations need saving. Use "clog save <id>" or "clog save <project>" to save discovered conversations.\n');
         await maybePrintUnindexedHint(config);
         return;
       }
@@ -50,55 +70,44 @@ export function buildSaveCommand(): Command {
       const showProgress = process.stdout.isTTY && conversations.length > 1;
 
       for (const [index, conversation] of conversations.entries()) {
-        if (
-          selectors.length > 0 &&
-          conversation.state !== "discovered" &&
-          conversation.state !== "staged" &&
-          conversation.state !== "saved"
-        ) {
-          throw new Error(`Conversation ${conversation.id} cannot be saved.`);
+        try {
+          const candidate = await getSaveCandidate(conversation);
+          const rawPath =
+            conversation.state === "discovered" || !conversation.filePath
+              ? defaultSaveFilePath(conversation)
+              : conversation.filePath;
+
+          if (candidate.shouldRefreshRawCopy) {
+            await ensureRawCopy(conversation);
+          }
+
+          const parsePath = candidate.shouldRefreshRawCopy ? rawPath : candidate.path;
+          const messages = await parseConversationMessagesFromPath(
+            config,
+            conversation.source,
+            parsePath,
+          );
+          const timestamp = nowIso();
+
+          const savedConversation = {
+            ...conversation,
+            filePath: rawPath,
+            state: "saved" as const,
+            saveVersion: conversation.saveVersion + 1,
+            savedAt: timestamp,
+            modifiedAt: timestamp,
+            savedMessageCount: messages.length,
+            indexedAt: null,
+          };
+
+          await updateConversation(savedConversation);
+          savedConversations.push(savedConversation);
+        } catch (error) {
+          if (await skipMissingDiscoveredSource(error, conversation)) {
+            continue;
+          }
+          throw error;
         }
-
-        const candidate = await getSaveCandidate(conversation);
-        const rawPath =
-          conversation.state === "discovered" || !conversation.filePath
-            ? defaultSaveFilePath(conversation)
-            : conversation.filePath;
-
-        if (candidate.shouldRefreshRawCopy) {
-          await ensureRawCopy(conversation);
-        }
-
-        const parsePath =
-          candidate.shouldRefreshRawCopy && conversation.state === "discovered"
-            ? rawPath
-            : candidate.shouldRefreshRawCopy
-              ? rawPath
-              : candidate.path;
-
-        const messages =
-          parsePath === resolveFilePathOrFallback(conversation, rawPath)
-            ? await parseConversationMessages(config, {
-                ...conversation,
-                filePath: parsePath,
-                state: conversation.state === "discovered" ? "staged" : conversation.state,
-              })
-            : await parseConversationMessagesFromPath(config, conversation.source, parsePath);
-        const timestamp = nowIso();
-
-        const savedConversation = {
-          ...conversation,
-          filePath: rawPath,
-          state: "saved" as const,
-          saveVersion: conversation.saveVersion + 1,
-          savedAt: timestamp,
-          modifiedAt: timestamp,
-          savedMessageCount: messages.length,
-          indexedAt: null,
-        };
-
-        await updateConversation(savedConversation);
-        savedConversations.push(savedConversation);
 
         if (showProgress) {
           process.stdout.write(
@@ -135,10 +144,25 @@ export function buildSaveCommand(): Command {
         );
       }
 
-      process.stdout.write(`Saved ${conversations.length} conversation(s).\n`);
+      process.stdout.write(`Saved ${savedConversations.length} conversation(s).\n`);
       await maybePrintUnindexedHint(config);
       await maybePrintSummarizationHint();
     });
+}
+
+async function skipMissingDiscoveredSource(
+  error: unknown,
+  conversation: ConversationMeta,
+): Promise<boolean> {
+  if (!(error instanceof SourceFileMissingError) || conversation.state !== "discovered") {
+    return false;
+  }
+
+  await deleteConversation(conversation.id);
+  process.stderr.write(
+    `warning: skipped ${conversation.id.slice(0, 8)} because its source file is missing; removed stale discovered row from clog's database (path=${conversation.sourcePath})\n`,
+  );
+  return true;
 }
 
 export async function maybePrintSummarizationHint(): Promise<void> {
@@ -156,13 +180,6 @@ export async function maybePrintSummarizationHint(): Promise<void> {
   process.stdout.write(
     `\n${chalk.bold(`${unsummarized.length} saved conversation(s) don't have structured summaries.`)} Run \`clog talk\` to start an agent session.\n`,
   );
-}
-
-function resolveFilePathOrFallback(
-  conversation: { filePath: string | null },
-  fallback: string,
-): string {
-  return conversation.filePath ?? fallback;
 }
 
 async function maybePrintUnindexedHint(

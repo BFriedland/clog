@@ -17,7 +17,6 @@ export function buildDiffCommand(): Command {
   return new Command("diff")
     .description("Show new messages since last save")
     .argument("[ids...]")
-    .option("--staged")
     .option("--head <n>")
     .option("--tail <n>")
     .option("--first <n>")
@@ -27,25 +26,18 @@ export function buildDiffCommand(): Command {
       const conversations =
         ids.length > 0
           ? await resolveManyConversationsOrFail(ids)
-          : await listConversations({
-              states: options.staged ? ["staged"] : ["saved"],
-            });
+          : await listConversations({ states: ["saved"] });
 
       const head = parseCount(options.head ?? options.first);
       const tail = parseCount(options.tail ?? options.last);
 
       for (const conversation of conversations) {
-        validateDiffTarget(conversation, options.staged);
+        validateDiffTarget(conversation);
 
-        const messages = options.staged
-          ? await parseConversationMessages(config, conversation)
-          : await loadDiffCandidateMessages(config, conversation);
-        const diffMessages = options.staged
-          ? messages
-          : messages.slice(conversation.savedMessageCount ?? 0);
+        const messages = await loadDiffCandidateMessages(config, conversation);
+        const diffMessages = messages.slice(conversation.savedMessageCount ?? 0);
 
         if (
-          !options.staged &&
           conversation.savedMessageCount != null &&
           messages.length < conversation.savedMessageCount
         ) {
@@ -86,19 +78,10 @@ function parseCount(value?: string): number | undefined {
   return parsed;
 }
 
-function validateDiffTarget(conversation: ConversationMeta, stagedMode: boolean): void {
-  if (stagedMode) {
-    if (conversation.state !== "staged") {
-      throw new ClogError(
-        `Conversation ${conversation.id.slice(0, 8)} is not staged. Use "clog diff" for saved conversations.`,
-      );
-    }
-    return;
-  }
-
+function validateDiffTarget(conversation: ConversationMeta): void {
   if (conversation.state !== "saved") {
     throw new ClogError(
-      `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog diff --staged" for staged conversations.`,
+      `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog save ${conversation.id.slice(0, 8)}" before diffing it.`,
     );
   }
 }

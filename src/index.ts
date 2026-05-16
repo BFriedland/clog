@@ -2,7 +2,6 @@
 
 import { Command } from "commander";
 
-import { buildAddCommand } from "./cli/add.js";
 import { buildConfigCommand } from "./cli/config.js";
 import { buildDiffCommand } from "./cli/diff.js";
 import { buildDrainCommand } from "./cli/drain.js";
@@ -20,14 +19,12 @@ import { buildRefreshCommand } from "./cli/refresh.js";
 import { buildRemoveCommand } from "./cli/remove.js";
 import { buildRemoteCommand } from "./cli/remote.js";
 import { buildRenameAuthorCommand } from "./cli/rename-author.js";
-import { buildResetCommand } from "./cli/reset.js";
 import { buildSyncCommand } from "./cli/sync.js";
 import { buildShowCommand } from "./cli/show.js";
 import { buildStatusCommand } from "./cli/status.js";
 import { buildSummarizeCommand, buildTalkCommand } from "./cli/talk.js";
 import { buildTagCommand } from "./cli/tag.js";
 import { buildUnexcludeCommand } from "./cli/unexclude.js";
-import { buildUnsaveCommand } from "./cli/unsave.js";
 import { buildUntagCommand } from "./cli/untag.js";
 import { runSearchInitCommand } from "./cli/search-init.js";
 import { runSearchCommand } from "./cli/search.js";
@@ -53,13 +50,10 @@ async function main(): Promise<void> {
 
   program.addCommand(buildStatusCommand());
   program.addCommand(buildListCommand());
-  program.addCommand(buildAddCommand());
-  program.addCommand(buildResetCommand());
   program.addCommand(buildEditCommand());
   program.addCommand(buildTagCommand());
   program.addCommand(buildUntagCommand());
   program.addCommand(buildSaveCommand());
-  program.addCommand(buildUnsaveCommand());
   program.addCommand(buildShowCommand());
   program.addCommand(buildPathCommand());
   program.addCommand(buildPlungeCommand());

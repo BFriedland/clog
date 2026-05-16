@@ -13,6 +13,11 @@ export function buildUntagCommand(): Command {
     .action(async (id: string, tags: string[]) => {
       const conversation = await resolveConversationOrFail(id);
       assertNotRemote(conversation, "clog untag");
+      if (conversation.state !== "saved") {
+        throw new Error(
+          `Conversation ${conversation.id.slice(0, 8)} is not saved. Use "clog save ${conversation.id.slice(0, 8)}" before editing tags.`,
+        );
+      }
       const remove = new Set(normalizeTags(tags));
       const nextTags = conversation.tags.filter((tag) => !remove.has(tag));
 

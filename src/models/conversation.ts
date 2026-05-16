@@ -2,7 +2,6 @@ import { z } from "zod";
 
 export const conversationStateSchema = z.enum([
   "discovered",
-  "staged",
   "saved",
 ]);
 
