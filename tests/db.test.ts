@@ -389,10 +389,20 @@ describe("db", () => {
     expect(reloaded?.indexedAt).toBeNull();
   });
 
-  it("listConversationsNeedingIndex returns only saved conversations with null indexed_at", async () => {
+  it("listConversationsNeedingIndex returns saved conversations with missing or stale indexed_at", async () => {
     // Saved + null → needs index
     await insertConversation(
       makeConversation({ state: "saved", indexedAt: null }),
+    );
+    // Saved + indexed before saved_at → needs index
+    await insertConversation(
+      makeConversation({
+        id: "d0000000-1234-1234-1234-123456789012",
+        sourceId: "d0000000-1234-1234-1234-123456789012",
+        state: "saved",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        indexedAt: "2026-02-01T09:59:59.000Z",
+      }),
     );
     // Saved + already indexed → excluded
     await insertConversation(
@@ -400,7 +410,8 @@ describe("db", () => {
         id: "d1111111-1234-1234-1234-123456789012",
         sourceId: "d1111111-1234-1234-1234-123456789012",
         state: "saved",
-        indexedAt: "2026-02-01T10:00:00.000Z",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:01.000Z",
       }),
     );
     // Discovered + null → excluded (only saved is searchable)
@@ -414,8 +425,10 @@ describe("db", () => {
     );
 
     const needing = await listConversationsNeedingIndex();
-    expect(needing).toHaveLength(1);
-    expect(needing[0]?.id).toBe("a1234567-1234-1234-1234-123456789012");
+    expect(needing.map((conversation) => conversation.id)).toEqual([
+      "a1234567-1234-1234-1234-123456789012",
+      "d0000000-1234-1234-1234-123456789012",
+    ]);
   });
 
   it("clearSavedIndexedAt bulk-clears only saved rows", async () => {

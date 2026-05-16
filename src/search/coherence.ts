@@ -10,7 +10,13 @@ import { indexConversation } from "./indexer.js";
 export function isConversationSearchable(
   conversation: ConversationMeta | null | undefined,
 ): conversation is ConversationMeta {
-  return Boolean(conversation && conversation.state === "saved" && conversation.indexedAt);
+  return Boolean(
+    conversation &&
+      conversation.state === "saved" &&
+      conversation.indexedAt &&
+      conversation.savedAt &&
+      conversation.indexedAt >= conversation.savedAt,
+  );
 }
 
 export async function markConversationIndexStale(

@@ -38,19 +38,34 @@ describe("isConversationSearchable (SPEC §10.7)", () => {
   it("returns true for a saved conversation with a non-null indexedAt", () => {
     const conversation = makeConversation({
       state: "saved",
+      savedAt: "2026-02-01T10:00:00.000Z",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
     expect(isConversationSearchable(conversation)).toBe(true);
   });
 
   it("returns false when indexedAt is null", () => {
-    const conversation = makeConversation({ state: "saved", indexedAt: null });
+    const conversation = makeConversation({
+      state: "saved",
+      savedAt: "2026-02-01T10:00:00.000Z",
+      indexedAt: null,
+    });
+    expect(isConversationSearchable(conversation)).toBe(false);
+  });
+
+  it("returns false when indexedAt is older than savedAt", () => {
+    const conversation = makeConversation({
+      state: "saved",
+      savedAt: "2026-02-01T10:00:00.000Z",
+      indexedAt: "2026-02-01T09:59:59.000Z",
+    });
     expect(isConversationSearchable(conversation)).toBe(false);
   });
 
   it("returns false when state is not saved, even with a non-null indexedAt", () => {
     const conversation = makeConversation({
       state: "discovered",
+      savedAt: "2026-02-01T10:00:00.000Z",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
     expect(isConversationSearchable(conversation)).toBe(false);

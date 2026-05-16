@@ -400,12 +400,23 @@ export function getConversationBySourceIdentityInDb(
 }
 
 export async function listConversationsNeedingIndex(): Promise<ConversationMeta[]> {
-  return withDb((db) =>
-    listConversationsInDb(db, {
-      states: ["saved"],
-      indexed: false,
-    }),
-  );
+  return withDb((db) => {
+    const result = db.exec(
+      `
+        SELECT *
+        FROM conversations
+        WHERE state = 'saved'
+          AND (
+            indexed_at IS NULL
+            OR saved_at IS NULL
+            OR indexed_at < saved_at
+          )
+        ORDER BY datetime(created_at) DESC, id ASC
+      `,
+    );
+
+    return resultToConversations(result);
+  });
 }
 
 export async function setConversationIndexedAt(

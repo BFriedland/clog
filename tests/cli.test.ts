@@ -1270,6 +1270,63 @@ describe("cli", () => {
       expect(stdout).toContain("Run `clog index` to finish");
     });
 
+    it("announces that indexing is unnecessary after saving when search is not configured", async () => {
+      const id = "c3333333-3333-4444-5555-666666666666";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", id);
+      await writeMinimalClaudeJsonl(sourcePath, "No search configured");
+      await seedConversation(id, {
+        sourcePath,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, [id]);
+
+      expect(stdout).toContain("Saved 1 conversation(s)");
+      expect(stdout).toContain("Search indexing is not configured; no indexing necessary.");
+    });
+
+    it("announces indexing after saving a single conversation when search is configured", async () => {
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValue(true);
+      const upsert = vi.fn(async () => undefined);
+      mockedGetSearchProviders.mockResolvedValue({
+        embedding: {
+          name: "stub",
+          dimensions: 3,
+          embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+        },
+        vectorStore: {
+          upsert,
+          search: async () => [],
+          delete: async () => undefined,
+        },
+      });
+
+      const id = "c3333333-7777-4444-5555-666666666666";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", id);
+      await writeMinimalClaudeJsonl(sourcePath, "Search configured");
+      await seedConversation(id, {
+        sourcePath,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, [id]);
+
+      expect(stdout).toContain("Saved 1 conversation(s)");
+      expect(stdout).toContain("Indexing 1 conversation(s) for vector search");
+      expect(stdout).toContain("Indexed 1/1 conversation(s) for vector search.");
+      expect(stdout).not.toContain("still unindexed");
+      expect(upsert).toHaveBeenCalledTimes(1);
+      expect((await getConversationById(id))?.indexedAt).not.toBeNull();
+    });
+
     it("does not hint at unindexed saved conversations when search is not configured", async () => {
       await insertConversation(
         makeConversation({
@@ -1334,6 +1391,7 @@ describe("cli", () => {
       const result = await runBuiltCommand(buildSaveCommand, [id]);
 
       expect(result.stdout).toContain("Saved 1 conversation(s).");
+      expect(result.stdout).toContain("Search indexing is unavailable");
       expect(result.stdout).toContain("1 saved conversation(s) still unindexed");
       expect(result.stderr).toBe("");
       const saved = await getConversationById(id);
@@ -1518,19 +1576,20 @@ describe("cli", () => {
       expect(rawContent).toBe(sourceContent);
     });
 
-    it("resaves clean saved conversations by project selector", async () => {
+    it("does not resave clean saved conversations by project selector", async () => {
       const convId = "7ddddddd-1111-2222-3333-444444444444";
-      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "api-service", convId);
       const rawPath = getRawConversationPath("claude-code", convId);
-      await writeMinimalClaudeJsonl(sourcePath, "Already saved");
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
-      await fs.copyFile(sourcePath, rawPath);
+      await writeJsonl(rawPath, [
+        userLine("Already saved"),
+        assistantLine("Response", "msg_01"),
+      ]);
 
       await insertConversation(
         makeConversation({
           id: convId,
           sourceId: convId,
-          sourcePath,
+          sourcePath: "/tmp/nonexistent-source.jsonl",
           filePath: rawPath,
           state: "saved",
           projectName: "api-service",
@@ -1543,12 +1602,81 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
 
-      expect(stdout).toContain("Saved 1 conversation(s)");
+      expect(stdout).toContain("No conversations need saving");
       const reloaded = await getConversationById(convId);
       expect(reloaded?.state).toBe("saved");
-      expect(reloaded?.saveVersion).toBe(2);
+      expect(reloaded?.saveVersion).toBe(1);
       expect(reloaded?.savedMessageCount).toBe(2);
-      expect(reloaded?.savedAt).not.toBe("2026-02-01T10:00:00.000Z");
+      expect(reloaded?.savedAt).toBe("2026-02-01T10:00:00.000Z");
+    });
+
+    it("saves only pending conversations in a project batch", async () => {
+      const discoveredId = "7ddddddd-2222-2222-3333-444444444444";
+      const discoveredSource = claudeDiscoveredSourcePath(sourceDir, "api-service", discoveredId);
+      await writeMinimalClaudeJsonl(discoveredSource, "New project conversation");
+      await seedConversation(discoveredId, {
+        sourcePath: discoveredSource,
+        projectName: "api-service",
+        projectPath: "/Users/testuser/projects/api-service",
+      });
+
+      const sourceAheadId = "7ddddddd-3333-2222-3333-444444444444";
+      const sourceAheadSource = claudeDiscoveredSourcePath(sourceDir, "api-service", sourceAheadId);
+      const sourceAheadRaw = getRawConversationPath("claude-code", sourceAheadId);
+      await fs.mkdir(path.dirname(sourceAheadRaw), { recursive: true });
+      await writeJsonl(sourceAheadRaw, [
+        userLine("Initial"),
+        assistantLine("Response", "msg_01"),
+      ]);
+      await writeJsonl(sourceAheadSource, [
+        userLine("Initial"),
+        assistantLine("Response", "msg_01"),
+        userLine("Follow-up", "2026-02-01T10:05:00.000Z"),
+        assistantLine("Updated response", "msg_02", "2026-02-01T10:05:01.000Z"),
+      ]);
+      await insertConversation(
+        makeConversation({
+          id: sourceAheadId,
+          sourceId: sourceAheadId,
+          sourcePath: sourceAheadSource,
+          filePath: sourceAheadRaw,
+          state: "saved",
+          projectName: "api-service",
+          projectPath: "/Users/testuser/projects/api-service",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          savedMessageCount: 2,
+          saveVersion: 1,
+        }),
+      );
+
+      const cleanId = "7ddddddd-4444-2222-3333-444444444444";
+      const cleanRaw = getRawConversationPath("claude-code", cleanId);
+      await fs.mkdir(path.dirname(cleanRaw), { recursive: true });
+      await writeJsonl(cleanRaw, [
+        userLine("Already saved"),
+        assistantLine("Response", "msg_01"),
+      ]);
+      await insertConversation(
+        makeConversation({
+          id: cleanId,
+          sourceId: cleanId,
+          sourcePath: "/tmp/nonexistent-clean-source.jsonl",
+          filePath: cleanRaw,
+          state: "saved",
+          projectName: "api-service",
+          projectPath: "/Users/testuser/projects/api-service",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          savedMessageCount: 2,
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildSaveCommand, ["api-service"]);
+
+      expect(stdout).toContain("Saved 2 conversation(s)");
+      expect((await getConversationById(discoveredId))?.state).toBe("saved");
+      expect((await getConversationById(sourceAheadId))?.saveVersion).toBe(2);
+      expect((await getConversationById(cleanId))?.saveVersion).toBe(1);
     });
 
     it("resolves a short bare token as a project name", async () => {

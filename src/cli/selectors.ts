@@ -6,6 +6,7 @@ export interface SelectorResolutionOptions {
   tokens: string[];
   idCandidates: ConversationMeta[];
   projectCandidates: ConversationMeta[];
+  projectSelectionFilter?: (conversation: ConversationMeta) => boolean;
   rejectExplicitProjectSelector?: boolean;
   rejectExplicitProjectSelectorHint?: string;
 }
@@ -45,7 +46,7 @@ function resolveSelectorToken(
       );
     }
 
-    return resolveProjectSelector(token, explicitProjectName, options.projectCandidates);
+    return resolveProjectSelector(token, explicitProjectName, options);
   }
 
   const idMatches = findConversationIdMatches(options.idCandidates, token);
@@ -58,7 +59,7 @@ function resolveSelectorToken(
   }
 
   if (projectMatches.length > 0) {
-    return projectMatches;
+    return filterProjectMatches(projectMatches, options);
   }
 
   const trimmed = token.trim();
@@ -97,16 +98,27 @@ function parseExplicitProjectSelector(token: string): string | null {
 function resolveProjectSelector(
   rawToken: string,
   projectName: string,
-  candidates: ConversationMeta[],
+  options: SelectorResolutionOptions,
 ): ConversationMeta[] {
-  const matches = findProjectMatches(candidates, projectName);
+  const matches = findProjectMatches(options.projectCandidates, projectName);
   if (matches.length === 0) {
     throw new ClogError(
       `No project matches "${rawToken}". Run 'clog list --all' to inspect available projects.`,
     );
   }
 
-  return matches;
+  return filterProjectMatches(matches, options);
+}
+
+function filterProjectMatches(
+  matches: ConversationMeta[],
+  options: SelectorResolutionOptions,
+): ConversationMeta[] {
+  if (!options.projectSelectionFilter) {
+    return matches;
+  }
+
+  return matches.filter(options.projectSelectionFilter);
 }
 
 function findConversationIdMatches(

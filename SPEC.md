@@ -886,7 +886,7 @@ clog rename-author <old> <new>  Rename author across local conversations
 # Phase 2 — Semantic Search (see §10 for details)
 clog search --init         Set up semantic search
 clog search <query>        Semantic search across saved conversations
-clog index [--rebuild]     Index saved conversations for search
+clog index [--rebuild]     Index saved conversations whose search index is missing or stale
 
 # Phase 3 — Team Sharing (see §11 for details)
 clog remote add <url>      Configure a git remote for team sharing
@@ -916,7 +916,7 @@ Resolution rules:
 - `project:<name>` is the explicit project-selector escape hatch
 - final targets are deduplicated by canonical conversation ID
 
-Project selectors are a batching mechanism, not a separate command meaning. `clog <command> <project>` must behave like applying `clog <command> <id>` to each matching conversation in that project, using the same validation and state-transition rules as the per-conversation form.
+Project selectors are a batching mechanism, not a separate command meaning. `clog <command> <project>` must behave like applying `clog <command> <id>` to each command-eligible conversation in that project, using the same validation and state-transition rules as the per-conversation form. Command-specific eligibility still matters: for example, `clog save <project>` batches only the pending save work described in §5.4, not every clean saved conversation in the project.
 Mixed selectors are allowed, such as `clog save myapp abcd1234`.
 
 Singular commands such as `clog show`, `clog edit`, `clog tag`, `clog untag`, `clog path`, and `clog diff` remain conversation-only. On those commands, bare tokens are always conversation IDs and `project:<name>` is rejected explicitly.
@@ -1228,7 +1228,7 @@ When called with no arguments, `clog save` saves saved local conversations whose
 
 When called with explicit selectors, `clog save [selectors...]` can save discovered or already saved local conversations.
 
-Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below.
+Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below. For project selectors, "saveable" means conversations that `clog status` would report for that project: discovered conversations, saved conversations whose source file differs from the clog-managed raw copy, and saved conversations whose raw copy or metadata is ahead of the last saved checkpoint. Clean saved conversations in the same project are not included in the project batch. A user may still explicitly pass a clean saved conversation ID to force a resave of that one row.
 
 Per-conversation explicit save behavior:
 
@@ -1242,15 +1242,20 @@ If a source file needed for a discovered conversation is unavailable, that conve
 
 Save preserves `summary`, `summaryKind`, and `summaryExtraction`; it does not summarize, clear, or refresh summary metadata. Summary freshness across later re-saves is intentionally not tracked in v1.
 
-When save runs in an interactive terminal against more than one conversation, it renders single-line progress for each phase, updating in place as work completes:
+When save runs in an interactive terminal against more than one conversation, it renders single-line progress for the local save phase, updating in place as work completes:
 
 ```
 58/58 conversations saved locally...
-58/58 conversations indexed for vector search...
 Saved 58 conversation(s).
 ```
 
-The save-loop line ticks once per conversation as the raw copy and DB row are written. The indexing line ticks once per conversation as embeddings are produced and upserted to the vector store, so the user sees real-time progress through the slow embedding step. Each phase terminates with a newline so the final counts persist on screen. In non-TTY contexts (pipes, redirected output) only the final summary is written.
+The save-loop line ticks once per conversation as the raw copy and DB row are written. It terminates with a newline so the final count persists on screen. In non-TTY contexts (pipes, redirected output) only the final `Saved N conversation(s).` summary is written for the local save phase.
+
+If at least one conversation was saved, `clog save` must then print an indexing outcome. Indexing is never silent:
+
+- If search is not configured, print that search indexing is not configured and no indexing is necessary.
+- If search is configured but dependencies or providers are unavailable, print that search indexing is unavailable and the saved conversations were left unindexed. The unindexed hint described below may then point to `clog index`.
+- If search is configured and available, print an indexing-start line before embeddings are produced and a completion line such as `Indexed 58/58 conversation(s) for vector search.` after the attempt. In an interactive terminal with more than one conversation, an additional in-place progress line may tick once per conversation as embeddings are produced and upserted to the vector store.
 
 After `clog save` completes, if any local saved conversations lack structured summaries, clog prints a bold hint:
 
@@ -2343,7 +2348,7 @@ Conversations are chunked by turn (user message + assistant response) rather tha
 
 #### Auto-Index on Save
 
-When search is configured and dependencies are available, indexing runs automatically during `clog save`, not on MCP server startup. Saving is the moment new content enters the knowledge base, so indexing there keeps search current without adding latency to agent sessions. If search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`; the conversation is saved but not searchable until `clog index` succeeds.
+When search is configured and dependencies are available, indexing runs automatically during `clog save`, not on MCP server startup. Saving is the moment new content enters the knowledge base, so indexing there keeps search current without adding latency to agent sessions. If search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`; the conversation is saved but not searchable until `clog index` succeeds. Save output must always announce the indexing outcome after at least one conversation is saved, including the cases where search is not configured or indexing is unavailable.
 
 #### Setup Owns Search Downloads
 
@@ -2461,11 +2466,11 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness marker:** `indexed_at = null` is the authoritative signal that a saved conversation is not currently searchable and needs indexing or re-indexing. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, `saved_at`, `saved_message_count`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
+**Staleness marker:** a saved conversation is not currently searchable and needs indexing or re-indexing when `indexed_at = null`, when `saved_at` is missing, or when `indexed_at < saved_at`. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. If an operation advances `saved_at`, it must also refresh `indexed_at` during indexing or leave the row stale. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
 **Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
-**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `saved` state, and has a non-null `indexed_at` timestamp. A saved conversation with `indexed_at = null` has either never been indexed or has been marked stale after a content change — its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, removed from `saved` state, or otherwise dropped from the local database.
+**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `saved` state, has a non-null `saved_at`, has a non-null `indexed_at`, and `indexed_at >= saved_at`. A saved conversation whose index timestamp is missing or older than its latest save has either never been indexed or has been marked stale after a content change; its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, removed from `saved` state, have a stale index, or otherwise dropped from the local database.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -2495,10 +2500,10 @@ Options:
 
 If search is not configured or dependencies are missing, prints a helpful message directing the user to `clog search --init`.
 
-**`clog index`** — Index un-indexed saved conversations (embeds them and inserts into the vector store).
+**`clog index`** — Index un-indexed or stale saved conversations (embeds them and inserts into the vector store).
 
 ```bash
-$ clog index              # Index conversations where indexed_at is null
+$ clog index              # Index saved conversations whose index is missing or older than saved_at
 $ clog index --rebuild    # Re-index all saved conversations from scratch
 ```
 
@@ -2510,7 +2515,7 @@ The search index follows the lifecycle of conversations in the database:
 
 | Operation | DB effect | Search effect |
 |-----------|-----------|---------------|
-| `save` | Conversation enters `saved` state; `saved_at`, `modified_at`, and `saved_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set. If search is unconfigured or indexing fails, save still succeeds and `indexed_at` remains `null`, so the conversation is saved but not searchable until indexed. |
+| `save` | Conversation enters `saved` state; `saved_at`, `modified_at`, and `saved_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set to a timestamp at or after `saved_at`. If search is unconfigured or indexing fails, save still succeeds and `indexed_at` remains `null`, so the conversation is saved but not searchable until indexed. Save output must report which of these outcomes occurred. |
 | `edit`, MCP `clog_update` title/summary change on a saved conversation | Conversation remains `saved`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
 | `tag`, `untag`, MCP `clog_update` tag, `summaryKind`, or `summaryExtraction` change on a saved conversation | Conversation remains `saved`; DB metadata filters or agent-analysis metadata change | No vector re-index occurs because tags and structured extraction are not part of the embedded search content. Tag-based filtering and MCP metadata reads reflect the new DB state immediately. `indexed_at` is unchanged. No-op updates do not bump `modified_at`. |
 | Local scan detects source mtime change on a saved conversation | Conversation remains `saved`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The saved/searchable content has not changed until explicit `clog save <id>` refreshes and resaves it. |
@@ -2569,7 +2574,7 @@ returns: {
 `project` and `author` are trimmed case-insensitive substring filters, tags are
 normalized exact OR filters, and `origin` filters local vs remote saved rows.
 
-Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with non-null `indexed_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
+Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with a fresh `indexed_at` at or after `saved_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
 
 Search uses an expanding query window: it starts by fetching a small multiple of the requested limit from the vector store, then doubles the fetch count on each iteration until it either collects enough valid results or reaches the 5,000-entry scan cap. If search stops because it reached that 5,000-entry cap before finding enough valid results, it returns the best results found so far and includes a warning that results may be incomplete. If search stops for any other reason (enough results found, or vector store exhausted below the cap), it does not include that warning.
 
@@ -2579,7 +2584,7 @@ For the CLI command, this warning is printed as a visible warning line before th
 
 Phase 2 requires changes to existing Phase 1 code:
 
-**Save** (`clog save`): After saving, auto-index the newly saved conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`. The conversation is saved but not searchable until `clog index` or a later save indexes it successfully.
+**Save** (`clog save`): After saving, auto-index the newly saved conversations if search is configured and dependencies are available. This is best-effort — if search deps are missing or indexing fails, save still succeeds and leaves `indexed_at = null`. The conversation is saved but not searchable until `clog index` or a later save indexes it successfully. The command must print an indexing outcome whenever at least one conversation was saved, so users can distinguish successful indexing, unavailable indexing, and intentionally unconfigured search.
 
 **Edit** (`clog edit` and MCP `clog_update` title/summary changes): When a saved conversation is changed in a way that affects embedded search-visible metadata, immediately attempt to re-index it if search is set up. This includes title and prose summary changes. Changes only to `summaryKind` or `summaryExtraction` do not re-index because the structured extraction is not embedded in the vector index. If re-indexing succeeds, `indexed_at` is refreshed. If re-indexing fails, `indexed_at` is set to `null`. No-op updates do not re-index, do not clear `indexed_at`, and do not bump `modified_at`.
 
@@ -3498,7 +3503,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 - Deindexing behavior: per-conversation delete failures warn and continue
 - Search-not-configured vs dependency-failure warning behavior during deindex initialization
-- Searchability invariant (`saved` + non-null `indexed_at`)
+- Searchability invariant (`saved` + non-null `saved_at` + fresh `indexed_at >= saved_at`)
 - Expanding search window behavior and the 5,000-result scan-cap warning
 
 **Models tests** (`models.test.ts`):

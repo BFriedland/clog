@@ -29,7 +29,7 @@ clog status --source
 # Show individual conversation rows
 clog status --conversations
 
-# Save a project straight to your local library
+# Save pending conversations for a project
 clog save myapp
 
 # Or save one conversation by short ID
@@ -65,7 +65,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog save [selector...]` | Save discovered conversations by ID/project, or resave saved conversations (`--all`) |
+| `clog save [selector...]` | Save discovered conversations by ID/project, or resave saved conversations with pending changes (`--all`) |
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
@@ -85,7 +85,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 |---------|-------------|
 | `clog search --init` | Interactive setup — choose embedding provider and vector store |
 | `clog search <query>` | Semantic search across saved conversations (`--project`, `--author`, `--tag`, `--limit`) |
-| `clog index` | Index saved conversations for search (`--rebuild` to re-index all) |
+| `clog index` | Index saved conversations whose search index is missing or stale (`--rebuild` to re-index all) |
 
 ### Team Sharing
 
@@ -168,7 +168,7 @@ clog search "JWT refresh token race condition"
 clog search "database migration" --project myapp --limit 5
 ```
 
-Once configured, conversations are auto-indexed whenever you `clog save`. Editing a conversation's title or summary re-indexes it. Use `clog index --rebuild` to re-index everything from scratch.
+Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
 ## Team Sharing
 

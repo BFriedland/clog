@@ -35,7 +35,7 @@ export function buildSaveCommand(): Command {
   return new Command("save")
     .description("Save conversations")
     .argument("[selectors...]")
-    .option("--all", "Save all discovered conversations")
+    .option("--all", "Save all discovered conversations and saved pending changes")
     .action(async (selectors: string[], options: { all?: boolean }) => {
       if (options.all && selectors.length > 0) {
         throw new UsageError(
@@ -50,12 +50,7 @@ export function buildSaveCommand(): Command {
       const conversations = options.all
         ? await collectAllSaveTargets()
         : selectors.length > 0
-          ? resolveConversationSelectors({
-              commandName: "clog save",
-              tokens: selectors,
-              idCandidates: await listConversations(),
-              projectCandidates: await collectProjectSaveTargets(),
-            })
+          ? await resolveSaveSelectors(selectors)
           : await collectBareSaveTargets();
 
       if (conversations.length === 0) {
@@ -120,34 +115,75 @@ export function buildSaveCommand(): Command {
         process.stdout.write("\n");
       }
 
-      if (showProgress && (await searchAvailable())) {
-        process.stdout.write(
-          'Indexing conversations for vector search. Safe to interrupt; run "clog index" to resume.\n',
-        );
-      }
-
-      const indexedFailures = await maybeAutoIndexConversations(
-        savedConversations,
-        showProgress
-          ? (completed, total) => {
-              process.stdout.write(`\r${completed}/${total} conversations indexed for vector search...`);
-              if (completed === total) {
-                process.stdout.write("\n");
-              }
-            }
-          : undefined,
-      );
-
-      for (const failedId of indexedFailures) {
-        process.stderr.write(
-          `warning: saved ${failedId.slice(0, 8)} but failed to index it for search\n`,
-        );
-      }
-
       process.stdout.write(`Saved ${savedConversations.length} conversation(s).\n`);
+      await printSaveIndexingOutcome(config, savedConversations);
       await maybePrintUnindexedHint(config);
       await maybePrintSummarizationHint();
     });
+}
+
+async function printSaveIndexingOutcome(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  savedConversations: ConversationMeta[],
+): Promise<void> {
+  if (savedConversations.length === 0) {
+    return;
+  }
+
+  if (!config.search) {
+    process.stdout.write("Search indexing is not configured; no indexing necessary.\n");
+    return;
+  }
+
+  if (!(await searchAvailable())) {
+    process.stdout.write(
+      "Search indexing is unavailable; saved conversation(s) were left unindexed.\n",
+    );
+    return;
+  }
+
+  process.stdout.write(
+    `Indexing ${savedConversations.length} conversation(s) for vector search. Safe to interrupt; run "clog index" to resume.\n`,
+  );
+
+  const showProgress = process.stdout.isTTY && savedConversations.length > 1;
+  const indexedFailures = await maybeAutoIndexConversations(
+    savedConversations,
+    showProgress
+      ? (completed, total) => {
+          process.stdout.write(`\r${completed}/${total} conversations indexed for vector search...`);
+          if (completed === total) {
+            process.stdout.write("\n");
+          }
+        }
+      : undefined,
+  );
+
+  for (const failedId of indexedFailures) {
+    process.stderr.write(
+      `warning: saved ${failedId.slice(0, 8)} but failed to index it for search\n`,
+    );
+  }
+
+  const indexedCount = savedConversations.length - indexedFailures.length;
+  process.stdout.write(
+    `Indexed ${indexedCount}/${savedConversations.length} conversation(s) for vector search.\n`,
+  );
+}
+
+async function resolveSaveSelectors(
+  selectors: string[],
+): Promise<ConversationMeta[]> {
+  const projectTargets = await collectProjectSaveTargets();
+  const projectTargetIds = new Set(projectTargets.map((conversation) => conversation.id));
+
+  return resolveConversationSelectors({
+    commandName: "clog save",
+    tokens: selectors,
+    idCandidates: await listConversations(),
+    projectCandidates: await listConversations({ origin: "local" }),
+    projectSelectionFilter: (conversation) => projectTargetIds.has(conversation.id),
+  });
 }
 
 async function skipMissingDiscoveredSource(
