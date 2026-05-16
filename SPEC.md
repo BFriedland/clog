@@ -860,7 +860,7 @@ clog status [-c|--conversations] [--source] [--undiscoverable]  Show unsaved and
 clog list [filters]        List conversations (default: saved)
 clog exclude <rule...>     Append literal ignore rules to ~/.clog/clogignore
 clog unexclude <rule...>   Remove exact ignore rules from ~/.clog/clogignore
-clog remove <rule...>      Remove current DB rows that match ignore-rule syntax
+clog remove <rule...>      Remove conversations currently known to clog
 clog edit <id> [flags]     Edit conversation metadata (--title, --summary, --author)
 clog tag <id> <tags...>    Add tags to a conversation
 clog untag <id> <tags...>  Remove tags from a conversation
@@ -1844,6 +1844,14 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Uses the same literal rule syntax and matcher contract as `clogignore`
 - Does not require the rule to already exist in `clogignore`
 - Rejects unsupported ignore-rule syntax such as `project:<name>`, `before:<date>`, and `after:<date>` for the same reason as `exclude`
+- Shows the number of matching conversations and a compact preview before deleting anything
+- Warns that metadata, summaries, tags, search vectors, and local raw copies will be removed
+- States that source files under `~/.claude` and `~/.codex` are not modified
+- Mentions `clog drain <id@source...> --to-dir <dir>` as the exact export path before removal
+- Warns more strongly when matched saved local rows no longer have readable source files
+- Requires interactive confirmation with a default of `N`, unless `--yes` is supplied
+- Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
+- Supports `--dry-run` to preview matches without deleting rows, raw files, or vectors
 - Deletes the union of matching current DB rows, local or remote
 - Deletes curated raw copies for removed local curated rows
 - Best-effort deletes search vectors for removed searchable rows

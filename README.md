@@ -58,7 +58,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog untag <id> <tags...>` | Remove tags |
 | `clog exclude <rule...>` | Ignore projects or conversations via `~/.clog/clogignore` |
 | `clog unexclude <rule...>` | Remove exact rules from `~/.clog/clogignore` |
-| `clog remove <rule...>` | Remove currently matching conversations from clog's local DB |
+| `clog remove <rule...>` | Remove matching conversations from clog's local DB and raw storage (`--yes`, `--dry-run`) |
 | `clog rename-author <old> <new>` | Rename an author across local conversations |
 
 ### Saving & Inspection

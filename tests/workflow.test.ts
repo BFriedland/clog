@@ -368,10 +368,77 @@ describe("workflow", () => {
     );
     await fs.writeFile(getClogIgnorePath(), "myapp\n", "utf8");
 
-    await runBuiltCommand(buildRemoveCommand, [convId]);
+    await runBuiltCommand(buildRemoveCommand, [convId, "--yes"]);
 
     await expect(getConversationById(convId)).resolves.toBeNull();
     await expect(fs.readFile(getClogIgnorePath(), "utf8")).resolves.toBe("myapp\n");
+  });
+
+  it("remove refuses in non-interactive mode without --yes", async () => {
+    const convId = "66666666-7777-8888-9999-bbbbbbbbbbbb";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Remove needs confirmation");
+    await insertConversation(
+      makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
+    );
+
+    await expect(runBuiltCommand(buildRemoveCommand, [convId])).rejects.toThrow(
+      /Refusing to remove conversations without confirmation/,
+    );
+    await expect(getConversationById(convId)).resolves.not.toBeNull();
+  });
+
+  it("remove --dry-run previews matches without deleting them", async () => {
+    const convId = "66666666-7777-8888-9999-cccccccccccc";
+    const rawPath = getRawConversationPath("claude-code", convId);
+    await fs.mkdir(path.dirname(rawPath), { recursive: true });
+    await writeClaudeJsonl(rawPath, "Only raw copy remains");
+
+    await insertConversation(
+      makeDiscoveredConversation({
+        id: convId,
+        sourceId: convId,
+        state: "saved",
+        filePath: rawPath,
+        sourcePath: path.join(sourceDir, "missing", `${convId}.jsonl`),
+        savedAt: "2026-02-01T12:00:00.000Z",
+        savedMessageCount: 2,
+        saveVersion: 1,
+      }),
+    );
+
+    const { stdout } = await runBuiltCommand(buildRemoveCommand, [convId, "--dry-run"]);
+
+    expect(stdout).toContain("Remove 1 conversation from clog?");
+    expect(stdout).toContain("summaries, tags, search vectors");
+    expect(stdout).toContain("Source files under ~/.claude and ~/.codex are not modified.");
+    expect(stdout).toContain(`clog drain ${convId}@claude-code --to-dir <dir>`);
+    expect(stdout).toContain("no longer has a readable source file");
+    expect(stdout).toContain("Dry run: no conversations removed.");
+    await expect(getConversationById(convId)).resolves.not.toBeNull();
+    await expect(fs.access(rawPath)).resolves.toBeUndefined();
+  });
+
+  it("remove preview suggests draining matched conversation IDs, not the original rules", async () => {
+    const convId = "66666666-7777-8888-9999-dddddddddddd";
+    const sourcePath = path.join(sourceDir, "Mobile App", `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Remove rule with whitespace");
+
+    await insertConversation(
+      makeDiscoveredConversation({
+        id: convId,
+        sourceId: convId,
+        projectName: "Mobile App",
+        projectPath: "/Users/testuser/projects/Mobile App",
+        sourcePath,
+      }),
+    );
+
+    const { stdout } = await runBuiltCommand(buildRemoveCommand, ["Mobile App", "--dry-run"]);
+
+    expect(stdout).toContain(`clog drain ${convId}@claude-code --to-dir <dir>`);
+    expect(stdout).not.toContain("clog drain Mobile App --to-dir <dir>");
+    await expect(getConversationById(convId)).resolves.not.toBeNull();
   });
 });
 
