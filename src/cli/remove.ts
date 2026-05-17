@@ -14,19 +14,19 @@ interface RemoveOptions {
 
 export function buildRemoveCommand(): Command {
   return new Command("remove")
-    .description("Remove conversations currently known to clog")
+    .description("Remove saved conversations currently known to clog")
     .argument("<rules...>")
     .option("--yes", "Remove matching conversations without prompting")
     .option("--dry-run", "Show matching conversations without removing them")
     .action(async (rules: string[], options: RemoveOptions) => {
       assertValidLiteralRules(rules);
 
-      const matches = (await listConversations()).filter((conversation) =>
+      const matches = (await listConversations({ states: ["saved"] })).filter((conversation) =>
         conversationMatchesAnyClogIgnoreRule(conversation, rules),
       );
 
       if (matches.length === 0) {
-        process.stdout.write("No conversations in clog's database match those rules.\n");
+        process.stdout.write("No saved conversations in clog's database match those rules.\n");
         return;
       }
 

@@ -364,7 +364,12 @@ describe("workflow", () => {
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Remove current match");
     await insertConversation(
-      makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
+      makeDiscoveredConversation({
+        id: convId,
+        sourceId: convId,
+        sourcePath,
+        ...savedRowOverrides(convId),
+      }),
     );
     await fs.writeFile(getClogIgnorePath(), "myapp\n", "utf8");
 
@@ -379,12 +384,31 @@ describe("workflow", () => {
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Remove needs confirmation");
     await insertConversation(
-      makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
+      makeDiscoveredConversation({
+        id: convId,
+        sourceId: convId,
+        sourcePath,
+        ...savedRowOverrides(convId),
+      }),
     );
 
     await expect(runBuiltCommand(buildRemoveCommand, [convId])).rejects.toThrow(
       /Refusing to remove conversations without confirmation/,
     );
+    await expect(getConversationById(convId)).resolves.not.toBeNull();
+  });
+
+  it("remove leaves discovered rows untouched and reports no matches", async () => {
+    const convId = "66666666-7777-8888-9999-eeeeeeeeeeee";
+    const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+    await writeClaudeJsonl(sourcePath, "Discovered should survive remove");
+    await insertConversation(
+      makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
+    );
+
+    const { stdout } = await runBuiltCommand(buildRemoveCommand, [convId, "--yes"]);
+
+    expect(stdout).toContain("No saved conversations in clog's database match those rules.");
     await expect(getConversationById(convId)).resolves.not.toBeNull();
   });
 
@@ -431,6 +455,7 @@ describe("workflow", () => {
         projectName: "Mobile App",
         projectPath: "/Users/testuser/projects/Mobile App",
         sourcePath,
+        ...savedRowOverrides(convId),
       }),
     );
 
@@ -451,6 +476,16 @@ async function runBuiltCommand(
     cmd.exitOverride();
     await cmd.parseAsync(args, { from: "user" });
   });
+}
+
+function savedRowOverrides(convId: string): Partial<ConversationMeta> {
+  return {
+    state: "saved",
+    filePath: getRawConversationPath("claude-code", convId),
+    savedAt: "2026-02-01T12:00:00.000Z",
+    savedMessageCount: 2,
+    saveVersion: 1,
+  };
 }
 
 function makeDiscoveredConversation(

@@ -860,7 +860,7 @@ clog status [-c|--conversations] [--source] [--undiscoverable]  Show unsaved and
 clog list [filters]        List conversations (default: saved)
 clog exclude <rule...>     Append literal ignore rules to ~/.clog/clogignore
 clog unexclude <rule...>   Remove exact ignore rules from ~/.clog/clogignore
-clog remove <rule...>      Remove conversations currently known to clog
+clog remove <rule...>      Remove saved conversations currently known to clog
 clog edit <id> [flags]     Edit conversation metadata (--title, --summary, --author)
 clog tag <id> <tags...>    Add tags to a conversation
 clog untag <id> <tags...>  Remove tags from a conversation
@@ -1857,11 +1857,12 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Requires interactive confirmation with a default of `N`, unless `--yes` is supplied
 - Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
 - Supports `--dry-run` to preview matches without deleting rows, raw files, or vectors
-- Deletes the union of matching current DB rows, local or remote
+- Operates only on `saved`-state rows. Discovered rows are transient artifacts of the latest scan and would simply reappear on the next scan, so they are skipped. Use `clog exclude` to keep discovered rows from coming back.
+- Deletes the union of matching saved DB rows, local or remote
 - Deletes curated raw copies for removed local curated rows
 - Best-effort deletes search vectors for removed searchable rows
 - Reports the number of removed conversations
-- If no current DB rows match, reports that clearly and leaves the database unchanged
+- If no saved DB rows match, reports "No saved conversations in clog's database match those rules." and leaves the database unchanged, even when discovered rows would have matched the same rules
 - Leaves `clogignore` unchanged
 
 **Scan output must report filtering.** `clog status` shows a dimmed filter summary line when any scan counts are non-zero:
@@ -2522,7 +2523,7 @@ The search index follows the lifecycle of conversations in the database:
 | A command detects a raw copy mtime newer than `saved_at` or `indexed_at` | Conversation remains `saved`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
 | Remote reconciliation metadata update on a saved conversation | Conversation remains `saved`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, slug, `summaryKind`, or `summaryExtraction` do not clear `indexed_at`. |
 | `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
-| `remove` | Conversation is removed from the DB regardless of state | If the conversation had vectors, they are deleted. The deindex attempt is unconditional — deleting non-existent vectors for a non-saved conversation is a harmless no-op. |
+| `remove` | Only `saved` conversations matched by the rules are removed from the DB; matching `discovered` rows are left in place | If the removed conversation had vectors, they are deleted. The deindex attempt is best-effort: a saved row that was never indexed (or whose vectors were already gone) deletes cleanly as a no-op. |
 | `remote remove` | All conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
 | Remote reconciliation delete/retract | Conversation is removed from the DB or replaced by a non-searchable state | Conversation ceases to be searchable; vectors are deleted |
 
