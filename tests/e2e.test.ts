@@ -700,6 +700,54 @@ describe("e2e", () => {
     expect(detailed.stdout).not.toContain('run "clog status --undiscoverable" for details');
   });
 
+  it("status collapses repeated Codex source_id_mismatch warnings into one stderr line", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const filenameIdOne = "11111111-aaaa-bbbb-cccc-111111111111";
+    const embeddedIdOne = "99999999-aaaa-bbbb-cccc-999999999999";
+    const filenameIdTwo = "22222222-aaaa-bbbb-cccc-222222222222";
+    const embeddedIdTwo = "88888888-aaaa-bbbb-cccc-888888888888";
+
+    await writeMismatchedCodexSession(codexRoot, filenameIdOne, embeddedIdOne);
+    await writeMismatchedCodexSession(codexRoot, filenameIdTwo, embeddedIdTwo);
+
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
+
+    const { stderr } = await run(["status"]);
+    expect(stderr).toContain(
+      'warning: Codex session ID in file contents does not match the filename suffix; using embedded ID. (2 occurrences)',
+    );
+    expect(stderr).toContain('hint: Run "clog status --verbose-warnings" for the full list');
+    expect(stderr).not.toContain("source=codex-cli");
+    expect(stderr).not.toContain(filenameIdOne);
+    expect(stderr).not.toContain(filenameIdTwo);
+  });
+
+  it("status --verbose-warnings expands collapsed Codex warnings into per-file lines", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const filenameIdOne = "33333333-aaaa-bbbb-cccc-333333333333";
+    const embeddedIdOne = "77777777-aaaa-bbbb-cccc-777777777777";
+    const filenameIdTwo = "44444444-aaaa-bbbb-cccc-444444444444";
+    const embeddedIdTwo = "66666666-aaaa-bbbb-cccc-666666666666";
+
+    await writeMismatchedCodexSession(codexRoot, filenameIdOne, embeddedIdOne);
+    await writeMismatchedCodexSession(codexRoot, filenameIdTwo, embeddedIdTwo);
+
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
+
+    const { stderr } = await run(["status", "--verbose-warnings"]);
+    expect(stderr).not.toContain("occurrences");
+    expect(stderr).not.toContain('hint: Run "clog status --verbose-warnings"');
+    expect(stderr).toContain("source=codex-cli");
+    expect(stderr).toContain(filenameIdOne);
+    expect(stderr).toContain(filenameIdTwo);
+    const mismatchLines = stderr.split("\n").filter((line) =>
+      line.includes("does not match the filename suffix"),
+    );
+    expect(mismatchLines).toHaveLength(2);
+  });
+
   it("list aggregates undiscoverable warnings into a single stderr line", async () => {
     const firstId = "cdcdcdcd-1111-2222-3333-444444444444";
     const secondId = "efefefef-5555-6666-7777-888888888888";
@@ -774,6 +822,40 @@ describe("e2e", () => {
     );
   }
 });
+
+async function writeMismatchedCodexSession(
+  codexRoot: string,
+  filenameId: string,
+  embeddedId: string,
+): Promise<void> {
+  await writeJsonl(
+    path.join(
+      codexRoot,
+      "sessions",
+      "2026",
+      "02",
+      "01",
+      `rollout-2026-02-01T10-00-00-${filenameId}.jsonl`,
+    ),
+    [
+      {
+        type: "session_meta",
+        payload: {
+          id: embeddedId,
+          timestamp: "2026-02-01T10:00:00.000Z",
+          cwd: "/Users/alice/api-service",
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Codex conversation",
+        },
+      },
+    ],
+  );
+}
 
 async function writeClaudeConversation(
   filePath: string,

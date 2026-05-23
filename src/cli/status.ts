@@ -30,14 +30,21 @@ export function buildStatusCommand(): Command {
     .option("--source", "show conversation rows with the source column after the short ID")
     .option("-c, --conversations", "show one row per conversation")
     .option("--undiscoverable", "list conversations skipped due to missing project path")
+    .option("--verbose-warnings", "show every scan warning individually instead of aggregating repeats")
     .action(async (options: {
       source?: boolean;
       conversations?: boolean;
       undiscoverable?: boolean;
+      verboseWarnings?: boolean;
     }) => {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
-      renderWarnings(getScanWarningsForCommand(scanResult, { suppressUndiscoverable: true }));
+      renderWarnings(
+        getScanWarningsForCommand(scanResult, {
+          suppressUndiscoverable: true,
+          verbose: options.verboseWarnings === true,
+        }),
+      );
       const saved = await listConversations({ states: ["saved"], origin: "local" });
       const discovered = await listConversations({ states: ["discovered"], origin: "local" });
       const readySaved: ConversationMeta[] = [];

@@ -11,11 +11,14 @@ import {
 } from "../db/index.js";
 import type { ConversationMeta, Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
+import { isAggregatableWarningCode } from "../models/warnings.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { getRawConversationPath, getRawSourceDir } from "../utils/paths.js";
 import { getAdapter } from "../adapters/registry.js";
 import { colorizeStateLabel, colorizeUserMessage } from "./colors.js";
 import type { ScanResult } from "./scan.js";
+
+const VERBOSE_WARNINGS_GUIDANCE = 'Run "clog status --verbose-warnings" for the full list';
 
 export class SourceFileMissingError extends ClogError {
   constructor(conversationId: string) {
@@ -231,19 +234,82 @@ export function renderWarnings(warnings: ClogWarning[]): void {
 
 export function getScanWarningsForCommand(
   scanResult: ScanResult,
-  options: { suppressUndiscoverable?: boolean } = {},
+  options: { suppressUndiscoverable?: boolean; verbose?: boolean } = {},
 ): ClogWarning[] {
-  const warnings = [...scanResult.warnings];
+  const baseWarnings = options.verbose
+    ? [...scanResult.warnings]
+    : collapseAggregatableWarnings(scanResult.warnings);
 
   if (!options.suppressUndiscoverable && scanResult.counts.undiscoverable > 0) {
-    warnings.push({
+    baseWarnings.push({
       code: "path_filter_without_project",
       message: `Skipped ${scanResult.counts.undiscoverable} conversation(s): project path missing: these conversation files have no cwd metadata.`,
       guidance: 'Run "clog status --undiscoverable" for details.',
     });
   }
 
-  return warnings;
+  return baseWarnings;
+}
+
+interface AggregatableWarningGroup {
+  first: ClogWarning;
+  count: number;
+}
+
+type WarningOutputItem =
+  | { kind: "warning"; warning: ClogWarning }
+  | { kind: "group"; group: AggregatableWarningGroup };
+
+function collapseAggregatableWarnings(warnings: ClogWarning[]): ClogWarning[] {
+  const groups = new Map<string, AggregatableWarningGroup>();
+  const output: WarningOutputItem[] = [];
+
+  for (const warning of warnings) {
+    if (!isAggregatableWarningCode(warning.code)) {
+      output.push({ kind: "warning", warning });
+      continue;
+    }
+
+    const key = getAggregatableWarningKey(warning);
+    const group = groups.get(key);
+    if (group) {
+      group.count += 1;
+    } else {
+      const newGroup = { first: warning, count: 1 };
+      groups.set(key, newGroup);
+      output.push({ kind: "group", group: newGroup });
+    }
+  }
+
+  return output.map((item) => {
+    if (item.kind === "warning") {
+      return item.warning;
+    }
+
+    const { first, count } = item.group;
+    if (count < 2) {
+      return first;
+    }
+
+    return {
+      code: first.code,
+      message: `${first.message} (${count} occurrences)`,
+      guidance: addVerboseWarningsGuidance(first.guidance),
+    };
+  });
+}
+
+function addVerboseWarningsGuidance(guidance: string | undefined): string {
+  return guidance ? `${guidance} ${VERBOSE_WARNINGS_GUIDANCE}` : VERBOSE_WARNINGS_GUIDANCE;
+}
+
+function getAggregatableWarningKey(warning: ClogWarning): string {
+  return JSON.stringify([
+    warning.code,
+    warning.source ?? null,
+    warning.message,
+    warning.guidance ?? null,
+  ]);
 }
 
 export function applyHeadTail<T>(

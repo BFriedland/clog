@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { getConversationById, listConversations } from "../src/db/index.js";
-import { scanLocalSources } from "../src/cli/scan.js";
+import { getScanWarningsForCommand } from "../src/cli/common.js";
+import { scanLocalSources, type ScanResult } from "../src/cli/scan.js";
+import type { ClogWarning } from "../src/models/warnings.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("scan", () => {
@@ -430,6 +432,152 @@ describe("scan", () => {
     await expect(getConversationById(id)).resolves.toBeNull();
   });
 
+  it("collapses repeated aggregatable warnings via getScanWarningsForCommand", () => {
+    const scanResult = buildScanResultWithWarnings([
+      {
+        code: "source_id_mismatch",
+        message: "Codex session ID does not match filename.",
+        source: "codex-cli",
+        path: "/tmp/rollout-1.jsonl",
+      },
+      {
+        code: "source_id_mismatch",
+        message: "Codex session ID does not match filename.",
+        source: "codex-cli",
+        path: "/tmp/rollout-2.jsonl",
+      },
+    ]);
+
+    const warnings = getScanWarningsForCommand(scanResult);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("(2 occurrences)");
+    expect(warnings[0]?.guidance).toBe(
+      'Run "clog status --verbose-warnings" for the full list',
+    );
+    expect(warnings[0]?.source).toBeUndefined();
+    expect(warnings[0]?.path).toBeUndefined();
+  });
+
+  it("keeps recovery guidance when repeated aggregatable warnings collapse", () => {
+    const scanResult = buildScanResultWithWarnings([
+      {
+        code: "malformed_jsonl",
+        message: "Skipping malformed Codex CLI session file.",
+        source: "codex-cli",
+        path: "/tmp/broken-1.jsonl",
+        guidance: "Fix the JSONL or remove the malformed file.",
+      },
+      {
+        code: "malformed_jsonl",
+        message: "Skipping malformed Codex CLI session file.",
+        source: "codex-cli",
+        path: "/tmp/broken-2.jsonl",
+        guidance: "Fix the JSONL or remove the malformed file.",
+      },
+    ]);
+
+    const warnings = getScanWarningsForCommand(scanResult);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("(2 occurrences)");
+    expect(warnings[0]?.guidance).toBe(
+      'Fix the JSONL or remove the malformed file. Run "clog status --verbose-warnings" for the full list',
+    );
+    expect(warnings[0]?.path).toBeUndefined();
+  });
+
+  it("preserves individual aggregatable warnings when verbose is requested", () => {
+    const scanResult = buildScanResultWithWarnings([
+      {
+        code: "source_id_mismatch",
+        message: "Codex session ID does not match filename.",
+        source: "codex-cli",
+        path: "/tmp/rollout-1.jsonl",
+      },
+      {
+        code: "source_id_mismatch",
+        message: "Codex session ID does not match filename.",
+        source: "codex-cli",
+        path: "/tmp/rollout-2.jsonl",
+      },
+    ]);
+
+    const warnings = getScanWarningsForCommand(scanResult, { verbose: true });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every((warning) => warning.message === "Codex session ID does not match filename.")).toBe(true);
+    expect(warnings.map((warning) => warning.path)).toEqual([
+      "/tmp/rollout-1.jsonl",
+      "/tmp/rollout-2.jsonl",
+    ]);
+  });
+
+  it("keeps same-code warnings with different messages separate when collapsing", () => {
+    // missing_source_id has two distinct messages from the Codex adapter
+    // (payload.id present but not a UUID, vs. payload.id absent). They share
+    // a code and source but describe different underlying conditions, so
+    // collapsing them into one summary would hide one of the conditions.
+    const scanResult = buildScanResultWithWarnings([
+      {
+        code: "missing_source_id",
+        message: "Codex session_meta payload.id is not a valid UUID.",
+        source: "codex-cli",
+        path: "/tmp/rollout-1.jsonl",
+      },
+      {
+        code: "missing_source_id",
+        message: "Codex session_meta payload.id is not a valid UUID.",
+        source: "codex-cli",
+        path: "/tmp/rollout-2.jsonl",
+      },
+      {
+        code: "missing_source_id",
+        message: "Skipping Codex session because no valid UUID-shaped session ID was found.",
+        source: "codex-cli",
+        path: "/tmp/rollout-3.jsonl",
+      },
+    ]);
+
+    const warnings = getScanWarningsForCommand(scanResult);
+
+    expect(warnings).toHaveLength(2);
+    const invalidUuid = warnings.find((w) =>
+      w.message.startsWith("Codex session_meta payload.id is not a valid UUID."),
+    );
+    const missingUuid = warnings.find((w) =>
+      w.message.startsWith("Skipping Codex session because no valid UUID-shaped session ID"),
+    );
+    expect(invalidUuid?.message).toContain("(2 occurrences)");
+    expect(missingUuid?.message).not.toContain("occurrences");
+  });
+
+  it("never collapses non-aggregatable codes even when they repeat", () => {
+    // Regression guard: if a non-aggregatable warning ever sneaks into a
+    // ScanResult, it must pass through unchanged. Collapsing it would point
+    // users at a verbose-warnings flag on a command that cannot reproduce it.
+    const scanResult = buildScanResultWithWarnings([
+      {
+        code: "remote_invalid_metadata",
+        message: "Remote metadata is invalid.",
+        source: "claude-code",
+        path: "/remote/a.meta.json",
+      },
+      {
+        code: "remote_invalid_metadata",
+        message: "Remote metadata is invalid.",
+        source: "claude-code",
+        path: "/remote/b.meta.json",
+      },
+    ]);
+
+    const warnings = getScanWarningsForCommand(scanResult);
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every((warning) => !warning.message.includes("occurrences"))).toBe(true);
+    expect(warnings.every((warning) => warning.guidance === undefined)).toBe(true);
+  });
+
   it("aggregates malformed-file warnings across multiple bad files", async () => {
     const claudeRoot = path.join(tempDir, "claude");
     const config = getDefaultConfig("alice");
@@ -461,6 +609,21 @@ describe("scan", () => {
     await expect(getConversationById(goodId)).resolves.not.toBeNull();
   });
 });
+
+function buildScanResultWithWarnings(warnings: ClogWarning[]): ScanResult {
+  return {
+    warnings,
+    undiscoverable: [],
+    counts: {
+      discovered: 0,
+      updated: 0,
+      pruned: 0,
+      filtered: 0,
+      ignored: 0,
+      undiscoverable: 0,
+    },
+  };
+}
 
 async function writeCodexConversation(
   codexRoot: string,
