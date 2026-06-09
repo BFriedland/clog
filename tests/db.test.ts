@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -20,6 +23,9 @@ import {
 } from "../src/db/index.js";
 import { nowIso } from "../src/utils/time.js";
 
+const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+
 describe("db", () => {
   let tempDir: string;
 
@@ -31,6 +37,41 @@ describe("db", () => {
   afterEach(async () => {
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("initializes when the working directory has no node_modules", async () => {
+    const workingDir = path.join(tempDir, "working");
+    const childHome = path.join(tempDir, "child-home");
+    await fs.mkdir(workingDir);
+
+    const dbModuleUrl = new URL("../src/db/index.ts", import.meta.url).href;
+    const script = `
+      import { withDb } from ${JSON.stringify(dbModuleUrl)};
+      await withDb(() => undefined);
+    `;
+
+    await execFileAsync(
+      process.execPath,
+      [
+        "--import",
+        require.resolve("tsx"),
+        "--input-type=module",
+        "--eval",
+        script,
+      ],
+      {
+        cwd: workingDir,
+        env: {
+          ...process.env,
+          CLOG_HOME: childHome,
+        },
+      },
+    );
+
+    await expect(fs.stat(path.join(childHome, "clog.db"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(workingDir, "node_modules"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("creates schema on first access", async () => {

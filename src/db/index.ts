@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,6 +19,7 @@ import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
 import { applyMigrations } from "./schema.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
+const require = createRequire(import.meta.url);
 
 export interface DbAccessOptions {
   applyMigrations?: boolean;
@@ -598,9 +600,9 @@ function nullableInteger(value: unknown): number | null {
 
 async function getSqlJs(): Promise<SqlJsStatic> {
   if (!sqlJsPromise) {
-    const sqlJsDir = path.resolve("node_modules/sql.js/dist");
     sqlJsPromise = initSqlJs({
-      locateFile: (file: string) => pathToFileURL(path.join(sqlJsDir, file)).href,
+      locateFile: (file: string) =>
+        pathToFileURL(require.resolve(`sql.js/dist/${file}`)).href,
     });
   }
 
