@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
@@ -17,6 +17,7 @@ import {
   getRawConversationPath,
   getRawSourceDir,
 } from "../src/utils/paths.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 const TEST_REMOTE_URL = "git@github.com:myorg/clog-team.git";
@@ -86,6 +87,7 @@ describe("exportAuthorToCheckout", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -117,6 +119,79 @@ describe("exportAuthorToCheckout", () => {
     expect(meta).not.toHaveProperty("projectPath");
 
     await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+  });
+
+  it("writes exported pairs through the atomic writer with JSONL before metadata", async () => {
+    const id = "a1212121-1212-1212-1212-121212121212";
+    await insertLocalSaved({
+      id,
+      title: "Atomic export",
+      author: "alice",
+    });
+
+    const calls: string[] = [];
+    const spy = vi
+      .spyOn(atomicWrite, "writeFileAtomic")
+      .mockImplementation(async (filePath: string) => {
+        calls.push(path.basename(filePath));
+      });
+
+    await exportAuthorToCheckout("alice", new Set());
+
+    expect(spy).toHaveBeenCalled();
+    expect(
+      calls.filter(
+        (name) => name === `${id}.jsonl` || name === `${id}.meta.json`,
+      ),
+    ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+  });
+
+  it("leaves only JSONL when metadata writing fails during export", async () => {
+    const id = "a1313131-1313-1313-1313-131313131313";
+    await insertLocalSaved({
+      id,
+      title: "Interrupted export",
+      author: "alice",
+    });
+
+    const metaPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${id}.meta.json`,
+    );
+    const jsonlPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${id}.jsonl`,
+    );
+
+    const originalWriteFileAtomic = atomicWrite.writeFileAtomic;
+    const calls: string[] = [];
+    const spy = vi
+      .spyOn(atomicWrite, "writeFileAtomic")
+      .mockImplementation(async (filePath: string, data: Buffer | string) => {
+        calls.push(path.basename(filePath));
+        if (filePath === jsonlPath) {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.writeFile(filePath, data);
+          return;
+        }
+        if (filePath === metaPath) {
+          throw new Error("simulated metadata write failure");
+        }
+        await originalWriteFileAtomic(filePath, data);
+      });
+
+    await expect(exportAuthorToCheckout("alice", new Set())).rejects.toThrow(
+      "simulated metadata write failure",
+    );
+
+    expect(spy).toHaveBeenCalled();
+    expect(
+      calls.filter(
+        (name) => name === `${id}.jsonl` || name === `${id}.meta.json`,
+      ),
+    ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+    await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+    await expect(fs.stat(metaPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reports zero changes on a second export when nothing changed", async () => {

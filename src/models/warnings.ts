@@ -5,9 +5,15 @@ export type ClogWarningCode =
   | "path_filter_without_project"
   | "unsupported_source"
   | "missing_source_file"
-  | "remote_incomplete_pair"
-  | "remote_invalid_metadata"
-  | "remote_invalid_content";
+  | PairWarningCode;
+
+export type PairWarningCode =
+  | "pair_incomplete"
+  | "pair_invalid_metadata"
+  | "pair_id_mismatch"
+  | "pair_invalid_content"
+  | "pair_layout_mismatch"
+  | "pair_duplicate_identity";
 
 // Codes safe to collapse into a single summary line when they repeat across a
 // scan. Requirements for adding a code here:
@@ -43,6 +49,11 @@ export interface ClogWarning {
   conversation?: {
     id: string;
     source: string;
+  };
+  pair?: {
+    author?: string;
+    source: string;
+    id: string;
   };
   remote?: {
     author: string;

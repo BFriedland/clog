@@ -131,7 +131,7 @@ describe("sync pull reconciliation", () => {
 
     expect(stats.deleted).toBe(0);
     expect(stats.skipped).toBeGreaterThanOrEqual(1);
-    expect(stats.warnings.some((w) => w.code === "remote_incomplete_pair")).toBe(true);
+    expect(stats.warnings.some((w) => w.code === "pair_incomplete")).toBe(true);
 
     const row = await listConversations({ origin: "remote" });
     expect(row).toHaveLength(1);
@@ -156,10 +156,49 @@ describe("sync pull reconciliation", () => {
     const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
 
     expect(stats.deleted).toBe(0);
-    expect(stats.warnings.some((w) => w.code === "remote_invalid_metadata")).toBe(true);
+    expect(stats.warnings.some((w) => w.code === "pair_invalid_metadata")).toBe(true);
 
     const row = await listConversations({ origin: "remote" });
     expect(row).toHaveLength(1);
+  });
+
+  it("uses pair_id_mismatch when a remote filename stem differs from meta.id", async () => {
+    const id = "a6666666-1111-1111-1111-666666666666";
+    await writeRemotePair("alice", "claude-code", id, {
+      title: "Wrong ID",
+      messageCount: 2,
+    });
+
+    const remoteRoot = getRemoteRoot();
+    const metaPath = path.join(remoteRoot, "alice", "claude-code", `${id}.meta.json`);
+    const raw = JSON.parse(await fs.readFile(metaPath, "utf8")) as Record<string, unknown>;
+    raw.id = "a6666666-2222-2222-2222-666666666666";
+    await fs.writeFile(metaPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    const warning = stats.warnings.find((w) => w.code === "pair_id_mismatch");
+    expect(warning).toBeTruthy();
+    expect(warning?.message).toContain(id);
+    expect(warning?.message).toContain(String(raw.id));
+  });
+
+  it("uses pair_layout_mismatch when remote directory layout disagrees with metadata", async () => {
+    const id = "a6666666-3333-3333-3333-666666666666";
+    await writeRemotePair("alice", "claude-code", id, {
+      title: "Wrong author",
+      messageCount: 2,
+    });
+
+    const remoteRoot = getRemoteRoot();
+    const metaPath = path.join(remoteRoot, "alice", "claude-code", `${id}.meta.json`);
+    const raw = JSON.parse(await fs.readFile(metaPath, "utf8")) as Record<string, unknown>;
+    raw.author = "bob";
+    await fs.writeFile(metaPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    expect(stats.warnings.some((w) => w.code === "pair_layout_mismatch")).toBe(true);
   });
 
   it("skips pairs whose id is ignored by clogignore", async () => {
@@ -366,7 +405,7 @@ describe("sync pull reconciliation", () => {
     const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
 
     expect(stats.inserted).toBe(0);
-    expect(stats.warnings.some((w) => w.code === "remote_invalid_content")).toBe(true);
+    expect(stats.warnings.some((w) => w.code === "pair_invalid_content")).toBe(true);
   });
 });
 

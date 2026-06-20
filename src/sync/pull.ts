@@ -285,11 +285,11 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_incomplete_pair",
+        code: "pair_incomplete",
         message: `Skipping remote conversation ${pair.id} — incomplete pair (${
           !pair.metaExists ? "missing .meta.json" : "missing .jsonl"
         }).`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         paths: [pair.metaPath, pair.jsonlPath],
         guidance:
           "Ask the original author to save the conversation again, or remove the orphaned file from the remote repo.",
@@ -304,9 +304,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_metadata",
+        code: "pair_invalid_metadata",
         message: `Skipping remote conversation ${pair.id} — failed to read .meta.json: ${(error as Error).message}`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
       },
     };
@@ -317,9 +317,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_metadata",
+        code: "pair_invalid_metadata",
         message: `Skipping remote conversation ${pair.id} — invalid .meta.json: ${parseResult.reason}`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
         guidance:
           "Ask the original author to save the conversation again, or fix/remove the pair in the remote repo.",
@@ -333,9 +333,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_metadata",
-        message: `Skipping remote conversation — meta.id "${meta.id}" does not match filename "${pair.id}".`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        code: "pair_id_mismatch",
+        message: `Skipping remote conversation — filename stem "${pair.id}" does not match meta.id "${meta.id}".`,
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
       },
     };
@@ -345,9 +345,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_metadata",
+        code: "pair_layout_mismatch",
         message: `Skipping remote conversation ${pair.id} — meta.source "${meta.source}" does not match directory "${pair.source}".`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
       },
     };
@@ -357,9 +357,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_metadata",
+        code: "pair_layout_mismatch",
         message: `Skipping remote conversation ${pair.id} — meta.author "${meta.author}" does not match directory "${pair.author}".`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.metaPath,
       },
     };
@@ -374,9 +374,9 @@ async function validatePair(
     return {
       kind: "invalid",
       warning: {
-        code: "remote_invalid_content",
+        code: "pair_invalid_content",
         message: `Skipping remote conversation ${pair.id} — failed to parse .jsonl: ${(error as Error).message}`,
-        remote: { author: pair.author, source: pair.source, id: pair.id },
+        pair: { author: pair.author, source: pair.source, id: pair.id },
         path: pair.jsonlPath,
         guidance:
           "Ask the original author to save the conversation again, or fix/remove the pair in the remote repo.",

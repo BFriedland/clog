@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 
 import {
   gitOriginFilter,
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
+import { writePair } from "../interchange/pairs.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { getRawConversationPath, BUILTIN_SOURCES } from "../utils/paths.js";
 import {
@@ -79,14 +79,16 @@ export async function exportAuthorToCheckout(
     const remoteMeta = conversationToRemoteMeta(conversation);
     const nextMeta = serializeRemoteMeta(remoteMeta);
 
-    await fs.mkdir(path.dirname(metaPath), { recursive: true });
-    await fs.writeFile(metaPath, nextMeta, "utf8");
-
     const rawPath = getRawConversationPath(conversation.source, conversation.id);
     const rawContent = await fs.readFile(rawPath);
 
     const existingJsonl = await readFileBufferIfExists(jsonlPath);
-    await fs.writeFile(jsonlPath, rawContent);
+    await writePair({
+      metaPath,
+      jsonlPath,
+      meta: remoteMeta,
+      jsonl: rawContent,
+    });
 
     const previouslyCompletePair = existingMeta != null && existingJsonl != null;
     const metaChanged = existingMeta !== nextMeta;

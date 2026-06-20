@@ -604,13 +604,13 @@ describe("scan", () => {
     // users at a verbose-warnings flag on a command that cannot reproduce it.
     const scanResult = buildScanResultWithWarnings([
       {
-        code: "remote_invalid_metadata",
+        code: "pair_invalid_metadata",
         message: "Remote metadata is invalid.",
         source: "claude-code",
         path: "/remote/a.meta.json",
       },
       {
-        code: "remote_invalid_metadata",
+        code: "pair_invalid_metadata",
         message: "Remote metadata is invalid.",
         source: "claude-code",
         path: "/remote/b.meta.json",
