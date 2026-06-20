@@ -1,6 +1,6 @@
 import { Command } from "commander";
 
-import { deleteConversation, listConversations } from "../db/index.js";
+import { deleteConversation, isLocalConversation, listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { ClogError, UsageError } from "../utils/errors.js";
@@ -53,7 +53,7 @@ export function buildRemoveCommand(): Command {
       }
 
       for (const conversation of matches) {
-        if (conversation.origin == null) {
+        if (isLocalConversation(conversation)) {
           await removeRawCopyIfPresent(conversation);
         }
         await deleteConversation(conversation.id);
@@ -99,7 +99,7 @@ async function countSavedRowsWithMissingSources(
 
   for (const conversation of conversations) {
     if (
-      conversation.origin == null &&
+      isLocalConversation(conversation) &&
       conversation.state === "saved" &&
       !(await pathExists(conversation.sourcePath))
     ) {

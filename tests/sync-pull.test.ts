@@ -46,7 +46,8 @@ describe("sync pull reconciliation", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.title).toBe("Fix auth");
     expect(rows[0]?.savedMessageCount).toBe(2);
-    expect(rows[0]?.origin).toBe(REMOTE_URL);
+    expect(rows[0]?.originKind).toBe("git");
+    expect(rows[0]?.originRef).toBe(REMOTE_URL);
     expect(rows[0]?.author).toBe("alice");
     expect(rows[0]?.state).toBe("saved");
   });
@@ -183,7 +184,7 @@ describe("sync pull reconciliation", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("lets local takes precedence: existing origin IS NULL blocks remote import", async () => {
+  it("lets local take precedence: existing local row blocks remote import", async () => {
     const id = "a8888888-8888-8888-8888-888888888888";
     const timestamp = "2026-02-01T10:00:00.000Z";
 
@@ -209,7 +210,8 @@ describe("sync pull reconciliation", () => {
       filePath: "/tmp/local.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: null,
+      originKind: "local",
+      originRef: null,
     });
 
     await writeRemotePair("bob", "claude-code", id, {
@@ -223,7 +225,54 @@ describe("sync pull reconciliation", () => {
 
     const row = await getConversationById(id);
     expect(row?.title).toBe("My local copy");
-    expect(row?.origin).toBeNull();
+    expect(row?.originKind).toBe("local");
+    expect(row?.originRef).toBeNull();
+  });
+
+  it("lets file imports take precedence without a unique constraint failure", async () => {
+    const id = "a8899999-8888-8888-8888-888888888888";
+    const timestamp = "2026-02-01T10:00:00.000Z";
+
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      title: "Filled copy",
+      summary: "",
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 2,
+      saveVersion: 1,
+      sourcePath: "/tmp/imports/claude-code/file.jsonl",
+      filePath: "/tmp/imports/claude-code/file.jsonl",
+      sourceMtime: null,
+      indexedAt: null,
+      originKind: "file",
+      originRef: null,
+    });
+
+    await writeRemotePair("bob", "claude-code", id, {
+      title: "Bob's saved copy",
+      messageCount: 2,
+    });
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    expect(stats.inserted).toBe(0);
+    expect(stats.skipped).toBeGreaterThanOrEqual(1);
+
+    const row = await getConversationById(id);
+    expect(row?.title).toBe("Filled copy");
+    expect(row?.originKind).toBe("file");
+    expect(row?.originRef).toBeNull();
   });
 
   it("resolves remote-vs-remote duplicates by scan order (alice before bob)", async () => {
@@ -286,7 +335,8 @@ describe("sync pull reconciliation", () => {
       filePath: "/tmp/unreachable.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: OTHER_REMOTE,
+      originKind: "git",
+      originRef: OTHER_REMOTE,
     });
 
     // No pairs for REMOTE_URL on disk. The row from OTHER_REMOTE should be left alone.
@@ -294,7 +344,8 @@ describe("sync pull reconciliation", () => {
 
     expect(stats.deleted).toBe(0);
     const row = await getConversationById(id);
-    expect(row?.origin).toBe(OTHER_REMOTE);
+    expect(row?.originKind).toBe("git");
+    expect(row?.originRef).toBe(OTHER_REMOTE);
   });
 
   it("warns and skips when the .jsonl fails to parse", async () => {

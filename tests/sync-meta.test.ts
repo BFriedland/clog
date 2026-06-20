@@ -49,6 +49,8 @@ describe("sync meta", () => {
     const parsed = JSON.parse(serialized);
     expect(parsed).not.toHaveProperty("projectPath");
     expect(parsed).not.toHaveProperty("origin");
+    expect(parsed).not.toHaveProperty("originKind");
+    expect(parsed).not.toHaveProperty("originRef");
     expect(parsed).not.toHaveProperty("savedMessageCount");
     expect(parsed).not.toHaveProperty("state");
     expect(parsed).not.toHaveProperty("filePath");
@@ -182,6 +184,7 @@ function makeConversation(): ConversationMeta {
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,
     indexedAt: "2026-02-20T10:00:05.000Z",
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 }

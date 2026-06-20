@@ -6,6 +6,7 @@ import { Command } from "commander";
 
 import {
   deleteConversationInDb,
+  gitOriginFilter,
   listConversations,
   listConversationsInDb,
   withDb,
@@ -156,7 +157,7 @@ async function runRemoteShow(): Promise<void> {
   }
 
   const localCount = (await listConversations({ origin: "local", states: ["saved"] })).length;
-  const remoteCount = (await listConversations({ origin: "remote" })).length;
+  const remoteCount = (await listConversations({ origin: gitOriginFilter(remote.url) })).length;
 
   process.stdout.write(`Remote URL: ${remote.url}\n`);
   process.stdout.write(
@@ -174,7 +175,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   }
 
   const remoteRows = await withDb((db) =>
-    listConversationsInDb(db, { origin: { url: remote.url! } }),
+    listConversationsInDb(db, { origin: gitOriginFilter(remote.url!) }),
   );
 
   if (!options.yes) {

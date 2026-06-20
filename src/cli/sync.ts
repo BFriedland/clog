@@ -154,8 +154,8 @@ export async function runSyncPush(): Promise<void> {
 
   await advisoryGitIdentityCheck();
 
-  // Snapshot remote-origin IDs for this author before reconcile.
-  // Conversations present here were pulled from the remote and not deleted
+  // Snapshot git-origin IDs for this author before reconcile.
+  // Conversations present here were pulled from this remote and not deleted
   // locally — they must not be retracted from the checkout during export.
   // Conversations that reconcileRemote re-imports during the pull phase below
   // are NOT in this snapshot, so intentional retractions still proceed.

@@ -227,8 +227,8 @@ describe("exportAuthorToCheckout", () => {
     expect(stats.changes[0]?.kind).toBe("added");
   });
 
-  it("excludes remote-origin conversations from the export set", async () => {
-    // A remote-origin row should never be re-pushed.
+  it("excludes git-origin conversations from the export set", async () => {
+    // A git-origin row should never be re-pushed.
     const timestamp = "2026-02-01T10:00:00.000Z";
     await insertConversation({
       id: "a5555555-5555-5555-5555-555555555555",
@@ -252,7 +252,8 @@ describe("exportAuthorToCheckout", () => {
       filePath: "/tmp/remote-checkout.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
     const stats = await exportAuthorToCheckout("alice", new Set());
@@ -260,9 +261,9 @@ describe("exportAuthorToCheckout", () => {
     expect(stats.changes).toHaveLength(0);
   });
 
-  it("does not retract checkout files that correspond to remote-origin DB rows", async () => {
+  it("does not retract checkout files that correspond to git-origin DB rows", async () => {
     // Simulates the multi-machine scenario: alice pushed from machine A,
-    // then pulls on machine B (importing with origin=remoteUrl). Pushing
+    // then pulls on machine B (importing with originRef=remoteUrl). Pushing
     // from machine B must NOT retract machine A's conversations.
     const id = "a6666666-6666-6666-6666-666666666666";
     const authorDir = getRemoteSourceDir("alice", "claude-code");
@@ -274,7 +275,7 @@ describe("exportAuthorToCheckout", () => {
     );
     await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
 
-    // The pulled DB row has origin=remoteUrl.
+    // The pulled DB row has originRef=remoteUrl.
     const timestamp = "2026-02-01T10:00:00.000Z";
     await insertConversation({
       id,
@@ -298,13 +299,14 @@ describe("exportAuthorToCheckout", () => {
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
     const remoteIds = await collectRemoteOriginIds("alice", TEST_REMOTE_URL);
     const stats = await exportAuthorToCheckout("alice", remoteIds);
 
-    // No retraction — the remote-origin row protects the checkout files.
+    // No retraction: the pre-reconcile git-origin snapshot protects the checkout files.
     expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
     await expect(
       fs.stat(path.join(authorDir, `${id}.meta.json`)),
@@ -314,11 +316,11 @@ describe("exportAuthorToCheckout", () => {
     ).resolves.toBeTruthy();
   });
 
-  it("retracts checkout files for remote-origin DB rows that are absent from the pre-reconcile snapshot", async () => {
+  it("retracts checkout files for git-origin DB rows that are absent from the pre-reconcile snapshot", async () => {
     // Simulates the intentional-retraction case: user removed the
     // conversation locally before sync push, so it was absent from the
     // pre-reconcile snapshot. Even if reconcile re-imports it (giving it
-    // a current DB row with origin=remoteUrl), the export phase must still
+    // a current DB row with originRef=remoteUrl), the export phase must still
     // retract it. This locks in the design choice of using a snapshot
     // rather than current DB state.
     const id = "a7777777-7777-7777-7777-777777777777";
@@ -354,7 +356,8 @@ describe("exportAuthorToCheckout", () => {
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
     // Empty snapshot = the conversation was not present before reconcile,
@@ -412,7 +415,8 @@ async function insertLocalSaved(options: {
     filePath: rawPath,
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 
   await insertConversation(conversation);

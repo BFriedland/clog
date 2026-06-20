@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import {
+  gitOriginFilter,
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
@@ -40,7 +41,7 @@ export async function collectRemoteOriginIds(
     const remote = listConversationsInDb(db, {
       states: ["saved"],
       author,
-      origin: { url: remoteUrl },
+      origin: gitOriginFilter(remoteUrl),
     });
     return new Set(remote.map((c) => `${c.source}\0${c.id}`));
   });

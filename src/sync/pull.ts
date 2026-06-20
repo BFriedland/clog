@@ -6,8 +6,10 @@ import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "../cli/clogign
 import type { Config } from "../config/schema.js";
 import {
   deleteConversationInDb,
+  gitOriginFilter,
   getConversationBySourceIdentityInDb,
   insertConversationInDb,
+  isGitConversationForRemote,
   listConversationsInDb,
   updateConversationInDb,
   withDb,
@@ -99,7 +101,7 @@ export async function reconcileRemote(
 
   await withDb((db) => {
     const existing = listConversationsInDb(db, {
-      origin: { url: remoteUrl },
+      origin: gitOriginFilter(remoteUrl),
     });
 
     const existingByKey = new Map<string, ConversationMeta>();
@@ -124,7 +126,7 @@ export async function reconcileRemote(
 
       if (!existingForRemote) {
         const conflict = getConversationBySourceIdentityInDb(db, pair.source, pair.id);
-        if (conflict && conflict.origin !== remoteUrl) {
+        if (conflict && !isGitConversationForRemote(conflict, remoteUrl)) {
           stats.skipped += 1;
           continue;
         }
@@ -425,7 +427,8 @@ function buildConversationFromRemote(
     filePath: pair.jsonlPath,
     sourceMtime: null,
     indexedAt: null,
-    origin: remoteUrl,
+    originKind: "git",
+    originRef: remoteUrl,
   };
 }
 
@@ -480,7 +483,8 @@ function mergeRemoteInto(
     filePath: pair.jsonlPath,
     indexedAt:
       searchVisibleChanged || contentPathChanged ? null : existing.indexedAt,
-    origin: remoteUrl,
+    originKind: "git",
+    originRef: remoteUrl,
   };
 }
 

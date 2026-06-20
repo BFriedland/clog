@@ -10,6 +10,7 @@ import {
   type ConversationMeta,
   conversationMetaSchema,
   type ConversationState,
+  type OriginKind,
   parseSummaryExtraction,
   serializeSummaryExtraction,
 } from "../models/conversation.js";
@@ -27,7 +28,10 @@ export interface DbAccessOptions {
   requireExistingHome?: boolean;
 }
 
-export type OriginFilter = "local" | "remote" | { url: string };
+export type OriginFilter =
+  | "local"
+  | "remote"
+  | { kind: OriginKind; ref?: string | null };
 
 export interface ListConversationFilters {
   states?: ConversationState[];
@@ -42,6 +46,11 @@ export interface ListConversationFilters {
 export interface ResolvedConversationId {
   id: string;
   source: string;
+}
+
+interface SqlWhere {
+  sql: string;
+  params: unknown[];
 }
 
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
@@ -222,6 +231,41 @@ export async function deleteConversation(id: string): Promise<void> {
   await withDb((db) => deleteConversationInDb(db, id));
 }
 
+export function isLocalConversation(
+  conversation: Pick<ConversationMeta, "originKind">,
+): boolean {
+  return conversation.originKind === "local";
+}
+
+export function isNonLocalConversation(
+  conversation: Pick<ConversationMeta, "originKind">,
+): boolean {
+  return conversation.originKind !== "local";
+}
+
+export function isGitConversation(
+  conversation: Pick<ConversationMeta, "originKind">,
+): boolean {
+  return conversation.originKind === "git";
+}
+
+export function isFileConversation(
+  conversation: Pick<ConversationMeta, "originKind">,
+): boolean {
+  return conversation.originKind === "file";
+}
+
+export function isGitConversationForRemote(
+  conversation: Pick<ConversationMeta, "originKind" | "originRef">,
+  remoteUrl: string,
+): boolean {
+  return conversation.originKind === "git" && conversation.originRef === remoteUrl;
+}
+
+export function gitOriginFilter(remoteUrl: string): OriginFilter {
+  return { kind: "git", ref: remoteUrl };
+}
+
 export function insertConversationInDb(
   db: Database,
   conversation: ConversationMeta,
@@ -252,8 +296,9 @@ export function insertConversationInDb(
         file_path,
         source_mtime,
         indexed_at,
-        origin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        origin_kind,
+        origin_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     conversationToParams(conversation),
   );
@@ -289,7 +334,8 @@ export function updateConversationInDb(
         file_path = ?,
         source_mtime = ?,
         indexed_at = ?,
-        origin = ?
+        origin_kind = ?,
+        origin_ref = ?
       WHERE id = ?
     `,
     [
@@ -315,7 +361,8 @@ export function updateConversationInDb(
       conversation.filePath,
       conversation.sourceMtime,
       conversation.indexedAt,
-      conversation.origin,
+      conversation.originKind,
+      conversation.originRef,
       conversation.id,
     ],
   );
@@ -351,17 +398,14 @@ export function listConversationsInDb(
     whereParts.push(filters.indexed ? "indexed_at IS NOT NULL" : "indexed_at IS NULL");
   }
 
-  if (filters.origin === "local") {
-    whereParts.push("origin IS NULL");
-  } else if (filters.origin === "remote") {
-    whereParts.push("origin IS NOT NULL");
-  } else if (filters.origin && typeof filters.origin === "object") {
-    whereParts.push("origin = ?");
-    params.push(filters.origin.url);
+  if (filters.origin) {
+    const where = provenanceWhere(filters.origin);
+    whereParts.push(where.sql);
+    params.push(...where.params);
   }
 
   if (filters.curatedDefault) {
-    whereParts.push("(author = ? OR origin IS NULL)");
+    whereParts.push("(origin_kind = 'local' OR (origin_kind != 'local' AND author = ?))");
     params.push(filters.curatedDefault.author);
   }
 
@@ -489,8 +533,31 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.filePath,
     conversation.sourceMtime,
     conversation.indexedAt,
-    conversation.origin,
+    conversation.originKind,
+    conversation.originRef,
   ];
+}
+
+function provenanceWhere(filter: OriginFilter): SqlWhere {
+  if (filter === "local") {
+    return { sql: "origin_kind = 'local'", params: [] };
+  }
+
+  if (filter === "remote") {
+    return { sql: "origin_kind != 'local'", params: [] };
+  }
+
+  const params: unknown[] = [filter.kind];
+  let sql = "origin_kind = ?";
+  if (filter.ref !== undefined) {
+    if (filter.ref == null) {
+      sql += " AND origin_ref IS NULL";
+    } else {
+      sql += " AND origin_ref = ?";
+      params.push(filter.ref);
+    }
+  }
+  return { sql, params };
 }
 
 function normalizeSummaryKind(
@@ -571,8 +638,16 @@ function rowToConversation(row: Record<string, unknown>): ConversationMeta {
     filePath: nullableString(row.file_path),
     sourceMtime: nullableString(row.source_mtime),
     indexedAt: nullableString(row.indexed_at),
-    origin: nullableString(row.origin),
+    originKind: parseOriginKind(row.origin_kind),
+    originRef: nullableString(row.origin_ref),
   });
+}
+
+function parseOriginKind(value: unknown): OriginKind {
+  if (value === "local" || value === "git" || value === "file") {
+    return value;
+  }
+  return "local";
 }
 
 function parseTags(value: unknown): string[] {

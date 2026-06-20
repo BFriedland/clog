@@ -6,6 +6,7 @@ import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import {
   getConversationById,
+  isLocalConversation,
   resolveConversationId,
   updateConversation,
 } from "../db/index.js";
@@ -78,12 +79,12 @@ export function assertNotRemote(
   conversation: ConversationMeta,
   command: string,
 ): void {
-  if (conversation.origin == null) {
+  if (isLocalConversation(conversation)) {
     return;
   }
 
   throw new ClogError(
-    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — it came from the remote and is read-only. Edit it on the original author's machine.`,
+    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — imported conversations are read-only. Edit it on the original author's machine or remove the imported copy.`,
   );
 }
 

@@ -8,7 +8,8 @@ import { getAdapter } from "../adapters/registry.js";
 import { parseConfig } from "../config/schema.js";
 import { getDefaultConfig } from "../config/index.js";
 import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
-import { withDb } from "../db/index.js";
+import { isGitConversation, isLocalConversation, withDb } from "../db/index.js";
+import type { OriginKind } from "../models/conversation.js";
 import {
   BUILTIN_SOURCES,
   getClogHome,
@@ -95,7 +96,8 @@ interface RawConversationRow {
   save_version: unknown;
   file_path: unknown;
   source_path: unknown;
-  origin: unknown;
+  originKind: OriginKind;
+  originRef: unknown;
 }
 
 interface ClogIgnoreLine {
@@ -379,7 +381,7 @@ async function inspectDatabase(
   }
 
   const rows = getConversationRows(db);
-  const localRows = rows.filter((row) => row.origin == null);
+  const localRows = rows.filter(isLocalConversation);
   for (const row of localRows) {
     if (!BUILTIN_SOURCE_SET.has(row.source)) {
       findings.push(conversationFinding(row, {
@@ -795,7 +797,7 @@ function conversationFinding(
     conversationTitle: formatForSingleLine(row.title),
     conversationAuthor: row.author,
     conversationProject: row.project_name,
-    conversationOrigin: nullableString(row.origin),
+    conversationOrigin: formatConversationOrigin(row),
   };
 }
 
@@ -845,7 +847,8 @@ function getConversationRows(db: Database): RawConversationRow[] {
         save_version,
         file_path,
         source_path,
-        origin
+        origin_kind AS originKind,
+        origin_ref AS originRef
       FROM conversations
       ORDER BY id ASC
     `,
@@ -880,9 +883,30 @@ function getConversationRows(db: Database): RawConversationRow[] {
       save_version: record.save_version,
       file_path: record.file_path,
       source_path: record.source_path,
-      origin: record.origin,
+      originKind: parseOriginKind(record.originKind),
+      originRef: record.originRef,
     };
   });
+}
+
+function formatConversationOrigin(row: RawConversationRow): string | null {
+  if (isLocalConversation(row)) {
+    return null;
+  }
+
+  if (isGitConversation(row)) {
+    return nullableString(row.originRef);
+  }
+
+  return row.originKind;
+}
+
+function parseOriginKind(value: unknown): OriginKind {
+  if (value === "local" || value === "git" || value === "file") {
+    return value;
+  }
+
+  return "local";
 }
 
 function validateTagsJson(value: unknown): { ok: true } | { ok: false; message: string } {

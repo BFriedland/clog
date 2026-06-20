@@ -6,6 +6,7 @@ import { type Config } from "../config/schema.js";
 import {
   getConversationBySourceIdentityInDb,
   insertConversationInDb,
+  isLocalConversation,
   listConversationsInDb,
   updateConversationInDb,
   withDb,
@@ -121,6 +122,10 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
 
       const found = getConversationBySourceIdentityInDb(db, candidate.source, candidate.sourceId);
 
+      if (found && !isLocalConversation(found)) {
+        continue;
+      }
+
       if (!found) {
         insertConversationInDb(
           db,
@@ -224,7 +229,8 @@ function buildDiscoveredConversation(
     filePath: null,
     sourceMtime: candidate.sourceMtime,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 }
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { listConversations } from "../db/index.js";
+import { isGitConversation, isNonLocalConversation, listConversations } from "../db/index.js";
 import type { Config } from "../config/schema.js";
 import type { ConversationMeta, ConversationState, Message } from "../models/conversation.js";
 import { pathExists } from "../utils/fs.js";
@@ -485,9 +485,15 @@ async function readRawPayload(conversation: ConversationMeta): Promise<Buffer> {
         );
       }
 
-      if (conversation.origin != null) {
+      if (isGitConversation(conversation)) {
         throw new ClogError(
           `Remote checkout file is missing for ${conversation.id}. Run "clog refresh" to inspect the checkout, or "clog sync pull" to re-sync it.`,
+        );
+      }
+
+      if (isNonLocalConversation(conversation)) {
+        throw new ClogError(
+          `Imported content file is missing for ${conversation.id}. Remove the imported row and import it again from its source.`,
         );
       }
 

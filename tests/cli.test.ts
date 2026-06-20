@@ -97,7 +97,7 @@ import { buildPathCommand } from "../src/cli/path.js";
 import { buildSaveCommand } from "../src/cli/save.js";
 import { buildRefreshCommand } from "../src/cli/refresh.js";
 import { buildRemoteCommand } from "../src/cli/remote.js";
-import { buildRenameAuthorCommand } from "../src/cli/rename-author.js";
+import { buildRenameAuthorCommand, runRenameAuthor } from "../src/cli/rename-author.js";
 import { buildShowCommand } from "../src/cli/show.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildSummarizeCommand, buildTalkCommand } from "../src/cli/talk.js";
@@ -462,11 +462,11 @@ describe("cli", () => {
       ).rejects.toThrow(/No conversation matches/);
     });
 
-    it("refuses to edit a remote conversation (SPEC §11.1)", async () => {
+    it("refuses to edit an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("14141414-1414-1414-1414-141414141414");
       await expect(
         runBuiltCommand(buildEditCommand, [conv.id, "--title", "x"]),
-      ).rejects.toThrow(/remote/i);
+      ).rejects.toThrow(/imported conversations are read-only/i);
     });
 
     it("leaves indexedAt untouched when search is not configured (SPEC §10.8.1)", async () => {
@@ -1086,20 +1086,20 @@ describe("cli", () => {
       expect(reloaded?.modifiedAt).toBe(original);
     });
 
-    it("tag refuses a remote conversation (SPEC §11.1)", async () => {
+    it("tag refuses an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("25252525-2525-2525-2525-252525252525");
       await expect(runBuiltCommand(buildTagCommand, [conv.id, "x"])).rejects.toThrow(
-        /remote/i,
+        /imported conversations are read-only/i,
       );
     });
 
-    it("untag refuses a remote conversation (SPEC §11.1)", async () => {
+    it("untag refuses an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("26262626-2626-2626-2626-262626262626", {
         tags: ["already-there"],
       });
       await expect(
         runBuiltCommand(buildUntagCommand, [conv.id, "already-there"]),
-      ).rejects.toThrow(/remote/i);
+      ).rejects.toThrow(/imported conversations are read-only/i);
     });
   });
 
@@ -1119,10 +1119,10 @@ describe("cli", () => {
       ).rejects.toThrow(/No conversation matches/);
     });
 
-    it("refuses a remote conversation (SPEC §5.6, §11.1)", async () => {
+    it("refuses an imported conversation (SPEC §5.6, §11.1)", async () => {
       const conv = await seedRemoteConversation("52525252-5252-5252-5252-525252525252");
       await expect(runBuiltCommand(buildSaveCommand, [conv.id])).rejects.toThrow(
-        /remote.*read-only/i,
+        /imported conversations are read-only/i,
       );
     });
 
@@ -1831,6 +1831,69 @@ describe("cli", () => {
       const reloaded = await getConversationById(convId);
       expect(reloaded?.author).toBe("bob");
     });
+
+    it("does not treat imported rows as rename targets", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "62626262-6262-6262-6262-626262626262",
+          sourceId: "62626262-6262-6262-6262-626262626262",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/git-import.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildRenameAuthorCommand, ["bob", "robert"]);
+      expect(stdout).toContain('No conversations found for author "bob"');
+    });
+
+    it("renames only local rows when the author also has imported rows", async () => {
+      const localId = "63636363-6363-6363-6363-636363636363";
+      const gitId = "64646464-6464-6464-6464-646464646464";
+      const fileId = "65656565-6565-6565-6565-656565656565";
+
+      await insertConversation(makeConversation({ id: localId, sourceId: localId, author: "bob" }));
+      await insertConversation(
+        makeConversation({
+          id: gitId,
+          sourceId: gitId,
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/git-import.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/file-import.jsonl",
+          originKind: "file",
+          originRef: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const result = await captureOutputWithError(async () => {
+        await runRenameAuthor("bob", "robert", async () => true);
+      });
+
+      expect(result.error).toBeNull();
+      expect(result.stdout).toContain("Renamed author on 1 conversation(s)");
+      await expect(getConversationById(localId)).resolves.toMatchObject({ author: "robert" });
+      await expect(getConversationById(gitId)).resolves.toMatchObject({ author: "bob" });
+      await expect(getConversationById(fileId)).resolves.toMatchObject({ author: "bob" });
+    });
   });
 
   // ========================================
@@ -2049,6 +2112,49 @@ describe("cli", () => {
       expect(stdout).toMatch(/\[USER\]|\[ASSISTANT\]/);
     });
 
+    it("default mode ignores imported saved conversations", async () => {
+      await seedSavedConversationWithRawMessages(
+        "82828282-8282-8282-8282-828282828282",
+        3,
+        1,
+        {
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+        },
+      );
+      await seedSavedConversationWithRawMessages(
+        "83838383-8383-8383-8383-838383838383",
+        3,
+        1,
+        {
+          originKind: "file",
+          originRef: null,
+        },
+      );
+
+      const { stdout } = await runBuiltCommand(buildDiffCommand, []);
+      expect(stdout).toBe("");
+    });
+
+    it.each([
+      [
+        "git",
+        "88888888-8888-8888-8888-888888888888",
+        { originKind: "git" as const, originRef: "git@example.com:team/repo.git" },
+      ],
+      [
+        "file",
+        "89898989-8989-8989-8989-898989898989",
+        { originKind: "file" as const, originRef: null },
+      ],
+    ])("rejects an explicit %s imported conversation", async (_kind, id, provenance) => {
+      await seedSavedConversationWithRawMessages(id, 3, 1, provenance);
+
+      await expect(runBuiltCommand(buildDiffCommand, [id])).rejects.toThrow(
+        /imported conversations are read-only/i,
+      );
+    });
+
     it("errors when the raw file shrinks below the saved checkpoint", async () => {
       // Raw has 1 message, checkpoint says 4 → fewer parsed messages than stored checkpoint.
       const conv = await seedSavedConversationWithRawMessages(
@@ -2166,7 +2272,8 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2212,10 +2319,40 @@ describe("cli", () => {
         title: "Author-less local",
         author: "anyone",
       });
+      await insertConversation(
+        makeConversation({
+          id: "ba000000-0000-0000-0000-000000000002",
+          sourceId: "ba000000-0000-0000-0000-000000000002",
+          title: "Author-less git import",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/remote.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "ba000000-0000-0000-0000-000000000003",
+          sourceId: "ba000000-0000-0000-0000-000000000003",
+          title: "Author-less file import",
+          author: "carol",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
 
       const { stdout } = await runBuiltCommand(buildListCommand, []);
-      // Local (origin IS NULL) rows are still shown even when config.author is empty.
+      // Local rows are still shown even when config.author is empty.
       expect(stdout).toContain("Author-less local");
+      expect(stdout).not.toContain("Author-less git import");
+      expect(stdout).not.toContain("Author-less file import");
     });
 
     it("--all rediscovers ignored conversations from the source adapter (SPEC §5.3)", async () => {
@@ -2287,7 +2424,21 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "b5555555-4444-4444-4444-444444444444",
+          sourceId: "b5555555-4444-4444-4444-444444444444",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2618,7 +2769,23 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+          indexedAt: null,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "c5656565-5555-5555-5555-555555555555",
+          sourceId: "c5656565-5555-5555-5555-555555555555",
+          title: "File row",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
           indexedAt: null,
@@ -2757,7 +2924,20 @@ describe("cli", () => {
           sourceId: "d2222222-2222-2222-2222-222222222222",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "d2323232-2222-2222-2222-222222222222",
+          sourceId: "d2323232-2222-2222-2222-222222222222",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2776,13 +2956,14 @@ describe("cli", () => {
       ).rejects.toThrow(/No remote configured/);
     });
 
-    it("remove deletes remote-origin rows, clears config, and preserves local rows", async () => {
+    it("remove deletes git-origin rows, clears config, and preserves local rows", async () => {
       const config = await loadConfig();
       config.remote.url = "git@example.com:team/repo.git";
       await saveConfig(config);
 
       const localId = "d3333333-3333-3333-3333-333333333333";
       const remoteId = "d4444444-4444-4444-4444-444444444444";
+      const fileId = "d4545454-4444-4444-4444-444444444444";
 
       await insertConversation(
         makeConversation({
@@ -2800,7 +2981,20 @@ describe("cli", () => {
           sourceId: remoteId,
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2812,8 +3006,10 @@ describe("cli", () => {
 
       const local = await getConversationById(localId);
       const remote = await getConversationById(remoteId);
+      const file = await getConversationById(fileId);
       expect(local).not.toBeNull();
       expect(remote).toBeNull();
+      expect(file).not.toBeNull();
 
       const reloaded = await loadConfig();
       expect(reloaded.remote.url).toBeNull();
@@ -2924,7 +3120,8 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }
@@ -2962,7 +3159,8 @@ async function seedRemoteConversation(
   return seedConversation(id, {
     state: "saved",
     filePath: "/tmp/fake-remote.jsonl",
-    origin: "git@example.com:team/repo.git",
+    originKind: "git",
+    originRef: "git@example.com:team/repo.git",
     savedAt: "2026-02-01T10:00:00.000Z",
     saveVersion: 1,
     ...overrides,
@@ -3014,6 +3212,7 @@ async function seedSavedConversationWithRawMessages(
   id: string,
   messageCount: number,
   savedMessageCount: number,
+  overrides: Partial<ConversationMeta> = {},
 ): Promise<ConversationMeta> {
   const rawPath = getRawConversationPath("claude-code", id);
   await fs.mkdir(path.dirname(rawPath), { recursive: true });
@@ -3031,6 +3230,7 @@ async function seedSavedConversationWithRawMessages(
     savedAt: "2026-02-01T10:00:00.000Z",
     saveVersion: 1,
     savedMessageCount,
+    ...overrides,
   });
 }
 

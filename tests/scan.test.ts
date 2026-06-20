@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
-import { getConversationById, listConversations } from "../src/db/index.js";
+import { getConversationById, insertConversation, listConversations } from "../src/db/index.js";
 import { getScanWarningsForCommand } from "../src/cli/common.js";
 import { scanLocalSources, type ScanResult } from "../src/cli/scan.js";
 import type { ClogWarning } from "../src/models/warnings.js";
@@ -125,6 +125,52 @@ describe("scan", () => {
     const updated = await getConversationById(id);
     expect(updated?.title).toBe("Updated title from source");
     expect(updated?.summary).toBe("Updated summary");
+  });
+
+  it("does not let local discovery mutate imported rows with the same source identity", async () => {
+    const claudeRoot = path.join(tempDir, "claude");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["codex-cli"].enabled = false;
+
+    const gitId = "51515151-5151-5151-5151-515151515151";
+    const fileId = "52525252-5252-5252-5252-525252525252";
+    await insertConversation(makeSavedImportedConversation(gitId, {
+      originKind: "git",
+      originRef: "git@example.com:team/repo.git",
+      sourcePath: "/tmp/remote-checkout/git.jsonl",
+      filePath: "/tmp/remote-checkout/git.jsonl",
+    }));
+    await insertConversation(makeSavedImportedConversation(fileId, {
+      originKind: "file",
+      originRef: null,
+      sourcePath: "/tmp/imports/file.jsonl",
+      filePath: "/tmp/imports/file.jsonl",
+    }));
+
+    await writeClaudeConversation(claudeRoot, gitId, "/Users/alice/work/app", "Local git collision");
+    await writeClaudeConversation(claudeRoot, fileId, "/Users/alice/work/app", "Local file collision");
+
+    const result = await scanLocalSources(config);
+
+    expect(result.counts.discovered).toBe(0);
+    expect(result.counts.updated).toBe(0);
+    const gitRow = await getConversationById(gitId);
+    const fileRow = await getConversationById(fileId);
+    expect(gitRow).toMatchObject({
+      title: "Imported 51515151",
+      sourcePath: "/tmp/remote-checkout/git.jsonl",
+      filePath: "/tmp/remote-checkout/git.jsonl",
+      originKind: "git",
+      originRef: "git@example.com:team/repo.git",
+    });
+    expect(fileRow).toMatchObject({
+      title: "Imported 52525252",
+      sourcePath: "/tmp/imports/file.jsonl",
+      filePath: "/tmp/imports/file.jsonl",
+      originKind: "file",
+      originRef: null,
+    });
   });
 
   it("prunes stale discovered entries when source files disappear", async () => {
@@ -622,6 +668,42 @@ function buildScanResultWithWarnings(warnings: ClogWarning[]): ScanResult {
       ignored: 0,
       undiscoverable: 0,
     },
+  };
+}
+
+function makeSavedImportedConversation(
+  id: string,
+  overrides: {
+    originKind: "git" | "file";
+    originRef: string | null;
+    sourcePath: string;
+    filePath: string;
+  },
+) {
+  const timestamp = "2026-02-01T10:00:00.000Z";
+  return {
+    id,
+    sourceId: id,
+    source: "claude-code",
+    title: `Imported ${id.slice(0, 8)}`,
+    summary: "",
+    summaryKind: "none" as const,
+    summaryExtraction: null,
+    author: "bob",
+    projectName: null,
+    projectPath: null,
+    tags: [],
+    slug: null,
+    createdAt: timestamp,
+    discoveredAt: timestamp,
+    modifiedAt: timestamp,
+    state: "saved" as const,
+    savedAt: timestamp,
+    savedMessageCount: 1,
+    saveVersion: 1,
+    sourceMtime: null,
+    indexedAt: null,
+    ...overrides,
   };
 }
 

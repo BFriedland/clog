@@ -159,7 +159,8 @@ describeIfGit("sync integration (requires git)", () => {
     const row = await getConversationById(id);
     expect(row).not.toBeNull();
     expect(row?.title).toBe("Bob's fix");
-    expect(row?.origin).toBe(bareRepo);
+    expect(row?.originKind).toBe("git");
+    expect(row?.originRef).toBe(bareRepo);
     expect(row?.author).toBe("bob");
 
     // Search isn't configured in this test setup, so the index nudge
@@ -409,7 +410,8 @@ async function insertLocalSaved(options: {
     filePath: rawPath,
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 
   await insertConversation(conversation);

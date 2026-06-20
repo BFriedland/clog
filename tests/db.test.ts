@@ -209,21 +209,23 @@ describe("db", () => {
     await expect(getConversationById(conversation.id)).resolves.toBeNull();
   });
 
-  it("round-trips origin and filters by local/remote/URL", async () => {
+  it("round-trips provenance and filters by local/remote/kind-ref", async () => {
     const local = makeConversation({ state: "saved" });
     const remote1 = makeConversation({
       id: "e1234567-1234-1234-1234-123456789012",
       sourceId: "e1234567-1234-1234-1234-123456789012",
       state: "saved",
       author: "bob",
-      origin: "git@github.com:myorg/clog-team.git",
+      originKind: "git",
+      originRef: "git@github.com:myorg/clog-team.git",
     });
     const remote2 = makeConversation({
       id: "f1234567-1234-1234-1234-123456789012",
       sourceId: "f1234567-1234-1234-1234-123456789012",
       state: "saved",
       author: "carol",
-      origin: "git@example.com:other/repo.git",
+      originKind: "file",
+      originRef: null,
     });
 
     await insertConversation(local);
@@ -231,16 +233,20 @@ describe("db", () => {
     await insertConversation(remote2);
 
     const loaded = await getConversationById(remote1.id);
-    expect(loaded?.origin).toBe("git@github.com:myorg/clog-team.git");
+    expect(loaded?.originKind).toBe("git");
+    expect(loaded?.originRef).toBe("git@github.com:myorg/clog-team.git");
 
     await expect(listConversations({ origin: "local" })).resolves.toHaveLength(1);
     await expect(listConversations({ origin: "remote" })).resolves.toHaveLength(2);
     await expect(
-      listConversations({ origin: { url: "git@github.com:myorg/clog-team.git" } }),
+      listConversations({
+        origin: { kind: "git", ref: "git@github.com:myorg/clog-team.git" },
+      }),
     ).resolves.toHaveLength(1);
+    await expect(listConversations({ origin: { kind: "file", ref: null } })).resolves.toHaveLength(1);
   });
 
-  it("applies curatedDefault filter (author OR origin IS NULL)", async () => {
+  it("applies curatedDefault filter using local plus same-author imports", async () => {
     await insertConversation(makeConversation({ state: "saved" }));
     await insertConversation(
       makeConversation({
@@ -248,7 +254,8 @@ describe("db", () => {
         sourceId: "e1234567-1234-1234-1234-123456789012",
         state: "saved",
         author: "alice",
-        origin: "git@example.com:repo.git",
+        originKind: "file",
+        originRef: null,
       }),
     );
     await insertConversation(
@@ -257,7 +264,8 @@ describe("db", () => {
         sourceId: "f1234567-1234-1234-1234-123456789012",
         state: "saved",
         author: "bob",
-        origin: "git@example.com:repo.git",
+        originKind: "file",
+        originRef: null,
       }),
     );
 
@@ -266,7 +274,7 @@ describe("db", () => {
       curatedDefault: { author: "alice" },
     });
     expect(curated).toHaveLength(2);
-    expect(curated.every((c) => c.author === "alice" || c.origin === null)).toBe(true);
+    expect(curated.every((c) => c.originKind === "local" || c.author === "alice")).toBe(true);
   });
 
   // ============================================================
@@ -278,6 +286,131 @@ describe("db", () => {
     await withDb(() => undefined);
     await insertConversation(makeConversation());
     await expect(getConversationById("a1234567-1234-1234-1234-123456789012")).resolves.toBeTruthy();
+  });
+
+  it("migrates legacy origin into origin_kind and origin_ref", async () => {
+    await withDb((db) => {
+      db.exec(`
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (6);
+        CREATE TABLE conversations (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          title TEXT NOT NULL,
+          summary TEXT DEFAULT '',
+          summary_kind TEXT NOT NULL DEFAULT 'none'
+            CHECK(summary_kind IN ('none','imported','generated','curated')),
+          summary_extraction TEXT,
+          author TEXT NOT NULL,
+          project_name TEXT,
+          project_path TEXT,
+          tags_json TEXT DEFAULT '[]',
+          slug TEXT,
+          created_at TEXT NOT NULL,
+          discovered_at TEXT NOT NULL,
+          modified_at TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'discovered'
+            CHECK(state IN ('discovered','saved')),
+          saved_at TEXT,
+          saved_message_count INTEGER,
+          save_version INTEGER DEFAULT 0,
+          source_path TEXT NOT NULL,
+          file_path TEXT,
+          source_mtime TEXT,
+          indexed_at TEXT,
+          origin TEXT DEFAULT NULL,
+          UNIQUE(source, source_id)
+        );
+      `);
+      db.run(
+        `
+          INSERT INTO conversations (
+            id, source_id, source, title, summary, summary_kind, summary_extraction,
+            author, project_name, project_path, tags_json, slug, created_at,
+            discovered_at, modified_at, state, saved_at, saved_message_count,
+            save_version, source_path, file_path, source_mtime, indexed_at, origin
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "e2222222-1234-1234-1234-123456789012",
+          "e2222222-1234-1234-1234-123456789012",
+          "claude-code",
+          "Remote legacy row",
+          "",
+          "none",
+          null,
+          "bob",
+          null,
+          null,
+          "[]",
+          null,
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "saved",
+          "2026-02-01T10:00:00.000Z",
+          1,
+          1,
+          "/tmp/remote.jsonl",
+          "/tmp/remote.jsonl",
+          null,
+          null,
+          "git@example.com:repo.git",
+        ],
+      );
+    }, { applyMigrations: false });
+
+    await withDb(() => undefined);
+
+    const loaded = await getConversationById("e2222222-1234-1234-1234-123456789012");
+    expect(loaded?.originKind).toBe("git");
+    expect(loaded?.originRef).toBe("git@example.com:repo.git");
+  });
+
+  it("enforces origin_kind and origin_ref constraints", async () => {
+    await withDb((db) => {
+      expect(() => {
+        db.run(
+          `
+            INSERT INTO conversations (
+              id, source_id, source, title, summary, summary_kind, summary_extraction,
+              author, project_name, project_path, tags_json, slug, created_at,
+              discovered_at, modified_at, state, saved_at, saved_message_count,
+              save_version, source_path, file_path, source_mtime, indexed_at,
+              origin_kind, origin_ref
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            "e3333333-1234-1234-1234-123456789012",
+            "e3333333-1234-1234-1234-123456789012",
+            "claude-code",
+            "Bad row",
+            "",
+            "none",
+            null,
+            "bob",
+            null,
+            null,
+            "[]",
+            null,
+            "2026-02-01T10:00:00.000Z",
+            "2026-02-01T10:00:00.000Z",
+            "2026-02-01T10:00:00.000Z",
+            "saved",
+            "2026-02-01T10:00:00.000Z",
+            1,
+            1,
+            "/tmp/file.jsonl",
+            "/tmp/file.jsonl",
+            null,
+            null,
+            "file",
+            "git@example.com:repo.git",
+          ],
+        );
+      }).toThrow();
+    });
   });
 
   it("rejects inserting a duplicate conversation id (SPEC §3.1)", async () => {
@@ -344,7 +477,8 @@ describe("db", () => {
         sourceId: "c1111111-1234-1234-1234-123456789012",
         state: "saved",
         author: "bob",
-        origin: "git@example.com:repo.git",
+        originKind: "git",
+        originRef: "git@example.com:repo.git",
       }),
     );
 
@@ -533,6 +667,7 @@ function baseConversation() {
     filePath: null,
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local" as const,
+    originRef: null,
   };
 }

@@ -55,7 +55,7 @@ export async function startMcpServer(): Promise<void> {
         origin: z
           .enum(["local", "remote"])
           .optional()
-          .describe("Use local for origin null rows, remote for synced read-only rows."),
+          .describe("Use local for locally writable rows, remote for imported read-only rows."),
         limit: z
           .number()
           .int()
@@ -151,7 +151,10 @@ export async function startMcpServer(): Promise<void> {
           .string()
           .optional()
           .describe("Filter by author metadata using case-insensitive substring matching."),
-        origin: z.enum(["local", "remote"]).optional(),
+        origin: z
+          .enum(["local", "remote"])
+          .optional()
+          .describe("Use local for locally writable rows, remote for imported read-only rows."),
         limit: z.number().int().positive().max(50).optional(),
       },
     },
