@@ -40,6 +40,19 @@ async function runRefresh(): Promise<void> {
     `Refreshed ${total} conversation(s) from local checkout. ${stats.inserted} new, ${stats.updated} updated, ${stats.deleted} removed.\n`,
   );
   renderWarnings(stats.warnings);
+  if (stats.ignored > 0) {
+    process.stderr.write(
+      `warning: Skipped ${stats.ignored} remote conversation pair(s) because of clogignore.\n`,
+    );
+  }
+  for (const notice of stats.notices) {
+    process.stderr.write(`warning: ${notice}\n`);
+  }
+  for (const id of stats.cleanupFailures) {
+    process.stderr.write(
+      `warning: Could not remove search vectors for ${id.slice(0, 8)} after reconciliation deleted the conversation.\n`,
+    );
+  }
 
   try {
     const head = await gitRevParseHead(getRemoteRoot());

@@ -8,7 +8,7 @@ import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   buildCommitMessage,
-  collectRemoteOriginIds,
+  collectSameAuthorSavedIdentities,
   exportAuthorToCheckout,
   type ChangeRecord,
 } from "../src/sync/push.js";
@@ -378,10 +378,62 @@ describe("exportAuthorToCheckout", () => {
       originRef: TEST_REMOTE_URL,
     });
 
-    const remoteIds = await collectRemoteOriginIds("alice", TEST_REMOTE_URL);
-    const stats = await exportAuthorToCheckout("alice", remoteIds);
+    const protectedIds = await collectSameAuthorSavedIdentities("alice");
+    const stats = await exportAuthorToCheckout("alice", protectedIds);
 
     // No retraction: the pre-reconcile git-origin snapshot protects the checkout files.
+    expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.jsonl`)),
+    ).resolves.toBeTruthy();
+  });
+
+  it("does not retract checkout files that correspond to same-author file rows", async () => {
+    const id = "a6767676-6767-6767-6767-676767676767";
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "Filled from file" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
+
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      title: "Filled from file",
+      summary: "",
+      summaryKind: "none",
+      summaryExtraction: null,
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 1,
+      saveVersion: 1,
+      sourcePath: "/tmp/imports/claude-code/a6767676-6767-6767-6767-676767676767.jsonl",
+      filePath: "/tmp/imports/claude-code/a6767676-6767-6767-6767-676767676767.jsonl",
+      sourceMtime: null,
+      indexedAt: null,
+      originKind: "file",
+      originRef: null,
+    });
+
+    const protectedIds = await collectSameAuthorSavedIdentities("alice");
+    const stats = await exportAuthorToCheckout("alice", protectedIds);
+
     expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
     await expect(
       fs.stat(path.join(authorDir, `${id}.meta.json`)),

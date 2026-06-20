@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 
 import {
-  gitOriginFilter,
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
@@ -33,23 +32,21 @@ export interface ExportStats {
   changes: ChangeRecord[];
 }
 
-export async function collectRemoteOriginIds(
+export async function collectSameAuthorSavedIdentities(
   author: string,
-  remoteUrl: string,
 ): Promise<Set<string>> {
   return withDb((db) => {
-    const remote = listConversationsInDb(db, {
+    const saved = listConversationsInDb(db, {
       states: ["saved"],
       author,
-      origin: gitOriginFilter(remoteUrl),
     });
-    return new Set(remote.map((c) => `${c.source}\0${c.id}`));
+    return new Set(saved.map((c) => `${c.source}\0${c.sourceId}`));
   });
 }
 
 export async function exportAuthorToCheckout(
   author: string,
-  preReconcileRemoteOriginIds: Set<string>,
+  preReconcileSameAuthorIds: Set<string>,
 ): Promise<ExportStats> {
   const stats: ExportStats = { changes: [] };
 
@@ -134,7 +131,7 @@ export async function exportAuthorToCheckout(
         continue;
       }
 
-      if (preReconcileRemoteOriginIds.has(`${source}\0${id}`)) {
+      if (preReconcileSameAuthorIds.has(`${source}\0${id}`)) {
         continue;
       }
 

@@ -112,6 +112,7 @@ import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation, setConversationIndexedAt } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
+import { getRemoteRoot } from "../src/sync/paths.js";
 import { ClogError } from "../src/utils/errors.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
@@ -3034,6 +3035,47 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildRefreshCommand, []);
       expect(stdout).toContain("No checkout found");
       expect(stdout).toContain("clog sync pull");
+    });
+
+    it("prints one summary line for pairs skipped by clogignore", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      const id = "eeeeeeee-1111-2222-3333-444444444444";
+      const remoteRoot = getRemoteRoot();
+      const sourceDir = path.join(remoteRoot, "alice", "claude-code");
+      await fs.mkdir(path.join(remoteRoot, ".git"), { recursive: true });
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sourceDir, `${id}.meta.json`),
+        `${JSON.stringify({
+          id,
+          title: "Ignored remote pair",
+          summary: "",
+          tags: [],
+          author: "alice",
+          projectName: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          source: "claude-code",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      await writeJsonl(path.join(sourceDir, `${id}.jsonl`), [
+        userLine("Ignored", "2026-02-01T10:00:00.000Z"),
+      ]);
+      await fs.writeFile(getClogIgnorePath(), `${id}\n`, "utf8");
+
+      const { stdout, stderr } = await runBuiltCommand(buildRefreshCommand, []);
+
+      expect(stdout).toContain("Refreshed 0 conversation(s)");
+      expect(stderr).toContain(
+        "Skipped 1 remote conversation pair(s) because of clogignore",
+      );
+      expect(stderr.match(/because of clogignore/g)).toHaveLength(1);
     });
   });
 

@@ -63,6 +63,16 @@ export interface ScannedPair {
   jsonlExists: boolean;
 }
 
+export interface ScanPairsOptions {
+  shouldDescend?: (entry: {
+    rootDir: string;
+    currentDir: string;
+    relativeDir: string;
+    entryName: string;
+    entryPath: string;
+  }) => boolean;
+}
+
 export interface ValidatedPair {
   rootDir: string;
   relativeDir: string;
@@ -177,11 +187,14 @@ export async function readPairMetadata(
   return parsePairMetadata(raw);
 }
 
-export async function scanPairs(dir: string): Promise<ScannedPair[]> {
+export async function scanPairs(
+  dir: string,
+  options: ScanPairsOptions = {},
+): Promise<ScannedPair[]> {
   const rootDir = path.resolve(dir);
   const groups = new Map<string, ScannedPair>();
 
-  await scanPairDir(rootDir, rootDir, groups);
+  await scanPairDir(rootDir, rootDir, groups, options);
 
   return [...groups.values()].sort((left, right) =>
     compareCodePoints(left.normalizedRelativePath, right.normalizedRelativePath),
@@ -293,6 +306,7 @@ async function scanPairDir(
   rootDir: string,
   currentDir: string,
   groups: Map<string, ScannedPair>,
+  options: ScanPairsOptions,
 ): Promise<void> {
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
 
@@ -306,12 +320,26 @@ async function scanPairDir(
   }
 
   entries.sort((left, right) => compareCodePoints(left.name, right.name));
+  const relativeDir = normalizeRelativeDir(
+    path.relative(rootDir, currentDir),
+  );
 
   for (const entry of entries) {
     const entryPath = path.join(currentDir, entry.name);
 
     if (entry.isDirectory()) {
-      await scanPairDir(rootDir, entryPath, groups);
+      if (
+        options.shouldDescend?.({
+          rootDir,
+          currentDir,
+          relativeDir,
+          entryName: entry.name,
+          entryPath,
+        }) === false
+      ) {
+        continue;
+      }
+      await scanPairDir(rootDir, entryPath, groups, options);
       continue;
     }
 
@@ -324,9 +352,6 @@ async function scanPairDir(
       continue;
     }
 
-    const relativeDir = normalizeRelativeDir(
-      path.relative(rootDir, currentDir),
-    );
     const normalizedRelativePath = relativeDir
       ? `${relativeDir}/${side.stem}`
       : side.stem;
