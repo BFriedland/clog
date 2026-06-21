@@ -5,6 +5,7 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import { isGitConversation, isNonLocalConversation, listConversations } from "../db/index.js";
+import { conversationToPairMetadata, pairMetadataSchema, writePair } from "../interchange/pairs.js";
 import type { Config } from "../config/schema.js";
 import type { ConversationMeta, ConversationState, Message } from "../models/conversation.js";
 import { pathExists } from "../utils/fs.js";
@@ -19,7 +20,7 @@ import { collectProjectDrainTargets } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
-type DrainFormat = "json" | "md";
+type DrainFormat = "json" | "md" | "pair";
 
 interface DrainOptions {
   to?: string;
@@ -54,11 +55,11 @@ interface DrainExport {
 
 export function buildDrainCommand(): Command {
   return new Command("drain")
-    .description("Export conversations as JSON, markdown, or raw source")
+    .description("Export conversations as JSON, markdown, pair files, or raw source")
     .argument("[selectors...]", "Conversation IDs or project selectors to export")
     .option("-o, --to <path>", "Write one exported conversation to this file path")
     .option("--to-dir <dir>", "Write one file per conversation to this directory")
-    .option("-f, --format <fmt>", "Output format: json or md")
+    .option("-f, --format <fmt>", "Output format: json, md, or pair")
     .option("--raw", "Emit the exact underlying source file")
     .option("--force", "Overwrite an existing output file or directory entry")
     .option("--refresh", "Refresh local discovery before resolving the export set")
@@ -84,8 +85,23 @@ async function runDrainCommand(selectors: string[], options: DrainOptions): Prom
     renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
-  const conversations = await resolveDrainConversations(selectors, options, config);
+  const { conversations, skippedDiscovered } = await resolveDrainConversations(
+    selectors,
+    options,
+    config,
+    format,
+  );
   if (conversations.length === 0) {
+    if (format === "pair" && skippedDiscovered > 0) {
+      throw new ClogError(
+        `No saved conversations to export as pairs. ${skippedDiscovered} matching conversation${
+          skippedDiscovered === 1 ? " is" : "s are"
+        } unsaved; save ${
+          skippedDiscovered === 1 ? "it" : "them"
+        } first with 'clog save', then retry.`,
+      );
+    }
+
     if (selectors.length > 0 && hasFilters) {
       throw new ClogError(
         "No conversations match the requested export. The supplied ID(s) and filter(s) did not overlap.",
@@ -104,6 +120,7 @@ async function runDrainCommand(selectors: string[], options: DrainOptions): Prom
       raw: options.raw === true,
       force: options.force === true,
       targetDir: options.toDir,
+      skippedDiscovered,
     });
     return;
   }
@@ -144,6 +161,13 @@ function validateDrainOptions(
     throw new UsageError("--force requires --to <path> or --to-dir <dir>.");
   }
 
+  if (format === "pair" && !options.toDir) {
+    if (options.to) {
+      throw new UsageError("--format pair requires --to-dir <dir>, not --to <path>.");
+    }
+    throw new UsageError("--format pair requires --to-dir <dir>.");
+  }
+
   if (!options.to && !options.toDir && selectors.length === 0 && !hasFilterOptions(options)) {
     throw new UsageError("clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.");
   }
@@ -163,11 +187,17 @@ function validateDrainOptions(
   }
 }
 
+interface ResolvedDrainConversations {
+  conversations: ConversationMeta[];
+  skippedDiscovered: number;
+}
+
 async function resolveDrainConversations(
   selectors: string[],
   options: DrainOptions,
   config: Config,
-): Promise<ConversationMeta[]> {
+  format: DrainFormat,
+): Promise<ResolvedDrainConversations> {
   const hasFilters = hasFilterOptions(options);
   const defaultScope = selectors.length === 0 && !hasFilters;
   const stateFilter = options.state as ConversationState | undefined;
@@ -191,12 +221,28 @@ async function resolveDrainConversations(
       })
     : null;
 
+  // Pair export targets saved rows. Discovered rows reached by a broad
+  // selection (a project selector or a filter) are dropped here; an explicitly
+  // named discovered ID is left in so it surfaces as a per-conversation failure.
+  const droppedDiscovered = new Set<string>();
+  const projectSelectionFilter =
+    format === "pair"
+      ? (conversation: ConversationMeta): boolean => {
+          if (conversation.state !== "saved") {
+            droppedDiscovered.add(conversation.id);
+            return false;
+          }
+          return true;
+        }
+      : undefined;
+
   const explicitConversations = selectors.length > 0
     ? resolveConversationSelectors({
         commandName: "clog drain",
         tokens: selectors,
         idCandidates: filteredConversations ?? (await listConversations()),
         projectCandidates: await collectProjectDrainTargets(filteredConversations),
+        projectSelectionFilter,
       })
     : null;
 
@@ -205,9 +251,26 @@ async function resolveDrainConversations(
     conversations = explicitConversations;
   } else {
     conversations = filteredConversations ?? [];
+
+    if (format === "pair") {
+      for (const conversation of conversations) {
+        if (conversation.state !== "saved") {
+          droppedDiscovered.add(conversation.id);
+        }
+      }
+      conversations = conversations.filter(
+        (conversation) => conversation.state === "saved",
+      );
+    }
   }
 
-  return dedupeAndSortConversations(conversations);
+  const deduped = dedupeAndSortConversations(conversations);
+  const keptIds = new Set(deduped.map((conversation) => conversation.id));
+  const skippedDiscovered = [...droppedDiscovered].filter(
+    (id) => !keptIds.has(id),
+  ).length;
+
+  return { conversations: deduped, skippedDiscovered };
 }
 
 async function drainToStdout(
@@ -294,6 +357,7 @@ async function drainToDirectory(
     raw: boolean;
     force: boolean;
     targetDir: string;
+    skippedDiscovered: number;
   },
 ): Promise<void> {
   try {
@@ -302,6 +366,11 @@ async function drainToDirectory(
     throw new ClogError(
       `Could not create export directory ${options.targetDir}: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+
+  if (options.format === "pair") {
+    await drainPairsToDirectory(conversations, options);
+    return;
   }
 
   const filenames = assignDrainFilenames(conversations, {
@@ -337,25 +406,119 @@ async function drainToDirectory(
       succeeded += 1;
     } catch (error) {
       failed += 1;
-      process.stderr.write(
-        `error: Could not drain ${conversation.id.slice(0, 8)}@${conversation.source}: ${
-          error instanceof Error ? error.message : String(error)
-        }\n`,
-      );
+      reportDirectoryDrainFailure(conversation, error);
     }
   }
 
-  const summaryTarget = options.targetDir.endsWith(path.sep)
-    ? options.targetDir
-    : `${options.targetDir}${path.sep}`;
-  const failureSuffix = failed > 0 ? ` (${failed} failed)` : "";
+  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedDiscovered);
+}
+
+async function drainPairsToDirectory(
+  conversations: ConversationMeta[],
+  options: {
+    config: Config;
+    force: boolean;
+    targetDir: string;
+    skippedDiscovered: number;
+  },
+): Promise<void> {
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const conversation of conversations) {
+    try {
+      await writeConversationPair(conversation, options);
+      succeeded += 1;
+    } catch (error) {
+      failed += 1;
+      reportDirectoryDrainFailure(conversation, error);
+    }
+  }
+
+  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedDiscovered);
+}
+
+function reportDirectoryDrainFailure(
+  conversation: ConversationMeta,
+  error: unknown,
+): void {
   process.stderr.write(
-    `Drained ${succeeded} conversation${succeeded === 1 ? "" : "s"} to ${summaryTarget}${failureSuffix}\n`,
+    `error: Could not drain ${conversation.id.slice(0, 8)}@${conversation.source}: ${
+      error instanceof Error ? error.message : String(error)
+    }\n`,
+  );
+}
+
+function reportDirectoryDrainSummary(
+  succeeded: number,
+  failed: number,
+  targetDir: string,
+  skippedDiscovered = 0,
+): void {
+  const summaryTarget = targetDir.endsWith(path.sep)
+    ? targetDir
+    : `${targetDir}${path.sep}`;
+  const noteParts: string[] = [];
+  if (failed > 0) {
+    noteParts.push(`${failed} failed`);
+  }
+  if (skippedDiscovered > 0) {
+    noteParts.push(`${skippedDiscovered} unsaved skipped`);
+  }
+  const note = noteParts.length > 0 ? ` (${noteParts.join(", ")})` : "";
+  process.stderr.write(
+    `Drained ${succeeded} conversation${succeeded === 1 ? "" : "s"} to ${summaryTarget}${note}\n`,
   );
 
   if (failed > 0) {
     process.exitCode = 1;
   }
+}
+
+async function writeConversationPair(
+  conversation: ConversationMeta,
+  options: {
+    config: Config;
+    force: boolean;
+    targetDir: string;
+  },
+): Promise<void> {
+  if (conversation.state !== "saved") {
+    throw new ClogError(
+      "Pair export requires saved conversations. Save this conversation before exporting it as a pair.",
+    );
+  }
+
+  const sourceDir = path.join(options.targetDir, conversation.source);
+  const jsonlPath = path.join(sourceDir, `${conversation.id}.jsonl`);
+  const metaPath = path.join(sourceDir, `${conversation.id}.meta.json`);
+
+  if (!options.force) {
+    const conflicts: string[] = [];
+    if (await pathExists(jsonlPath)) {
+      conflicts.push(jsonlPath);
+    }
+    if (await pathExists(metaPath)) {
+      conflicts.push(metaPath);
+    }
+
+    if (conflicts.length > 0) {
+      throw new ClogError(
+        `Output pair already exists: ${conflicts.join(", ")}. Use --force to overwrite it.`,
+      );
+    }
+  }
+
+  const meta = pairMetadataSchema.parse(conversationToPairMetadata(conversation));
+  await parseConversationMessages(options.config, conversation);
+  const rawContent = await readRawPayload(conversation);
+
+  await writePair({
+    jsonlPath,
+    metaPath,
+    jsonl: rawContent,
+    meta,
+  });
 }
 
 async function buildDrainExport(
@@ -624,10 +787,10 @@ function parseFormat(value?: string): DrainFormat {
   if (value == null) {
     return "json";
   }
-  if (value === "json" || value === "md") {
+  if (value === "json" || value === "md" || value === "pair") {
     return value;
   }
-  throw new UsageError(`--format must be "json" or "md", got "${value}".`);
+  throw new UsageError(`--format must be "json", "md", or "pair", got "${value}".`);
 }
 
 function parseOriginFilter(value?: string): "local" | "remote" | undefined {

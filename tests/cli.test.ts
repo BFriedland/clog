@@ -110,10 +110,12 @@ import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation, setConversationIndexedAt } from "../src/db/index.js";
+import { scanPairs, validatePair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
 import { getRemoteRoot } from "../src/sync/paths.js";
 import { ClogError } from "../src/utils/errors.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutputWithError } from "./helpers/output.js";
@@ -861,6 +863,487 @@ describe("cli", () => {
       );
     });
 
+    it("rejects pair export outside directory mode", async () => {
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--format", "pair"]),
+      ).rejects.toThrow(/--format pair requires --to-dir <dir>/i);
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, [
+          "d1111111",
+          "--format",
+          "pair",
+          "--to",
+          path.join(tempDir, "one-pair"),
+        ]),
+      ).rejects.toThrow(/--format pair requires --to-dir <dir>, not --to <path>/i);
+    });
+
+    it("exports saved local, git, and file rows as validated conversation pairs", async () => {
+      const localId = "db2b2b2b-2b2b-2b2b-2b2b-2b2b2b2b2b2b";
+      const gitId = "db3b3b3b-3b3b-3b3b-3b3b-3b3b3b3b3b3b";
+      const fileId = "db4b4b4b-4b4b-4b4b-4b4b-4b4b4b4b4b4b";
+      const localRaw = getRawConversationPath("claude-code", localId);
+      const gitRaw = path.join(tempDir, "git-drain-source.jsonl");
+      const fileRaw = path.join(tempDir, "file-drain-source.jsonl");
+
+      await writeMinimalClaudeJsonl(localRaw, "Local pair export");
+      await writeMinimalClaudeJsonl(gitRaw, "Git pair export");
+      await writeMinimalClaudeJsonl(fileRaw, "File pair export");
+
+      await insertConversation(
+        makeConversation({
+          id: localId,
+          sourceId: localId,
+          state: "saved",
+          filePath: localRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Local pair export",
+          tags: ["pair-export"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: gitId,
+          sourceId: gitId,
+          state: "saved",
+          sourcePath: gitRaw,
+          filePath: gitRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Git pair export",
+          tags: ["pair-export"],
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          state: "saved",
+          sourcePath: fileRaw,
+          filePath: fileRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "File pair export",
+          tags: ["pair-export"],
+          originKind: "file",
+          originRef: null,
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-export");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-export",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBeUndefined();
+      const { stderr } = result;
+      expect(stderr).toContain(`Drained 3 conversations to ${outDir}/`);
+
+      for (const [id, rawPath] of [
+        [localId, localRaw],
+        [gitId, gitRaw],
+        [fileId, fileRaw],
+      ] as const) {
+        const exportedJsonl = path.join(outDir, "claude-code", `${id}.jsonl`);
+        const exportedMeta = path.join(outDir, "claude-code", `${id}.meta.json`);
+        await expect(fs.readFile(exportedJsonl)).resolves.toEqual(await fs.readFile(rawPath));
+
+        const meta = JSON.parse(await fs.readFile(exportedMeta, "utf8")) as Record<string, unknown>;
+        expect(meta).toMatchObject({
+          id,
+          source: "claude-code",
+          savedAt: "2026-02-01T10:05:00.000Z",
+        });
+        expect(meta).not.toHaveProperty("originKind");
+        expect(meta).not.toHaveProperty("originRef");
+        expect(meta).not.toHaveProperty("projectPath");
+        expect(meta).not.toHaveProperty("sourcePath");
+        expect(meta).not.toHaveProperty("filePath");
+        expect(meta).not.toHaveProperty("savedMessageCount");
+        expect(meta).not.toHaveProperty("indexedAt");
+      }
+
+      const pairs = await scanPairs(outDir);
+      expect(pairs.map((pair) => pair.normalizedRelativePath).sort()).toEqual([
+        `claude-code/${localId}`,
+        `claude-code/${gitId}`,
+        `claude-code/${fileId}`,
+      ].sort());
+
+      const config = await loadConfig();
+      for (const pair of pairs) {
+        const validation = await validatePair(pair, config);
+        expect(validation.kind).toBe("valid");
+      }
+    });
+
+    it("fails pair export before writing when content or metadata would not validate", async () => {
+      const invalidContentId = "dbabbabb-abab-abab-abab-dbabbabbabab";
+      const invalidMetaId = "dbaccacc-acac-acac-acac-dbaccaccacac";
+      const invalidContentRaw = getRawConversationPath("claude-code", invalidContentId);
+      const invalidMetaRaw = getRawConversationPath("claude-code", invalidMetaId);
+
+      await fs.mkdir(path.dirname(invalidContentRaw), { recursive: true });
+      await fs.mkdir(path.dirname(invalidMetaRaw), { recursive: true });
+      await fs.writeFile(invalidContentRaw, "{not json\n", "utf8");
+      await writeMinimalClaudeJsonl(invalidMetaRaw, "Invalid pair metadata");
+
+      await insertConversation(
+        makeConversation({
+          id: invalidContentId,
+          sourceId: invalidContentId,
+          state: "saved",
+          filePath: invalidContentRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          tags: ["pair-invalid"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: invalidMetaId,
+          sourceId: invalidMetaId,
+          state: "saved",
+          filePath: invalidMetaRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          modifiedAt: "not-a-time",
+          saveVersion: 1,
+          tags: ["pair-invalid"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-invalid");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-invalid",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbabbabb@claude-code");
+      expect(stderr).toContain("Could not drain dbaccacc@claude-code");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (2 failed)`);
+      for (const id of [invalidContentId, invalidMetaId]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.jsonl`)),
+        ).rejects.toThrow();
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("skips discovered rows matched by a broad selector and still exits 0", async () => {
+      const savedId = "db5b5b5b-5b5b-5b5b-5b5b-5b5b5b5b5b5b";
+      const discoveredA = "db6b6b6b-6b6b-6b6b-6b6b-6b6b6b6b6b6b";
+      const discoveredB = "db6c6c6c-6c6c-6c6c-6c6c-6c6c6c6c6c6c";
+      const savedRaw = getRawConversationPath("claude-code", savedId);
+      const discoveredSourceA = path.join(sourceDir, `${discoveredA}.jsonl`);
+      const discoveredSourceB = path.join(sourceDir, `${discoveredB}.jsonl`);
+
+      await writeMinimalClaudeJsonl(savedRaw, "Saved pair");
+      await writeMinimalClaudeJsonl(discoveredSourceA, "Discovered pair A");
+      await writeMinimalClaudeJsonl(discoveredSourceB, "Discovered pair B");
+
+      await insertConversation(
+        makeConversation({
+          id: savedId,
+          sourceId: savedId,
+          state: "saved",
+          filePath: savedRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Saved pair",
+          tags: ["pair-partial"],
+        }),
+      );
+      for (const [id, source] of [
+        [discoveredA, discoveredSourceA],
+        [discoveredB, discoveredSourceB],
+      ] as const) {
+        await insertConversation(
+          makeConversation({
+            id,
+            sourceId: id,
+            state: "discovered",
+            sourcePath: source,
+            title: "Discovered pair",
+            tags: ["pair-partial"],
+          }),
+        );
+      }
+
+      const outDir = path.join(tempDir, "pair-partial");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-partial",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBeUndefined();
+      const { stderr } = result;
+      expect(stderr).not.toContain("Could not drain");
+      expect(stderr).not.toContain("failed");
+      expect(stderr).toContain(`Drained 1 conversation to ${outDir}/ (2 unsaved skipped)`);
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${savedId}.meta.json`)),
+      ).resolves.toBeUndefined();
+      for (const id of [discoveredA, discoveredB]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("fails an explicitly named discovered conversation and exits 1", async () => {
+      const discoveredId = "dbdddddd-dddd-dddd-dddd-dddddddddddd";
+      const discoveredSource = path.join(sourceDir, `${discoveredId}.jsonl`);
+      await writeMinimalClaudeJsonl(discoveredSource, "Explicit discovered pair");
+      await insertConversation(
+        makeConversation({
+          id: discoveredId,
+          sourceId: discoveredId,
+          state: "discovered",
+          sourcePath: discoveredSource,
+          title: "Explicit discovered pair",
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-explicit-discovered");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        discoveredId,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbdddddd@claude-code");
+      expect(stderr).toContain("Pair export requires saved conversations");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (1 failed)`);
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${discoveredId}.meta.json`)),
+      ).rejects.toThrow();
+    });
+
+    it("reports failures and project-selector discovered skips in one summary", async () => {
+      const savedId = "dbc1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1";
+      const skippedId = "dbc2c2c2-c2c2-c2c2-c2c2-c2c2c2c2c2c2";
+      const failedId = "dbc3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3";
+      const savedRaw = getRawConversationPath("claude-code", savedId);
+      const skippedSource = path.join(sourceDir, `${skippedId}.jsonl`);
+      const failedSource = path.join(sourceDir, `${failedId}.jsonl`);
+
+      await writeMinimalClaudeJsonl(savedRaw, "Saved combo pair");
+      await writeMinimalClaudeJsonl(skippedSource, "Skipped combo pair");
+      await writeMinimalClaudeJsonl(failedSource, "Failed combo pair");
+
+      await insertConversation(
+        makeConversation({
+          id: savedId,
+          sourceId: savedId,
+          state: "saved",
+          filePath: savedRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Saved combo pair",
+          projectName: "pair-combo",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: skippedId,
+          sourceId: skippedId,
+          state: "discovered",
+          sourcePath: skippedSource,
+          title: "Skipped combo pair",
+          projectName: "pair-combo",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: failedId,
+          sourceId: failedId,
+          state: "discovered",
+          sourcePath: failedSource,
+          title: "Failed combo pair",
+          projectName: "other-combo",
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-combo");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "project:pair-combo",
+        failedId,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbc3c3c3@claude-code");
+      expect(stderr).toContain(
+        `Drained 1 conversation to ${outDir}/ (1 failed, 1 unsaved skipped)`,
+      );
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${savedId}.meta.json`)),
+      ).resolves.toBeUndefined();
+      for (const id of [skippedId, failedId]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("errors with a saved-specific message when a broad selection matches only discovered rows", async () => {
+      const discoveredId = "db7c7c7c-7c7c-7c7c-7c7c-7c7c7c7c7c7c";
+      const discoveredSource = path.join(sourceDir, `${discoveredId}.jsonl`);
+      await writeMinimalClaudeJsonl(discoveredSource, "Discovered only");
+      await insertConversation(
+        makeConversation({
+          id: discoveredId,
+          sourceId: discoveredId,
+          state: "discovered",
+          sourcePath: discoveredSource,
+          title: "Discovered only",
+          tags: ["pair-empty"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-empty");
+      await expect(
+        runBuiltCommand(buildDrainCommand, [
+          "--tag",
+          "pair-empty",
+          "--format",
+          "pair",
+          "--to-dir",
+          outDir,
+        ]),
+      ).rejects.toThrow(/No saved conversations to export as pairs/i);
+      await expect(fs.access(outDir)).rejects.toThrow();
+    });
+
+    it("treats either side of an existing destination pair as a no-force conflict", async () => {
+      const metaConflictId = "db7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b7b";
+      const jsonlConflictId = "db8b8b8b-8b8b-8b8b-8b8b-8b8b8b8b8b8b";
+
+      for (const id of [metaConflictId, jsonlConflictId]) {
+        const rawPath = getRawConversationPath("claude-code", id);
+        await writeMinimalClaudeJsonl(rawPath, `Conflict ${id}`);
+        await insertConversation(
+          makeConversation({
+            id,
+            sourceId: id,
+            state: "saved",
+            filePath: rawPath,
+            savedAt: "2026-02-01T10:05:00.000Z",
+            saveVersion: 1,
+            tags: ["pair-conflict"],
+          }),
+        );
+      }
+
+      const outDir = path.join(tempDir, "pair-conflicts");
+      const sourceOutDir = path.join(outDir, "claude-code");
+      await fs.mkdir(sourceOutDir, { recursive: true });
+      const existingMeta = path.join(sourceOutDir, `${metaConflictId}.meta.json`);
+      const existingJsonl = path.join(sourceOutDir, `${jsonlConflictId}.jsonl`);
+      await fs.writeFile(existingMeta, '{"existing":true}\n', "utf8");
+      await fs.writeFile(existingJsonl, "existing jsonl\n", "utf8");
+
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-conflict",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Output pair already exists");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (2 failed)`);
+      expect(await fs.readFile(existingMeta, "utf8")).toBe('{"existing":true}\n');
+      expect(await fs.readFile(existingJsonl, "utf8")).toBe("existing jsonl\n");
+      await expect(
+        fs.access(path.join(sourceOutDir, `${metaConflictId}.jsonl`)),
+      ).rejects.toThrow();
+      await expect(
+        fs.access(path.join(sourceOutDir, `${jsonlConflictId}.meta.json`)),
+      ).rejects.toThrow();
+    });
+
+    it("uses the shared pair writer for forced pair replacement", async () => {
+      const id = "db9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
+      const rawPath = getRawConversationPath("claude-code", id);
+      await writeMinimalClaudeJsonl(rawPath, "Forced pair");
+      await insertConversation(
+        makeConversation({
+          id,
+          sourceId: id,
+          state: "saved",
+          filePath: rawPath,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-force");
+      const sourceOutDir = path.join(outDir, "claude-code");
+      await fs.mkdir(sourceOutDir, { recursive: true });
+      await fs.writeFile(path.join(sourceOutDir, `${id}.jsonl`), "old\n", "utf8");
+      await fs.writeFile(path.join(sourceOutDir, `${id}.meta.json`), "{}\n", "utf8");
+
+      const calls: string[] = [];
+      const spy = vi
+        .spyOn(atomicWrite, "writeFileAtomic")
+        .mockImplementation(async (filePath: string) => {
+          calls.push(path.basename(filePath));
+        });
+
+      await runBuiltCommand(buildDrainCommand, [
+        id,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+        "--force",
+      ]);
+
+      expect(spy).toHaveBeenCalled();
+      expect(
+        calls.filter((name) => name === `${id}.jsonl` || name === `${id}.meta.json`),
+      ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+    });
+
     it("serializes drain JSON with the documented top-level field order", async () => {
       const convId = "db1b1b1b-1b1b-1b1b-1b1b-1b1b1b1b1b1b";
       const rawPath = getRawConversationPath("claude-code", convId);
@@ -906,7 +1389,7 @@ describe("cli", () => {
     it("validates --format, --origin, and output-flag usage errors", async () => {
       await expect(
         runBuiltCommand(buildDrainCommand, ["d1111111", "--format", "yaml"]),
-      ).rejects.toThrow(/--format must be "json" or "md"/i);
+      ).rejects.toThrow(/--format must be "json", "md", or "pair"/i);
       await expect(
         runBuiltCommand(buildDrainCommand, ["d1111111", "--origin", "somewhere"]),
       ).rejects.toThrow(/--origin must be "local" or "remote"/i);
@@ -3122,16 +3605,22 @@ async function runBuiltCommand(
 async function runBuiltCommandCapturingError(
   builder: () => Command,
   args: string[],
-): Promise<{ stdout: string; stderr: string; error: unknown }> {
+): Promise<{
+  stdout: string;
+  stderr: string;
+  error: unknown;
+  exitCode: typeof process.exitCode;
+}> {
   const previousExitCode = process.exitCode;
   process.exitCode = undefined;
 
   try {
-    return await captureOutputWithError(async () => {
+    const result = await captureOutputWithError(async () => {
       const cmd = builder();
       cmd.exitOverride();
       await cmd.parseAsync(args, { from: "user" });
     });
+    return { ...result, exitCode: process.exitCode };
   } finally {
     process.exitCode = previousExitCode;
   }
