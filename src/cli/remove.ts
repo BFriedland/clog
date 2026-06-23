@@ -1,10 +1,15 @@
 import { Command } from "commander";
 
-import { deleteConversation, isLocalConversation, listConversations } from "../db/index.js";
+import { deleteConversation, isFileConversation, isLocalConversation, listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { ClogError, UsageError } from "../utils/errors.js";
-import { confirm, pathExists, removeRawCopyIfPresent } from "./common.js";
+import {
+  confirm,
+  hasReadableIndependentSource,
+  removeImportCopyIfPresent,
+  removeRawCopyIfPresent,
+} from "./common.js";
 import { conversationMatchesAnyClogIgnoreRule, isRecognizedClogIgnoreRule } from "./clogignore.js";
 
 interface RemoveOptions {
@@ -55,6 +60,8 @@ export function buildRemoveCommand(): Command {
       for (const conversation of matches) {
         if (isLocalConversation(conversation)) {
           await removeRawCopyIfPresent(conversation);
+        } else if (isFileConversation(conversation)) {
+          await removeImportCopyIfPresent(conversation);
         }
         await deleteConversation(conversation.id);
       }
@@ -101,7 +108,7 @@ async function countSavedRowsWithMissingSources(
     if (
       isLocalConversation(conversation) &&
       conversation.state === "saved" &&
-      !(await pathExists(conversation.sourcePath))
+      !(await hasReadableIndependentSource(conversation))
     ) {
       count += 1;
     }
@@ -139,7 +146,7 @@ function renderRemovalPreview(
   }
 
   lines.push(
-    "This deletes clog metadata, summaries, tags, search vectors, and any local raw copies for these conversations.",
+    "This deletes clog metadata, summaries, tags, search vectors, and managed copies under raw/ or imports/ for these conversations.",
   );
   lines.push("Source files under ~/.claude and ~/.codex are not modified.");
   lines.push("");

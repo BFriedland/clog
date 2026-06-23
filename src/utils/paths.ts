@@ -46,6 +46,10 @@ export function getRawRoot(): string {
   return path.join(getClogHome(), "raw");
 }
 
+export function getImportsRoot(): string {
+  return path.join(getClogHome(), "imports");
+}
+
 export function getVectorsRoot(): string {
   return path.join(getClogHome(), "vectors");
 }
@@ -56,6 +60,14 @@ export function getRawSourceDir(source: string): string {
 
 export function getRawConversationPath(source: string, id: string): string {
   return path.join(getRawSourceDir(source), `${id}.jsonl`);
+}
+
+export function getImportSourceDir(source: string): string {
+  return path.join(getImportsRoot(), source);
+}
+
+export function getImportConversationPath(source: string, id: string): string {
+  return path.join(getImportSourceDir(source), `${id}.jsonl`);
 }
 
 export function getDefaultSourcePaths(source: BuiltinSource): string[] {

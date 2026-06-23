@@ -15,10 +15,13 @@ import { UsageError } from "../utils/errors.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
+  confirm,
   defaultSaveFilePath,
   ensureRawCopy,
   getScanWarningsForCommand,
   getSaveCandidate,
+  isLikelyRestoredLocalConversation,
+  pathsIdentifySameManagedCopy,
   parseConversationMessagesFromPath,
   renderWarnings,
   SourceFileMissingError,
@@ -72,6 +75,10 @@ export function buildSaveCommand(): Command {
               ? defaultSaveFilePath(conversation)
               : conversation.filePath;
 
+          if (!(await confirmRestoredOverwriteIfNeeded(conversation, candidate))) {
+            continue;
+          }
+
           if (candidate.shouldRefreshRawCopy) {
             await ensureRawCopy(conversation);
           }
@@ -120,6 +127,38 @@ export function buildSaveCommand(): Command {
       await maybePrintUnindexedHint(config);
       await maybePrintSummarizationHint();
     });
+}
+
+// CR-05/06: a save that would replace filled/restored content with a discovered
+// local source version must confirm before overwriting the managed copy. This is
+// reachable today — the scan at the top of `clog save` re-attaches a live
+// sourcePath to a restored `fill --own` row (leaving projectPath null), so a
+// continued source makes sourcePath and filePath diverge and trips this branch.
+// Off a TTY, confirm() returns false, so we skip rather than overwrite. Completing
+// re-attachment per CR-05 (also setting projectPath) would make
+// isLikelyRestoredLocalConversation false and disable this guard; the coupling is
+// pinned by tests/save-restored-overwrite.test.ts.
+async function confirmRestoredOverwriteIfNeeded(
+  conversation: ConversationMeta,
+  candidate: { shouldRefreshRawCopy: boolean },
+): Promise<boolean> {
+  if (
+    !candidate.shouldRefreshRawCopy ||
+    !isLikelyRestoredLocalConversation(conversation) ||
+    pathsIdentifySameManagedCopy(conversation.sourcePath, conversation.filePath)
+  ) {
+    return true;
+  }
+
+  const accepted = await confirm(
+    `Conversation ${conversation.id.slice(0, 8)} was restored from pair files. Refreshing it will overwrite the managed raw copy with the discovered local source file. Continue?`,
+  );
+  if (!accepted) {
+    process.stdout.write(
+      `Skipped ${conversation.id.slice(0, 8)}; restored content was left unchanged.\n`,
+    );
+  }
+  return accepted;
 }
 
 async function printSaveIndexingOutcome(
