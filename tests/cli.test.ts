@@ -97,7 +97,7 @@ import { buildPathCommand } from "../src/cli/path.js";
 import { buildSaveCommand } from "../src/cli/save.js";
 import { buildRefreshCommand } from "../src/cli/refresh.js";
 import { buildRemoteCommand } from "../src/cli/remote.js";
-import { buildRenameAuthorCommand } from "../src/cli/rename-author.js";
+import { buildRenameAuthorCommand, runRenameAuthor } from "../src/cli/rename-author.js";
 import { buildShowCommand } from "../src/cli/show.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildSummarizeCommand, buildTalkCommand } from "../src/cli/talk.js";
@@ -110,9 +110,12 @@ import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById, insertConversation, setConversationIndexedAt } from "../src/db/index.js";
+import { scanPairs, validatePair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
+import { getRemoteRoot } from "../src/sync/paths.js";
 import { ClogError } from "../src/utils/errors.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutputWithError } from "./helpers/output.js";
@@ -462,11 +465,11 @@ describe("cli", () => {
       ).rejects.toThrow(/No conversation matches/);
     });
 
-    it("refuses to edit a remote conversation (SPEC §11.1)", async () => {
+    it("refuses to edit an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("14141414-1414-1414-1414-141414141414");
       await expect(
         runBuiltCommand(buildEditCommand, [conv.id, "--title", "x"]),
-      ).rejects.toThrow(/remote/i);
+      ).rejects.toThrow(/imported conversations are read-only/i);
     });
 
     it("leaves indexedAt untouched when search is not configured (SPEC §10.8.1)", async () => {
@@ -860,6 +863,487 @@ describe("cli", () => {
       );
     });
 
+    it("rejects pair export outside directory mode", async () => {
+      await expect(
+        runBuiltCommand(buildDrainCommand, ["d1111111", "--format", "pair"]),
+      ).rejects.toThrow(/--format pair requires --to-dir <dir>/i);
+
+      await expect(
+        runBuiltCommand(buildDrainCommand, [
+          "d1111111",
+          "--format",
+          "pair",
+          "--to",
+          path.join(tempDir, "one-pair"),
+        ]),
+      ).rejects.toThrow(/--format pair requires --to-dir <dir>, not --to <path>/i);
+    });
+
+    it("exports saved local, git, and file rows as validated conversation pairs", async () => {
+      const localId = "db2b2b2b-2b2b-2b2b-2b2b-2b2b2b2b2b2b";
+      const gitId = "db3b3b3b-3b3b-3b3b-3b3b-3b3b3b3b3b3b";
+      const fileId = "db4b4b4b-4b4b-4b4b-4b4b-4b4b4b4b4b4b";
+      const localRaw = getRawConversationPath("claude-code", localId);
+      const gitRaw = path.join(tempDir, "git-drain-source.jsonl");
+      const fileRaw = path.join(tempDir, "file-drain-source.jsonl");
+
+      await writeMinimalClaudeJsonl(localRaw, "Local pair export");
+      await writeMinimalClaudeJsonl(gitRaw, "Git pair export");
+      await writeMinimalClaudeJsonl(fileRaw, "File pair export");
+
+      await insertConversation(
+        makeConversation({
+          id: localId,
+          sourceId: localId,
+          state: "saved",
+          filePath: localRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Local pair export",
+          tags: ["pair-export"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: gitId,
+          sourceId: gitId,
+          state: "saved",
+          sourcePath: gitRaw,
+          filePath: gitRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Git pair export",
+          tags: ["pair-export"],
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          state: "saved",
+          sourcePath: fileRaw,
+          filePath: fileRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "File pair export",
+          tags: ["pair-export"],
+          originKind: "file",
+          originRef: null,
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-export");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-export",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBeUndefined();
+      const { stderr } = result;
+      expect(stderr).toContain(`Drained 3 conversations to ${outDir}/`);
+
+      for (const [id, rawPath] of [
+        [localId, localRaw],
+        [gitId, gitRaw],
+        [fileId, fileRaw],
+      ] as const) {
+        const exportedJsonl = path.join(outDir, "claude-code", `${id}.jsonl`);
+        const exportedMeta = path.join(outDir, "claude-code", `${id}.meta.json`);
+        await expect(fs.readFile(exportedJsonl)).resolves.toEqual(await fs.readFile(rawPath));
+
+        const meta = JSON.parse(await fs.readFile(exportedMeta, "utf8")) as Record<string, unknown>;
+        expect(meta).toMatchObject({
+          id,
+          source: "claude-code",
+          savedAt: "2026-02-01T10:05:00.000Z",
+        });
+        expect(meta).not.toHaveProperty("originKind");
+        expect(meta).not.toHaveProperty("originRef");
+        expect(meta).not.toHaveProperty("projectPath");
+        expect(meta).not.toHaveProperty("sourcePath");
+        expect(meta).not.toHaveProperty("filePath");
+        expect(meta).not.toHaveProperty("savedMessageCount");
+        expect(meta).not.toHaveProperty("indexedAt");
+      }
+
+      const pairs = await scanPairs(outDir);
+      expect(pairs.map((pair) => pair.normalizedRelativePath).sort()).toEqual([
+        `claude-code/${localId}`,
+        `claude-code/${gitId}`,
+        `claude-code/${fileId}`,
+      ].sort());
+
+      const config = await loadConfig();
+      for (const pair of pairs) {
+        const validation = await validatePair(pair, config);
+        expect(validation.kind).toBe("valid");
+      }
+    });
+
+    it("fails pair export before writing when content or metadata would not validate", async () => {
+      const invalidContentId = "dbabbabb-abab-abab-abab-dbabbabbabab";
+      const invalidMetaId = "dbaccacc-acac-acac-acac-dbaccaccacac";
+      const invalidContentRaw = getRawConversationPath("claude-code", invalidContentId);
+      const invalidMetaRaw = getRawConversationPath("claude-code", invalidMetaId);
+
+      await fs.mkdir(path.dirname(invalidContentRaw), { recursive: true });
+      await fs.mkdir(path.dirname(invalidMetaRaw), { recursive: true });
+      await fs.writeFile(invalidContentRaw, "{not json\n", "utf8");
+      await writeMinimalClaudeJsonl(invalidMetaRaw, "Invalid pair metadata");
+
+      await insertConversation(
+        makeConversation({
+          id: invalidContentId,
+          sourceId: invalidContentId,
+          state: "saved",
+          filePath: invalidContentRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          tags: ["pair-invalid"],
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: invalidMetaId,
+          sourceId: invalidMetaId,
+          state: "saved",
+          filePath: invalidMetaRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          modifiedAt: "not-a-time",
+          saveVersion: 1,
+          tags: ["pair-invalid"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-invalid");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-invalid",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbabbabb@claude-code");
+      expect(stderr).toContain("Could not drain dbaccacc@claude-code");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (2 failed)`);
+      for (const id of [invalidContentId, invalidMetaId]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.jsonl`)),
+        ).rejects.toThrow();
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("skips discovered rows matched by a broad selector and still exits 0", async () => {
+      const savedId = "db5b5b5b-5b5b-5b5b-5b5b-5b5b5b5b5b5b";
+      const discoveredA = "db6b6b6b-6b6b-6b6b-6b6b-6b6b6b6b6b6b";
+      const discoveredB = "db6c6c6c-6c6c-6c6c-6c6c-6c6c6c6c6c6c";
+      const savedRaw = getRawConversationPath("claude-code", savedId);
+      const discoveredSourceA = path.join(sourceDir, `${discoveredA}.jsonl`);
+      const discoveredSourceB = path.join(sourceDir, `${discoveredB}.jsonl`);
+
+      await writeMinimalClaudeJsonl(savedRaw, "Saved pair");
+      await writeMinimalClaudeJsonl(discoveredSourceA, "Discovered pair A");
+      await writeMinimalClaudeJsonl(discoveredSourceB, "Discovered pair B");
+
+      await insertConversation(
+        makeConversation({
+          id: savedId,
+          sourceId: savedId,
+          state: "saved",
+          filePath: savedRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Saved pair",
+          tags: ["pair-partial"],
+        }),
+      );
+      for (const [id, source] of [
+        [discoveredA, discoveredSourceA],
+        [discoveredB, discoveredSourceB],
+      ] as const) {
+        await insertConversation(
+          makeConversation({
+            id,
+            sourceId: id,
+            state: "discovered",
+            sourcePath: source,
+            title: "Discovered pair",
+            tags: ["pair-partial"],
+          }),
+        );
+      }
+
+      const outDir = path.join(tempDir, "pair-partial");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-partial",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBeUndefined();
+      const { stderr } = result;
+      expect(stderr).not.toContain("Could not drain");
+      expect(stderr).not.toContain("failed");
+      expect(stderr).toContain(`Drained 1 conversation to ${outDir}/ (2 unsaved skipped)`);
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${savedId}.meta.json`)),
+      ).resolves.toBeUndefined();
+      for (const id of [discoveredA, discoveredB]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("fails an explicitly named discovered conversation and exits 1", async () => {
+      const discoveredId = "dbdddddd-dddd-dddd-dddd-dddddddddddd";
+      const discoveredSource = path.join(sourceDir, `${discoveredId}.jsonl`);
+      await writeMinimalClaudeJsonl(discoveredSource, "Explicit discovered pair");
+      await insertConversation(
+        makeConversation({
+          id: discoveredId,
+          sourceId: discoveredId,
+          state: "discovered",
+          sourcePath: discoveredSource,
+          title: "Explicit discovered pair",
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-explicit-discovered");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        discoveredId,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbdddddd@claude-code");
+      expect(stderr).toContain("Pair export requires saved conversations");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (1 failed)`);
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${discoveredId}.meta.json`)),
+      ).rejects.toThrow();
+    });
+
+    it("reports failures and project-selector discovered skips in one summary", async () => {
+      const savedId = "dbc1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1";
+      const skippedId = "dbc2c2c2-c2c2-c2c2-c2c2-c2c2c2c2c2c2";
+      const failedId = "dbc3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3";
+      const savedRaw = getRawConversationPath("claude-code", savedId);
+      const skippedSource = path.join(sourceDir, `${skippedId}.jsonl`);
+      const failedSource = path.join(sourceDir, `${failedId}.jsonl`);
+
+      await writeMinimalClaudeJsonl(savedRaw, "Saved combo pair");
+      await writeMinimalClaudeJsonl(skippedSource, "Skipped combo pair");
+      await writeMinimalClaudeJsonl(failedSource, "Failed combo pair");
+
+      await insertConversation(
+        makeConversation({
+          id: savedId,
+          sourceId: savedId,
+          state: "saved",
+          filePath: savedRaw,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Saved combo pair",
+          projectName: "pair-combo",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: skippedId,
+          sourceId: skippedId,
+          state: "discovered",
+          sourcePath: skippedSource,
+          title: "Skipped combo pair",
+          projectName: "pair-combo",
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: failedId,
+          sourceId: failedId,
+          state: "discovered",
+          sourcePath: failedSource,
+          title: "Failed combo pair",
+          projectName: "other-combo",
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-combo");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "project:pair-combo",
+        failedId,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Could not drain dbc3c3c3@claude-code");
+      expect(stderr).toContain(
+        `Drained 1 conversation to ${outDir}/ (1 failed, 1 unsaved skipped)`,
+      );
+      await expect(
+        fs.access(path.join(outDir, "claude-code", `${savedId}.meta.json`)),
+      ).resolves.toBeUndefined();
+      for (const id of [skippedId, failedId]) {
+        await expect(
+          fs.access(path.join(outDir, "claude-code", `${id}.meta.json`)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("errors with a saved-specific message when a broad selection matches only discovered rows", async () => {
+      const discoveredId = "db7c7c7c-7c7c-7c7c-7c7c-7c7c7c7c7c7c";
+      const discoveredSource = path.join(sourceDir, `${discoveredId}.jsonl`);
+      await writeMinimalClaudeJsonl(discoveredSource, "Discovered only");
+      await insertConversation(
+        makeConversation({
+          id: discoveredId,
+          sourceId: discoveredId,
+          state: "discovered",
+          sourcePath: discoveredSource,
+          title: "Discovered only",
+          tags: ["pair-empty"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-empty");
+      await expect(
+        runBuiltCommand(buildDrainCommand, [
+          "--tag",
+          "pair-empty",
+          "--format",
+          "pair",
+          "--to-dir",
+          outDir,
+        ]),
+      ).rejects.toThrow(/No saved conversations to export as pairs/i);
+      await expect(fs.access(outDir)).rejects.toThrow();
+    });
+
+    it("treats either side of an existing destination pair as a no-force conflict", async () => {
+      const metaConflictId = "db7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b7b";
+      const jsonlConflictId = "db8b8b8b-8b8b-8b8b-8b8b-8b8b8b8b8b8b";
+
+      for (const id of [metaConflictId, jsonlConflictId]) {
+        const rawPath = getRawConversationPath("claude-code", id);
+        await writeMinimalClaudeJsonl(rawPath, `Conflict ${id}`);
+        await insertConversation(
+          makeConversation({
+            id,
+            sourceId: id,
+            state: "saved",
+            filePath: rawPath,
+            savedAt: "2026-02-01T10:05:00.000Z",
+            saveVersion: 1,
+            tags: ["pair-conflict"],
+          }),
+        );
+      }
+
+      const outDir = path.join(tempDir, "pair-conflicts");
+      const sourceOutDir = path.join(outDir, "claude-code");
+      await fs.mkdir(sourceOutDir, { recursive: true });
+      const existingMeta = path.join(sourceOutDir, `${metaConflictId}.meta.json`);
+      const existingJsonl = path.join(sourceOutDir, `${jsonlConflictId}.jsonl`);
+      await fs.writeFile(existingMeta, '{"existing":true}\n', "utf8");
+      await fs.writeFile(existingJsonl, "existing jsonl\n", "utf8");
+
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        "--tag",
+        "pair-conflict",
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBe(1);
+      const { stderr } = result;
+      expect(stderr).toContain("Output pair already exists");
+      expect(stderr).toContain(`Drained 0 conversations to ${outDir}/ (2 failed)`);
+      expect(await fs.readFile(existingMeta, "utf8")).toBe('{"existing":true}\n');
+      expect(await fs.readFile(existingJsonl, "utf8")).toBe("existing jsonl\n");
+      await expect(
+        fs.access(path.join(sourceOutDir, `${metaConflictId}.jsonl`)),
+      ).rejects.toThrow();
+      await expect(
+        fs.access(path.join(sourceOutDir, `${jsonlConflictId}.meta.json`)),
+      ).rejects.toThrow();
+    });
+
+    it("uses the shared pair writer for forced pair replacement", async () => {
+      const id = "db9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
+      const rawPath = getRawConversationPath("claude-code", id);
+      await writeMinimalClaudeJsonl(rawPath, "Forced pair");
+      await insertConversation(
+        makeConversation({
+          id,
+          sourceId: id,
+          state: "saved",
+          filePath: rawPath,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-force");
+      const sourceOutDir = path.join(outDir, "claude-code");
+      await fs.mkdir(sourceOutDir, { recursive: true });
+      await fs.writeFile(path.join(sourceOutDir, `${id}.jsonl`), "old\n", "utf8");
+      await fs.writeFile(path.join(sourceOutDir, `${id}.meta.json`), "{}\n", "utf8");
+
+      const calls: string[] = [];
+      const spy = vi
+        .spyOn(atomicWrite, "writeFileAtomic")
+        .mockImplementation(async (filePath: string) => {
+          calls.push(path.basename(filePath));
+        });
+
+      await runBuiltCommand(buildDrainCommand, [
+        id,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+        "--force",
+      ]);
+
+      expect(spy).toHaveBeenCalled();
+      expect(
+        calls.filter((name) => name === `${id}.jsonl` || name === `${id}.meta.json`),
+      ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+    });
+
     it("serializes drain JSON with the documented top-level field order", async () => {
       const convId = "db1b1b1b-1b1b-1b1b-1b1b-1b1b1b1b1b1b";
       const rawPath = getRawConversationPath("claude-code", convId);
@@ -905,7 +1389,7 @@ describe("cli", () => {
     it("validates --format, --origin, and output-flag usage errors", async () => {
       await expect(
         runBuiltCommand(buildDrainCommand, ["d1111111", "--format", "yaml"]),
-      ).rejects.toThrow(/--format must be "json" or "md"/i);
+      ).rejects.toThrow(/--format must be "json", "md", or "pair"/i);
       await expect(
         runBuiltCommand(buildDrainCommand, ["d1111111", "--origin", "somewhere"]),
       ).rejects.toThrow(/--origin must be "local" or "remote"/i);
@@ -1086,20 +1570,20 @@ describe("cli", () => {
       expect(reloaded?.modifiedAt).toBe(original);
     });
 
-    it("tag refuses a remote conversation (SPEC §11.1)", async () => {
+    it("tag refuses an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("25252525-2525-2525-2525-252525252525");
       await expect(runBuiltCommand(buildTagCommand, [conv.id, "x"])).rejects.toThrow(
-        /remote/i,
+        /imported conversations are read-only/i,
       );
     });
 
-    it("untag refuses a remote conversation (SPEC §11.1)", async () => {
+    it("untag refuses an imported conversation (SPEC §11.1)", async () => {
       const conv = await seedRemoteConversation("26262626-2626-2626-2626-262626262626", {
         tags: ["already-there"],
       });
       await expect(
         runBuiltCommand(buildUntagCommand, [conv.id, "already-there"]),
-      ).rejects.toThrow(/remote/i);
+      ).rejects.toThrow(/imported conversations are read-only/i);
     });
   });
 
@@ -1119,10 +1603,10 @@ describe("cli", () => {
       ).rejects.toThrow(/No conversation matches/);
     });
 
-    it("refuses a remote conversation (SPEC §5.6, §11.1)", async () => {
+    it("refuses an imported conversation (SPEC §5.6, §11.1)", async () => {
       const conv = await seedRemoteConversation("52525252-5252-5252-5252-525252525252");
       await expect(runBuiltCommand(buildSaveCommand, [conv.id])).rejects.toThrow(
-        /remote.*read-only/i,
+        /imported conversations are read-only/i,
       );
     });
 
@@ -1831,6 +2315,69 @@ describe("cli", () => {
       const reloaded = await getConversationById(convId);
       expect(reloaded?.author).toBe("bob");
     });
+
+    it("does not treat imported rows as rename targets", async () => {
+      await insertConversation(
+        makeConversation({
+          id: "62626262-6262-6262-6262-626262626262",
+          sourceId: "62626262-6262-6262-6262-626262626262",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/git-import.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildRenameAuthorCommand, ["bob", "robert"]);
+      expect(stdout).toContain('No conversations found for author "bob"');
+    });
+
+    it("renames only local rows when the author also has imported rows", async () => {
+      const localId = "63636363-6363-6363-6363-636363636363";
+      const gitId = "64646464-6464-6464-6464-646464646464";
+      const fileId = "65656565-6565-6565-6565-656565656565";
+
+      await insertConversation(makeConversation({ id: localId, sourceId: localId, author: "bob" }));
+      await insertConversation(
+        makeConversation({
+          id: gitId,
+          sourceId: gitId,
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/git-import.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/file-import.jsonl",
+          originKind: "file",
+          originRef: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+
+      const result = await captureOutputWithError(async () => {
+        await runRenameAuthor("bob", "robert", async () => true);
+      });
+
+      expect(result.error).toBeNull();
+      expect(result.stdout).toContain("Renamed author on 1 conversation(s)");
+      await expect(getConversationById(localId)).resolves.toMatchObject({ author: "robert" });
+      await expect(getConversationById(gitId)).resolves.toMatchObject({ author: "bob" });
+      await expect(getConversationById(fileId)).resolves.toMatchObject({ author: "bob" });
+    });
   });
 
   // ========================================
@@ -2049,6 +2596,49 @@ describe("cli", () => {
       expect(stdout).toMatch(/\[USER\]|\[ASSISTANT\]/);
     });
 
+    it("default mode ignores imported saved conversations", async () => {
+      await seedSavedConversationWithRawMessages(
+        "82828282-8282-8282-8282-828282828282",
+        3,
+        1,
+        {
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+        },
+      );
+      await seedSavedConversationWithRawMessages(
+        "83838383-8383-8383-8383-838383838383",
+        3,
+        1,
+        {
+          originKind: "file",
+          originRef: null,
+        },
+      );
+
+      const { stdout } = await runBuiltCommand(buildDiffCommand, []);
+      expect(stdout).toBe("");
+    });
+
+    it.each([
+      [
+        "git",
+        "88888888-8888-8888-8888-888888888888",
+        { originKind: "git" as const, originRef: "git@example.com:team/repo.git" },
+      ],
+      [
+        "file",
+        "89898989-8989-8989-8989-898989898989",
+        { originKind: "file" as const, originRef: null },
+      ],
+    ])("rejects an explicit %s imported conversation", async (_kind, id, provenance) => {
+      await seedSavedConversationWithRawMessages(id, 3, 1, provenance);
+
+      await expect(runBuiltCommand(buildDiffCommand, [id])).rejects.toThrow(
+        /imported conversations are read-only/i,
+      );
+    });
+
     it("errors when the raw file shrinks below the saved checkpoint", async () => {
       // Raw has 1 message, checkpoint says 4 → fewer parsed messages than stored checkpoint.
       const conv = await seedSavedConversationWithRawMessages(
@@ -2166,7 +2756,8 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2212,10 +2803,40 @@ describe("cli", () => {
         title: "Author-less local",
         author: "anyone",
       });
+      await insertConversation(
+        makeConversation({
+          id: "ba000000-0000-0000-0000-000000000002",
+          sourceId: "ba000000-0000-0000-0000-000000000002",
+          title: "Author-less git import",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/remote.jsonl",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "ba000000-0000-0000-0000-000000000003",
+          sourceId: "ba000000-0000-0000-0000-000000000003",
+          title: "Author-less file import",
+          author: "carol",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
 
       const { stdout } = await runBuiltCommand(buildListCommand, []);
-      // Local (origin IS NULL) rows are still shown even when config.author is empty.
+      // Local rows are still shown even when config.author is empty.
       expect(stdout).toContain("Author-less local");
+      expect(stdout).not.toContain("Author-less git import");
+      expect(stdout).not.toContain("Author-less file import");
     });
 
     it("--all rediscovers ignored conversations from the source adapter (SPEC §5.3)", async () => {
@@ -2287,7 +2908,21 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "b5555555-4444-4444-4444-444444444444",
+          sourceId: "b5555555-4444-4444-4444-444444444444",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2618,7 +3253,23 @@ describe("cli", () => {
           author: "bob",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+          indexedAt: null,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "c5656565-5555-5555-5555-555555555555",
+          sourceId: "c5656565-5555-5555-5555-555555555555",
+          title: "File row",
+          author: "bob",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
           indexedAt: null,
@@ -2757,7 +3408,20 @@ describe("cli", () => {
           sourceId: "d2222222-2222-2222-2222-222222222222",
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: "d2323232-2222-2222-2222-222222222222",
+          sourceId: "d2323232-2222-2222-2222-222222222222",
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2776,13 +3440,14 @@ describe("cli", () => {
       ).rejects.toThrow(/No remote configured/);
     });
 
-    it("remove deletes remote-origin rows, clears config, and preserves local rows", async () => {
+    it("remove deletes git-origin rows, clears config, and preserves local rows", async () => {
       const config = await loadConfig();
       config.remote.url = "git@example.com:team/repo.git";
       await saveConfig(config);
 
       const localId = "d3333333-3333-3333-3333-333333333333";
       const remoteId = "d4444444-4444-4444-4444-444444444444";
+      const fileId = "d4545454-4444-4444-4444-444444444444";
 
       await insertConversation(
         makeConversation({
@@ -2800,7 +3465,20 @@ describe("cli", () => {
           sourceId: remoteId,
           state: "saved",
           filePath: "/tmp/remote.jsonl",
-          origin: "git@example.com:team/repo.git",
+          originKind: "git",
+          originRef: "git@example.com:team/repo.git",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          saveVersion: 1,
+        }),
+      );
+      await insertConversation(
+        makeConversation({
+          id: fileId,
+          sourceId: fileId,
+          state: "saved",
+          filePath: "/tmp/imported-file.jsonl",
+          originKind: "file",
+          originRef: null,
           savedAt: "2026-02-01T10:00:00.000Z",
           saveVersion: 1,
         }),
@@ -2812,8 +3490,10 @@ describe("cli", () => {
 
       const local = await getConversationById(localId);
       const remote = await getConversationById(remoteId);
+      const file = await getConversationById(fileId);
       expect(local).not.toBeNull();
       expect(remote).toBeNull();
+      expect(file).not.toBeNull();
 
       const reloaded = await loadConfig();
       expect(reloaded.remote.url).toBeNull();
@@ -2838,6 +3518,47 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildRefreshCommand, []);
       expect(stdout).toContain("No checkout found");
       expect(stdout).toContain("clog sync pull");
+    });
+
+    it("prints one summary line for pairs skipped by clogignore", async () => {
+      const config = await loadConfig();
+      config.remote.url = "git@example.com:team/repo.git";
+      await saveConfig(config);
+
+      const id = "eeeeeeee-1111-2222-3333-444444444444";
+      const remoteRoot = getRemoteRoot();
+      const sourceDir = path.join(remoteRoot, "alice", "claude-code");
+      await fs.mkdir(path.join(remoteRoot, ".git"), { recursive: true });
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sourceDir, `${id}.meta.json`),
+        `${JSON.stringify({
+          id,
+          title: "Ignored remote pair",
+          summary: "",
+          tags: [],
+          author: "alice",
+          projectName: null,
+          savedAt: "2026-02-01T10:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          source: "claude-code",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      await writeJsonl(path.join(sourceDir, `${id}.jsonl`), [
+        userLine("Ignored", "2026-02-01T10:00:00.000Z"),
+      ]);
+      await fs.writeFile(getClogIgnorePath(), `${id}\n`, "utf8");
+
+      const { stdout, stderr } = await runBuiltCommand(buildRefreshCommand, []);
+
+      expect(stdout).toContain("Refreshed 0 conversation(s)");
+      expect(stderr).toContain(
+        "Skipped 1 remote conversation pair(s) because of clogignore",
+      );
+      expect(stderr.match(/because of clogignore/g)).toHaveLength(1);
     });
   });
 
@@ -2884,16 +3605,22 @@ async function runBuiltCommand(
 async function runBuiltCommandCapturingError(
   builder: () => Command,
   args: string[],
-): Promise<{ stdout: string; stderr: string; error: unknown }> {
+): Promise<{
+  stdout: string;
+  stderr: string;
+  error: unknown;
+  exitCode: typeof process.exitCode;
+}> {
   const previousExitCode = process.exitCode;
   process.exitCode = undefined;
 
   try {
-    return await captureOutputWithError(async () => {
+    const result = await captureOutputWithError(async () => {
       const cmd = builder();
       cmd.exitOverride();
       await cmd.parseAsync(args, { from: "user" });
     });
+    return { ...result, exitCode: process.exitCode };
   } finally {
     process.exitCode = previousExitCode;
   }
@@ -2924,7 +3651,8 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }
@@ -2962,7 +3690,8 @@ async function seedRemoteConversation(
   return seedConversation(id, {
     state: "saved",
     filePath: "/tmp/fake-remote.jsonl",
-    origin: "git@example.com:team/repo.git",
+    originKind: "git",
+    originRef: "git@example.com:team/repo.git",
     savedAt: "2026-02-01T10:00:00.000Z",
     saveVersion: 1,
     ...overrides,
@@ -3014,6 +3743,7 @@ async function seedSavedConversationWithRawMessages(
   id: string,
   messageCount: number,
   savedMessageCount: number,
+  overrides: Partial<ConversationMeta> = {},
 ): Promise<ConversationMeta> {
   const rawPath = getRawConversationPath("claude-code", id);
   await fs.mkdir(path.dirname(rawPath), { recursive: true });
@@ -3031,6 +3761,7 @@ async function seedSavedConversationWithRawMessages(
     savedAt: "2026-02-01T10:00:00.000Z",
     saveVersion: 1,
     savedMessageCount,
+    ...overrides,
   });
 }
 

@@ -3,7 +3,7 @@ import { Command } from "commander";
 
 import { getEnabledAdapters } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
-import { listConversations } from "../db/index.js";
+import { gitOriginFilter, listConversations } from "../db/index.js";
 import { checkStaleness } from "../sync/staleness.js";
 import {
   conversationMetadataMatchesGrep,
@@ -52,13 +52,16 @@ export function buildListCommand(): Command {
           columns,
       );
 
-      const originFilter = parseOriginFilter(options.origin);
+      const authorName = config.author.trim();
+      const fallbackToLocalOnly =
+        !options.all && !options.origin && !options.author && authorName.length === 0;
+      const originFilter = fallbackToLocalOnly ? "local" : parseOriginFilter(options.origin);
 
       // Default filter (no --all, no explicit --origin, no explicit --author):
       // curated-by-default — show local curated + this author's remote curated.
       const curatedDefault =
-        !options.all && !options.origin && !options.author && config.author.trim().length > 0
-          ? { author: config.author.trim() }
+        !options.all && !options.origin && !options.author && authorName.length > 0
+          ? { author: authorName }
           : null;
 
       let conversations = await listConversations({
@@ -90,7 +93,9 @@ export function buildListCommand(): Command {
         // Team conversation hint: if a remote is configured and there are
         // remote rows NOT included in the current view, surface the count.
         if (config.remote.url && !options.origin) {
-          const allRemote = await listConversations({ origin: "remote" });
+          const allRemote = await listConversations({
+            origin: gitOriginFilter(config.remote.url),
+          });
           const shownIds = new Set(conversations.map((c) => c.id));
           const hidden = allRemote.filter((c) => !shownIds.has(c.id)).length;
           if (hidden > 0) {

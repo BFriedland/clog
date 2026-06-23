@@ -6,6 +6,7 @@ import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import {
   getConversationById,
+  isLocalConversation,
   resolveConversationId,
   updateConversation,
 } from "../db/index.js";
@@ -13,7 +14,12 @@ import type { ConversationMeta, Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { isAggregatableWarningCode } from "../models/warnings.js";
 import { ClogError, UsageError } from "../utils/errors.js";
-import { getRawConversationPath, getRawSourceDir } from "../utils/paths.js";
+import {
+  getImportConversationPath,
+  getRawConversationPath,
+  getRawSourceDir,
+  normalizeUserPath,
+} from "../utils/paths.js";
 import { getAdapter } from "../adapters/registry.js";
 import { colorizeStateLabel, colorizeUserMessage } from "./colors.js";
 import type { ScanResult } from "./scan.js";
@@ -78,12 +84,12 @@ export function assertNotRemote(
   conversation: ConversationMeta,
   command: string,
 ): void {
-  if (conversation.origin == null) {
+  if (isLocalConversation(conversation)) {
     return;
   }
 
   throw new ClogError(
-    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — it came from the remote and is read-only. Edit it on the original author's machine.`,
+    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — imported conversations are read-only. Edit it on the original author's machine or remove the imported copy.`,
   );
 }
 
@@ -542,6 +548,17 @@ export async function removeRawCopyIfPresent(conversation: ConversationMeta): Pr
   }
 }
 
+export async function removeImportCopyIfPresent(conversation: ConversationMeta): Promise<void> {
+  const importPath = getImportConversationPath(conversation.source, conversation.id);
+  try {
+    await fs.rm(importPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 export async function rawCopyMatchesSource(conversation: ConversationMeta): Promise<boolean> {
   if (!conversation.filePath) {
     return false;
@@ -580,6 +597,45 @@ export async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export function pathsIdentifySameManagedCopy(
+  leftPath: string | null | undefined,
+  rightPath: string | null | undefined,
+): boolean {
+  if (!leftPath || !rightPath) {
+    return false;
+  }
+
+  return normalizeUserPath(leftPath) === normalizeUserPath(rightPath);
+}
+
+export async function hasReadableIndependentSource(
+  conversation: ConversationMeta,
+): Promise<boolean> {
+  if (pathsIdentifySameManagedCopy(conversation.sourcePath, conversation.filePath)) {
+    return false;
+  }
+
+  return pathExists(conversation.sourcePath);
+}
+
+// Heuristic for fill-restored rows: projectPath is null only for `fill --own`
+// imports, because scan drops projectPath-less sources as undiscoverable, so an
+// ordinary saved local row always has one. Scan re-attaches a live sourcePath to a
+// restored row but does NOT set its projectPath (src/cli/scan.ts saved-row
+// branch), which is what keeps this true after a scan. If re-attachment is ever
+// completed to also set projectPath, this returns false and the save guard in
+// confirmRestoredOverwriteIfNeeded stops firing.
+export function isLikelyRestoredLocalConversation(
+  conversation: ConversationMeta,
+): boolean {
+  return (
+    conversation.originKind === "local" &&
+    conversation.state === "saved" &&
+    conversation.filePath != null &&
+    conversation.projectPath == null
+  );
 }
 
 export function getTerminalWidth(): number {

@@ -190,7 +190,7 @@ describe("agent-assisted summarization", () => {
       expect(populated?.summaryExtraction).toBeNull();
       expect(blank?.summaryKind).toBe("none");
       expect(blank?.summaryExtraction).toBeNull();
-      expect(CURRENT_SCHEMA_VERSION).toBe(6);
+      expect(CURRENT_SCHEMA_VERSION).toBe(7);
     });
   });
 
@@ -715,7 +715,8 @@ function makeSavedConversation(
     filePath: messagesPath,
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }

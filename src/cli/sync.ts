@@ -24,7 +24,7 @@ import { getRemoteGitDir, getRemoteRoot } from "../sync/paths.js";
 import { reconcileRemote, type PullStats } from "../sync/pull.js";
 import {
   buildCommitMessage,
-  collectRemoteOriginIds,
+  collectSameAuthorSavedIdentities,
   exportAuthorToCheckout,
   type ChangeRecord,
   type ExportStats,
@@ -97,6 +97,7 @@ export async function runSyncPull(): Promise<void> {
   printPullResult(stats);
 
   renderWarnings(stats.warnings);
+  renderReconciliationMessages(stats);
 
   if (config.search) {
     await printPostPullIndexNudge(stats);
@@ -154,12 +155,11 @@ export async function runSyncPush(): Promise<void> {
 
   await advisoryGitIdentityCheck();
 
-  // Snapshot remote-origin IDs for this author before reconcile.
-  // Conversations present here were pulled from the remote and not deleted
-  // locally — they must not be retracted from the checkout during export.
+  // Snapshot same-author saved IDs before reconcile. Conversations present here
+  // have a saved local representation and must not be retracted from checkout.
   // Conversations that reconcileRemote re-imports during the pull phase below
   // are NOT in this snapshot, so intentional retractions still proceed.
-  const preReconcileRemoteIds = await collectRemoteOriginIds(config.author, remoteUrl);
+  const preReconcileSameAuthorIds = await collectSameAuthorSavedIdentities(config.author);
 
   // Pull phase: incorporate teammates' changes first.
   try {
@@ -176,9 +176,10 @@ export async function runSyncPush(): Promise<void> {
 
   const pullStats = await reconcileRemote(config, remoteUrl);
   renderWarnings(pullStats.warnings);
+  renderReconciliationMessages(pullStats);
 
   // Export phase: write local state to checkout.
-  const exportStats = await exportAuthorToCheckout(config.author, preReconcileRemoteIds);
+  const exportStats = await exportAuthorToCheckout(config.author, preReconcileSameAuthorIds);
 
   // Commit and push.
   await gitAddAll(getRemoteRoot());
@@ -295,6 +296,26 @@ function printPullResult(stats: PullStats): void {
   process.stdout.write(
     `Pulled ${total} conversation(s) from remote. ${stats.inserted} new, ${stats.updated} updated, ${stats.deleted} removed.\n`,
   );
+}
+
+function renderReconciliationMessages(
+  stats: Pick<PullStats, "ignored" | "notices" | "cleanupFailures">,
+): void {
+  if (stats.ignored > 0) {
+    process.stderr.write(
+      `warning: Skipped ${stats.ignored} remote conversation pair(s) because of clogignore.\n`,
+    );
+  }
+
+  for (const notice of stats.notices) {
+    process.stderr.write(`warning: ${notice}\n`);
+  }
+
+  for (const id of stats.cleanupFailures) {
+    process.stderr.write(
+      `warning: Could not remove search vectors for ${id.slice(0, 8)} after reconciliation deleted the conversation.\n`,
+    );
+  }
 }
 
 function printPushResult(remoteUrl: string, stats: ExportStats): void {

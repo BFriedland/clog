@@ -84,7 +84,8 @@ describe("mcp handlers", () => {
       filePath,
       sourceMtime: null,
       indexedAt: "2026-02-01T10:00:03.000Z",
-      origin: null,
+      originKind: "local",
+      originRef: null,
     });
   });
 
@@ -105,6 +106,11 @@ describe("mcp handlers", () => {
     expect(result.messages[0]?.content).toBe("Debug auth flow");
     expect(result.project).toBe("api-service");
     expect(result).not.toHaveProperty("projectName");
+    expect(result).toMatchObject({
+      originKind: "local",
+      originRef: null,
+    });
+    expect(result).not.toHaveProperty("origin");
     expect(result.range).toMatchObject({
       mode: "tail",
       startIndex: 0,
@@ -184,7 +190,7 @@ describe("mcp handlers", () => {
   });
 
   it("filters clog_list_saved by origin", async () => {
-    // Add a remote-origin row so we have one of each.
+    // Add an imported row so we have one of each.
     await insertConversation({
       id: "def45678-1234-1234-1234-123456789012",
       sourceId: "def45678-1234-1234-1234-123456789012",
@@ -207,7 +213,8 @@ describe("mcp handlers", () => {
       filePath: "/tmp/remote.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: "git@github.com:myorg/clog-team.git",
+      originKind: "git",
+      originRef: "git@github.com:myorg/clog-team.git",
     });
 
     const all = await handleListSaved({});
@@ -220,6 +227,11 @@ describe("mcp handlers", () => {
     const remote = await handleListSaved({ origin: "remote" });
     expect(remote.totalCount).toBe(1);
     expect(remote.conversations[0]?.title).toBe("From remote");
+    expect(remote.conversations[0]).toMatchObject({
+      originKind: "git",
+      originRef: "git@github.com:myorg/clog-team.git",
+    });
+    expect(remote.conversations[0]).not.toHaveProperty("origin");
   });
 
   // ============================================================
@@ -579,14 +591,15 @@ describe("mcp handlers", () => {
     ).rejects.toThrow(/saved/);
   });
 
-  it("clog_update refuses a remote conversation (SPEC §11.1)", async () => {
+  it("clog_update refuses imported conversations (SPEC §11.1)", async () => {
     await insertOtherSaved("bb000000-0000-0000-0000-000000000002", {
-      origin: "git@example.com:team/repo.git",
+      originKind: "file",
+      originRef: null,
     });
 
     await expect(
       handleUpdate({ id: "bb000000", title: "new title" }),
-    ).rejects.toThrow(/remote.*read-only/i);
+    ).rejects.toThrow(/imported conversations are read-only/i);
   });
 
   it("clog_update removeTags removes matching tags and bumps modifiedAt", async () => {
@@ -782,7 +795,8 @@ async function insertOtherSaved(
     filePath: "/tmp/other.jsonl",
     sourceMtime: null,
     indexedAt: "2026-02-01T10:00:00.000Z",
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   });
 }

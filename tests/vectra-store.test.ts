@@ -168,7 +168,8 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }

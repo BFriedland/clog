@@ -2,13 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   buildCommitMessage,
-  collectRemoteOriginIds,
+  collectSameAuthorSavedIdentities,
   exportAuthorToCheckout,
   type ChangeRecord,
 } from "../src/sync/push.js";
@@ -17,6 +17,7 @@ import {
   getRawConversationPath,
   getRawSourceDir,
 } from "../src/utils/paths.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 const TEST_REMOTE_URL = "git@github.com:myorg/clog-team.git";
@@ -86,6 +87,7 @@ describe("exportAuthorToCheckout", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -117,6 +119,79 @@ describe("exportAuthorToCheckout", () => {
     expect(meta).not.toHaveProperty("projectPath");
 
     await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+  });
+
+  it("writes exported pairs through the atomic writer with JSONL before metadata", async () => {
+    const id = "a1212121-1212-1212-1212-121212121212";
+    await insertLocalSaved({
+      id,
+      title: "Atomic export",
+      author: "alice",
+    });
+
+    const calls: string[] = [];
+    const spy = vi
+      .spyOn(atomicWrite, "writeFileAtomic")
+      .mockImplementation(async (filePath: string) => {
+        calls.push(path.basename(filePath));
+      });
+
+    await exportAuthorToCheckout("alice", new Set());
+
+    expect(spy).toHaveBeenCalled();
+    expect(
+      calls.filter(
+        (name) => name === `${id}.jsonl` || name === `${id}.meta.json`,
+      ),
+    ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+  });
+
+  it("leaves only JSONL when metadata writing fails during export", async () => {
+    const id = "a1313131-1313-1313-1313-131313131313";
+    await insertLocalSaved({
+      id,
+      title: "Interrupted export",
+      author: "alice",
+    });
+
+    const metaPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${id}.meta.json`,
+    );
+    const jsonlPath = path.join(
+      getRemoteSourceDir("alice", "claude-code"),
+      `${id}.jsonl`,
+    );
+
+    const originalWriteFileAtomic = atomicWrite.writeFileAtomic;
+    const calls: string[] = [];
+    const spy = vi
+      .spyOn(atomicWrite, "writeFileAtomic")
+      .mockImplementation(async (filePath: string, data: Buffer | string) => {
+        calls.push(path.basename(filePath));
+        if (filePath === jsonlPath) {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.writeFile(filePath, data);
+          return;
+        }
+        if (filePath === metaPath) {
+          throw new Error("simulated metadata write failure");
+        }
+        await originalWriteFileAtomic(filePath, data);
+      });
+
+    await expect(exportAuthorToCheckout("alice", new Set())).rejects.toThrow(
+      "simulated metadata write failure",
+    );
+
+    expect(spy).toHaveBeenCalled();
+    expect(
+      calls.filter(
+        (name) => name === `${id}.jsonl` || name === `${id}.meta.json`,
+      ),
+    ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+    await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+    await expect(fs.stat(metaPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reports zero changes on a second export when nothing changed", async () => {
@@ -227,8 +302,8 @@ describe("exportAuthorToCheckout", () => {
     expect(stats.changes[0]?.kind).toBe("added");
   });
 
-  it("excludes remote-origin conversations from the export set", async () => {
-    // A remote-origin row should never be re-pushed.
+  it("excludes git-origin conversations from the export set", async () => {
+    // A git-origin row should never be re-pushed.
     const timestamp = "2026-02-01T10:00:00.000Z";
     await insertConversation({
       id: "a5555555-5555-5555-5555-555555555555",
@@ -252,7 +327,8 @@ describe("exportAuthorToCheckout", () => {
       filePath: "/tmp/remote-checkout.jsonl",
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
     const stats = await exportAuthorToCheckout("alice", new Set());
@@ -260,9 +336,9 @@ describe("exportAuthorToCheckout", () => {
     expect(stats.changes).toHaveLength(0);
   });
 
-  it("does not retract checkout files that correspond to remote-origin DB rows", async () => {
+  it("does not retract checkout files that correspond to git-origin DB rows", async () => {
     // Simulates the multi-machine scenario: alice pushed from machine A,
-    // then pulls on machine B (importing with origin=remoteUrl). Pushing
+    // then pulls on machine B (importing with originRef=remoteUrl). Pushing
     // from machine B must NOT retract machine A's conversations.
     const id = "a6666666-6666-6666-6666-666666666666";
     const authorDir = getRemoteSourceDir("alice", "claude-code");
@@ -274,7 +350,7 @@ describe("exportAuthorToCheckout", () => {
     );
     await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
 
-    // The pulled DB row has origin=remoteUrl.
+    // The pulled DB row has originRef=remoteUrl.
     const timestamp = "2026-02-01T10:00:00.000Z";
     await insertConversation({
       id,
@@ -298,13 +374,14 @@ describe("exportAuthorToCheckout", () => {
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
-    const remoteIds = await collectRemoteOriginIds("alice", TEST_REMOTE_URL);
-    const stats = await exportAuthorToCheckout("alice", remoteIds);
+    const protectedIds = await collectSameAuthorSavedIdentities("alice");
+    const stats = await exportAuthorToCheckout("alice", protectedIds);
 
-    // No retraction — the remote-origin row protects the checkout files.
+    // No retraction: the pre-reconcile git-origin snapshot protects the checkout files.
     expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
     await expect(
       fs.stat(path.join(authorDir, `${id}.meta.json`)),
@@ -314,11 +391,63 @@ describe("exportAuthorToCheckout", () => {
     ).resolves.toBeTruthy();
   });
 
-  it("retracts checkout files for remote-origin DB rows that are absent from the pre-reconcile snapshot", async () => {
+  it("does not retract checkout files that correspond to same-author file rows", async () => {
+    const id = "a6767676-6767-6767-6767-676767676767";
+    const authorDir = getRemoteSourceDir("alice", "claude-code");
+    await fs.mkdir(authorDir, { recursive: true });
+    await fs.writeFile(
+      path.join(authorDir, `${id}.meta.json`),
+      `${JSON.stringify({ title: "Filled from file" }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(authorDir, `${id}.jsonl`), "{}\n", "utf8");
+
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      title: "Filled from file",
+      summary: "",
+      summaryKind: "none",
+      summaryExtraction: null,
+      author: "alice",
+      projectName: null,
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 1,
+      saveVersion: 1,
+      sourcePath: "/tmp/imports/claude-code/a6767676-6767-6767-6767-676767676767.jsonl",
+      filePath: "/tmp/imports/claude-code/a6767676-6767-6767-6767-676767676767.jsonl",
+      sourceMtime: null,
+      indexedAt: null,
+      originKind: "file",
+      originRef: null,
+    });
+
+    const protectedIds = await collectSameAuthorSavedIdentities("alice");
+    const stats = await exportAuthorToCheckout("alice", protectedIds);
+
+    expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.meta.json`)),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(authorDir, `${id}.jsonl`)),
+    ).resolves.toBeTruthy();
+  });
+
+  it("retracts checkout files for git-origin DB rows that are absent from the pre-reconcile snapshot", async () => {
     // Simulates the intentional-retraction case: user removed the
     // conversation locally before sync push, so it was absent from the
     // pre-reconcile snapshot. Even if reconcile re-imports it (giving it
-    // a current DB row with origin=remoteUrl), the export phase must still
+    // a current DB row with originRef=remoteUrl), the export phase must still
     // retract it. This locks in the design choice of using a snapshot
     // rather than current DB state.
     const id = "a7777777-7777-7777-7777-777777777777";
@@ -354,7 +483,8 @@ describe("exportAuthorToCheckout", () => {
       filePath: path.join(authorDir, `${id}.jsonl`),
       sourceMtime: null,
       indexedAt: null,
-      origin: TEST_REMOTE_URL,
+      originKind: "git",
+      originRef: TEST_REMOTE_URL,
     });
 
     // Empty snapshot = the conversation was not present before reconcile,
@@ -412,7 +542,8 @@ async function insertLocalSaved(options: {
     filePath: rawPath,
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 
   await insertConversation(conversation);

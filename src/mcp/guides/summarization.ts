@@ -157,9 +157,9 @@ enough candidates for the user's requested scope.
 
 - Do not re-summarize conversations whose \`summaryKind\` is \`curated\`
   unless the user explicitly asks you to. Those have been hand-edited.
-- Conversations from a remote (\`origin\` not null) are read-only — clog
-  rejects \`clog_update\` on them. When listing candidates, always pass
-  \`origin: "local"\` to \`clog_list_saved\` so remote rows are filtered out
+- Imported conversations are read-only — clog rejects \`clog_update\` on them.
+  When listing candidates, always pass
+  \`origin: "local"\` to \`clog_list_saved\` so imported rows are filtered out
   up front rather than discovered when a write fails.
 
 ## After summarization

@@ -128,7 +128,8 @@ function makeConversation(): ConversationMeta {
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
   };
 }
 

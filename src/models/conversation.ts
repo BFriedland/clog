@@ -7,6 +7,14 @@ export const conversationStateSchema = z.enum([
 
 export type ConversationState = z.infer<typeof conversationStateSchema>;
 
+export const originKindSchema = z.enum([
+  "local",
+  "git",
+  "file",
+]);
+
+export type OriginKind = z.infer<typeof originKindSchema>;
+
 export const summaryKindSchema = z.enum([
   "none",
   "imported",
@@ -101,7 +109,8 @@ export const conversationMetaSchema = z.object({
   filePath: z.string().nullable(),
   sourceMtime: z.string().nullable(),
   indexedAt: z.string().nullable(),
-  origin: z.string().nullable(),
+  originKind: originKindSchema,
+  originRef: z.string().nullable(),
 });
 
 export type ConversationMeta = z.infer<typeof conversationMetaSchema>;

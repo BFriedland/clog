@@ -41,7 +41,8 @@ describe("conversationMetaSchema", () => {
       filePath: null,
       sourceMtime: null,
       indexedAt: null,
-      origin: null,
+      originKind: "local",
+      originRef: null,
     });
 
     expect(parsed.state).toBe("discovered");

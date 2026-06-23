@@ -10,6 +10,7 @@ import {
   getClogIgnorePath,
   getConfigPath,
   getDefaultSourcePaths,
+  getImportsRoot,
   getRawRoot,
   normalizeUserPath,
 } from "../utils/paths.js";
@@ -78,6 +79,7 @@ export function resolveConfiguredPaths(paths: string[]): string[] {
 export async function ensureClogHomeDirs(): Promise<void> {
   await fs.mkdir(getClogHome(), { recursive: true });
   await fs.mkdir(getRawRoot(), { recursive: true });
+  await fs.mkdir(getImportsRoot(), { recursive: true });
 
   const clogIgnorePath = getClogIgnorePath();
   if (!(await pathExists(clogIgnorePath))) {

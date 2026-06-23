@@ -1,7 +1,14 @@
 import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
-import { browseValues, getConversationById, listConversations, resolveConversationId, updateConversation } from "../db/index.js";
+import {
+  browseValues,
+  getConversationById,
+  isLocalConversation,
+  listConversations,
+  resolveConversationId,
+  updateConversation,
+} from "../db/index.js";
 import {
   type ConversationMeta,
   summaryExtractionInputSchema,
@@ -130,7 +137,8 @@ export async function handleGet(input: unknown) {
     tags: conversation.tags,
     author: conversation.author,
     project: conversation.projectName,
-    origin: conversation.origin,
+    originKind: conversation.originKind,
+    originRef: conversation.originRef,
     state: conversation.state,
     createdAt: conversation.createdAt,
     messages: messages.slice(range.startIndex, range.endIndex),
@@ -246,9 +254,9 @@ export async function handleUpdate(input: unknown) {
     throw new Error("clog_update only works on saved conversations.");
   }
 
-  if (conversation.origin != null) {
+  if (!isLocalConversation(conversation)) {
     throw new Error(
-      `clog_update cannot modify conversation ${conversation.id.slice(0, 8)} — it came from the remote and is read-only.`,
+      `clog_update cannot modify conversation ${conversation.id.slice(0, 8)} — imported conversations are read-only.`,
     );
   }
 
@@ -420,7 +428,8 @@ export async function handleSearch(input: unknown) {
         tags: conversation.tags,
         author: conversation.author,
         project: conversation.projectName,
-        origin: conversation.origin,
+        originKind: conversation.originKind,
+        originRef: conversation.originRef,
         createdAt: conversation.createdAt,
         relevanceScore: hit.score,
         snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
@@ -480,7 +489,8 @@ async function listConversationsForState(
       tags: conversation.tags,
       author: conversation.author,
       project: conversation.projectName,
-      origin: conversation.origin,
+      originKind: conversation.originKind,
+      originRef: conversation.originRef,
       createdAt: conversation.createdAt,
       modifiedAt: conversation.modifiedAt,
       savedAt: conversation.savedAt,
@@ -643,7 +653,8 @@ function summarizeConversation(conversation: ConversationMeta) {
     tags: conversation.tags,
     author: conversation.author,
     project: conversation.projectName,
-    origin: conversation.origin,
+    originKind: conversation.originKind,
+    originRef: conversation.originRef,
     state: conversation.state,
     createdAt: conversation.createdAt,
     modifiedAt: conversation.modifiedAt,

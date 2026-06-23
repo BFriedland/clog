@@ -515,7 +515,8 @@ function makeDiscoveredConversation(
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }

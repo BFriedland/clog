@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 
 import {
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
+import { writePair } from "../interchange/pairs.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { getRawConversationPath, BUILTIN_SOURCES } from "../utils/paths.js";
 import {
@@ -32,23 +32,21 @@ export interface ExportStats {
   changes: ChangeRecord[];
 }
 
-export async function collectRemoteOriginIds(
+export async function collectSameAuthorSavedIdentities(
   author: string,
-  remoteUrl: string,
 ): Promise<Set<string>> {
   return withDb((db) => {
-    const remote = listConversationsInDb(db, {
+    const saved = listConversationsInDb(db, {
       states: ["saved"],
       author,
-      origin: { url: remoteUrl },
     });
-    return new Set(remote.map((c) => `${c.source}\0${c.id}`));
+    return new Set(saved.map((c) => `${c.source}\0${c.sourceId}`));
   });
 }
 
 export async function exportAuthorToCheckout(
   author: string,
-  preReconcileRemoteOriginIds: Set<string>,
+  preReconcileSameAuthorIds: Set<string>,
 ): Promise<ExportStats> {
   const stats: ExportStats = { changes: [] };
 
@@ -78,14 +76,16 @@ export async function exportAuthorToCheckout(
     const remoteMeta = conversationToRemoteMeta(conversation);
     const nextMeta = serializeRemoteMeta(remoteMeta);
 
-    await fs.mkdir(path.dirname(metaPath), { recursive: true });
-    await fs.writeFile(metaPath, nextMeta, "utf8");
-
     const rawPath = getRawConversationPath(conversation.source, conversation.id);
     const rawContent = await fs.readFile(rawPath);
 
     const existingJsonl = await readFileBufferIfExists(jsonlPath);
-    await fs.writeFile(jsonlPath, rawContent);
+    await writePair({
+      metaPath,
+      jsonlPath,
+      meta: remoteMeta,
+      jsonl: rawContent,
+    });
 
     const previouslyCompletePair = existingMeta != null && existingJsonl != null;
     const metaChanged = existingMeta !== nextMeta;
@@ -131,7 +131,7 @@ export async function exportAuthorToCheckout(
         continue;
       }
 
-      if (preReconcileRemoteOriginIds.has(`${source}\0${id}`)) {
+      if (preReconcileSameAuthorIds.has(`${source}\0${id}`)) {
         continue;
       }
 

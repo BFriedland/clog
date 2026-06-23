@@ -22,13 +22,21 @@ describe("assertNotRemote", () => {
   });
 
   it("is a no-op for local conversations", () => {
-    expect(() => assertNotRemote(makeConversation({ origin: null }), "clog edit")).not.toThrow();
-  });
-
-  it("throws for remote conversations with a read-only message", () => {
     expect(() =>
       assertNotRemote(
-        makeConversation({ origin: "git@github.com:myorg/repo.git" }),
+        makeConversation({ originKind: "local", originRef: null }),
+        "clog edit",
+      ),
+    ).not.toThrow();
+  });
+
+  it("throws for imported conversations with a read-only message", () => {
+    expect(() =>
+      assertNotRemote(
+        makeConversation({
+          originKind: "git",
+          originRef: "git@github.com:myorg/repo.git",
+        }),
         "clog edit",
       ),
     ).toThrow(/read-only/);
@@ -37,7 +45,10 @@ describe("assertNotRemote", () => {
   it("names the invoking command in the error", () => {
     expect(() =>
       assertNotRemote(
-        makeConversation({ origin: "git@github.com:myorg/repo.git" }),
+        makeConversation({
+          originKind: "file",
+          originRef: null,
+        }),
         "clog tag",
       ),
     ).toThrow(/clog tag/);
@@ -45,7 +56,8 @@ describe("assertNotRemote", () => {
 
   it("round-trips a remote row through DB insertion (smoke test)", async () => {
     const remote = makeConversation({
-      origin: "git@github.com:myorg/repo.git",
+      originKind: "git",
+      originRef: "git@github.com:myorg/repo.git",
       state: "saved",
     });
     await insertConversation(remote);
@@ -79,7 +91,8 @@ function makeConversation(
     filePath: "/tmp/raw.jsonl",
     sourceMtime: null,
     indexedAt: null,
-    origin: null,
+    originKind: "local",
+    originRef: null,
     ...overrides,
   };
 }

@@ -264,6 +264,104 @@ describe("e2e", () => {
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
 
+  it("round-trips a foreign drained pair through fill, show, list --all, and drain", async () => {
+    const id = "fa111111-1111-1111-1111-111111111111";
+    const sourcePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
+    const exportDir = path.join(tempDir, "foreign-export");
+    const roundTripDir = path.join(tempDir, "foreign-round-trip");
+    await writeClaudeConversation(sourcePath, "Foreign fill round trip");
+
+    await run(["config", "set", "author", "bob"]);
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["status"]);
+    await run(["save", id.slice(0, 8)]);
+    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", exportDir]);
+
+    const originalMetaPath = path.join(exportDir, "claude-code", `${id}.meta.json`);
+    const originalJsonlPath = path.join(exportDir, "claude-code", `${id}.jsonl`);
+    const originalMeta = JSON.parse(await fs.readFile(originalMetaPath, "utf8"));
+    expect(originalMeta.author).toBe("bob");
+
+    clogHome = path.join(tempDir, ".clog-import-foreign");
+    await run(["config", "set", "author", "alice"]);
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    const fill = await run(["fill", exportDir]);
+    expect(fill.stderr).toContain("Processed 1 conversation pair");
+    expect(fill.stderr).toContain("clog list --all");
+
+    const hiddenList = await run(["list"]);
+    expect(hiddenList.stdout).not.toContain("Foreign fill round trip");
+
+    const allList = await run(["list", "--all", "--columns", "id,author,title"]);
+    expect(allList.stdout).toContain(id.slice(0, 8));
+    expect(allList.stdout).toContain("bob");
+    expect(allList.stdout).toContain("Foreign fill round trip");
+
+    const show = await run(["show", id.slice(0, 8)]);
+    expect(show.stdout).toContain("Foreign fill round trip");
+    expect(show.stdout).toContain("State:   saved");
+
+    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", roundTripDir]);
+    expect(JSON.parse(await fs.readFile(
+      path.join(roundTripDir, "claude-code", `${id}.meta.json`),
+      "utf8",
+    ))).toEqual(originalMeta);
+    expect(await fs.readFile(
+      path.join(roundTripDir, "claude-code", `${id}.jsonl`),
+      "utf8",
+    )).toBe(await fs.readFile(originalJsonlPath, "utf8"));
+  });
+
+  it("restores an own drained pair as clean and keeps local edit, tag, diff, and save workflows", async () => {
+    const id = "fa222222-2222-2222-2222-222222222222";
+    const sourcePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
+    const exportDir = path.join(tempDir, "own-export");
+    await writeClaudeConversation(sourcePath, "Own fill workflow");
+
+    await run(["config", "set", "author", "alice"]);
+    await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["status"]);
+    await run(["save", id.slice(0, 8)]);
+    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", exportDir]);
+
+    clogHome = path.join(tempDir, ".clog-import-own");
+    await run(["config", "set", "author", "alice"]);
+    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+
+    await run(["fill", exportDir, "--own"]);
+
+    const cleanStatus = await run(["status"]);
+    expect(cleanStatus.stdout).toContain("Nothing to save.");
+    const cleanSave = await run(["save"]);
+    expect(cleanSave.stdout).toContain("No conversations need saving.");
+
+    await run(["edit", id.slice(0, 8), "--title", "Restored local workflow"]);
+    await run(["tag", id.slice(0, 8), "restored"]);
+    const tagged = await run(["list", "--tag", "restored"]);
+    expect(tagged.stdout).toContain("Restored local workflow");
+
+    const rawPath = path.join(clogHome, "raw", "claude-code", `${id}.jsonl`);
+    await appendClaudeTurn(rawPath, "Follow-up after restore", "Saved after restore");
+
+    const diff = await run(["diff", id.slice(0, 8)]);
+    expect(diff.stdout).toContain("Follow-up after restore");
+
+    const readyStatus = await run(["status"]);
+    expect(readyStatus.stdout).toContain("Saved conversations to resave:");
+    expect(readyStatus.stdout).toContain("api-service");
+
+    const saved = await run(["save"]);
+    expect(saved.stdout).toContain("Saved 1 conversation(s).");
+
+    const finalStatus = await run(["status"]);
+    expect(finalStatus.stdout).toContain("Nothing to save.");
+  });
+
   it("save then show works for a discovered conversation", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
     await writeClaudeConversation(
@@ -883,4 +981,37 @@ async function writeClaudeConversation(
     },
     ...extraLines,
   ]);
+}
+
+async function appendClaudeTurn(
+  filePath: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  const lines = [
+    {
+      type: "user",
+      timestamp: "2026-02-01T10:05:00.000Z",
+      cwd: "/Users/alice/api-service",
+      message: {
+        role: "user",
+        content: userText,
+      },
+    },
+    {
+      type: "assistant",
+      timestamp: "2026-02-01T10:05:01.000Z",
+      message: {
+        id: "msg_2",
+        role: "assistant",
+        content: [{ type: "text", text: assistantText }],
+      },
+    },
+  ];
+
+  await fs.appendFile(
+    filePath,
+    lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+    "utf8",
+  );
 }

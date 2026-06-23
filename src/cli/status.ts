@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
-import { listConversations } from "../db/index.js";
+import { gitOriginFilter, listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import { scanLocalSources } from "./scan.js";
@@ -190,7 +190,7 @@ async function renderRemoteSection(
     return;
   }
 
-  const remoteCount = (await listConversations({ origin: "remote" })).length;
+  const remoteCount = (await listConversations({ origin: gitOriginFilter(config.remote.url) })).length;
 
   process.stdout.write(`\nRemote: ${config.remote.url}\n`);
   process.stdout.write(`  ${remoteCount} conversation(s) imported from remote.\n`);

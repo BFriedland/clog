@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -39,6 +39,11 @@ export function applyMigrations(db: Database): void {
   if (currentVersion < 6) {
     migrateToV6(db);
     setSchemaVersion(db, 6);
+  }
+
+  if (currentVersion < 7) {
+    migrateToV7(db);
+    setSchemaVersion(db, 7);
   }
 }
 
@@ -80,7 +85,14 @@ function createConversationsTable(db: Database): void {
       file_path TEXT,
       source_mtime TEXT,
       indexed_at TEXT,
-      origin TEXT DEFAULT NULL,
+      origin_kind TEXT NOT NULL DEFAULT 'local'
+        CHECK(origin_kind IN ('local','git','file')),
+      origin_ref TEXT,
+      CHECK(
+        (origin_kind = 'git' AND origin_ref IS NOT NULL)
+        OR
+        (origin_kind IN ('local','file') AND origin_ref IS NULL)
+      ),
       UNIQUE(source, source_id)
     );
   `);
@@ -224,6 +236,75 @@ function migrateToV6(db: Database): void {
 
     DROP TABLE conversations;
     ALTER TABLE conversations_v6 RENAME TO conversations;
+  `);
+}
+
+function migrateToV7(db: Database): void {
+  if (!tableExists(db, "conversations")) {
+    return;
+  }
+
+  const existingColumns = getColumnNames(db, "conversations");
+  if (existingColumns.has("origin_kind") && existingColumns.has("origin_ref")) {
+    return;
+  }
+
+  db.exec(`
+    CREATE TABLE conversations_v7 (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      summary_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(summary_kind IN ('none','imported','generated','curated')),
+      summary_extraction TEXT,
+      author TEXT NOT NULL,
+      project_name TEXT,
+      project_path TEXT,
+      tags_json TEXT DEFAULT '[]',
+      slug TEXT,
+      created_at TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'discovered'
+        CHECK(state IN ('discovered','saved')),
+      saved_at TEXT,
+      saved_message_count INTEGER,
+      save_version INTEGER DEFAULT 0,
+      source_path TEXT NOT NULL,
+      file_path TEXT,
+      source_mtime TEXT,
+      indexed_at TEXT,
+      origin_kind TEXT NOT NULL DEFAULT 'local'
+        CHECK(origin_kind IN ('local','git','file')),
+      origin_ref TEXT,
+      CHECK(
+        (origin_kind = 'git' AND origin_ref IS NOT NULL)
+        OR
+        (origin_kind IN ('local','file') AND origin_ref IS NULL)
+      ),
+      UNIQUE(source, source_id)
+    );
+
+    INSERT INTO conversations_v7 (
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at, state, saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at,
+      origin_kind, origin_ref
+    )
+    SELECT
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at, state, saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at,
+      CASE WHEN origin IS NULL THEN 'local' ELSE 'git' END,
+      origin
+    FROM conversations;
+
+    DROP TABLE conversations;
+    ALTER TABLE conversations_v7 RENAME TO conversations;
   `);
 }
 
