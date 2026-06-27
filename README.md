@@ -58,7 +58,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog untag <id> <tags...>` | Remove tags |
 | `clog exclude <rule...>` | Ignore projects or conversations via `~/.clog/clogignore` |
 | `clog unexclude <rule...>` | Remove exact rules from `~/.clog/clogignore` |
-| `clog remove <rule...>` | Remove matching conversations from clog's local DB and raw storage (`--yes`, `--dry-run`) |
+| `clog remove <rule...>` | Remove matching conversations from clog's local DB and stored conversation copies (`--yes`, `--dry-run`) |
 | `clog rename-author <old> <new>` | Rename an author across local conversations |
 
 ### Saving & Inspection
@@ -69,7 +69,8 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |
-| `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`) |
+| `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`; `--format pair --to-dir` writes portable conversation file pairs) |
+| `clog fill <dir>` | Import portable conversation file pairs as read-only conversations |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 ### Agent Sessions
@@ -189,11 +190,31 @@ clog sync push
 
 **Good to know:**
 
-- `clog list` shows your conversations by default. `--all` includes teammates'; `--author bob` filters to one person.
-- Remote conversations are read-only — you can view but not edit them.
-- Unsaving a synced conversation retracts it from the remote on next push.
+- `clog list` shows your saved conversations by default, including imported conversations with your author name. `--all` includes other authors' imports; `--author bob` filters to one person.
+- Imported conversations are read-only — you can view but not edit git-synced or default `clog fill` rows.
+- Removing one of your saved local conversations retracts it from the remote on next push.
 - Use `clog exclude` to ignore projects or conversations, and `clog remove` if you also want to delete current local DB rows.
 - `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
+
+Portable exports can also move conversations without git:
+
+```bash
+clog drain myapp --format pair --to-dir ./clog-export
+```
+
+Import that export as read-only conversations:
+
+```bash
+clog fill ./clog-export
+```
+
+Restore the export as local saved clog conversations when you want to edit their title, summary, author, and tags:
+
+```bash
+clog fill ./clog-export --own
+```
+
+Both import forms write only to clog's stored conversation copies; they do not modify Claude Code or Codex CLI source conversations or make imports resumable there.
 
 ## Config File
 

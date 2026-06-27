@@ -6,7 +6,7 @@
 
 ## 0. About This Specification
 
-This document is the authoritative description of clog's design and behavior. It is a generative specification — anyone (human or AI) should be able to implement a fully functional clog from this document alone, without access to any existing implementation.
+This document is written to be the authoritative description of clog's design and behavior. It is a generative specification - anyone (human or AI) should be able to implement a fully functional clog from this document alone, without access to any existing implementation. In practice, this file was built for use by LLM coding agents operating with human oversight.
 
 ### 0.1 What Belongs Here
 
@@ -175,7 +175,8 @@ clog/
 │   │   ├── status.ts        # Show current state
 │   │   ├── show.ts          # Display conversation content
 │   │   ├── path.ts          # Print raw file path
-│   │   ├── drain.ts         # Export conversations as JSON, markdown, or raw source
+│   │   ├── drain.ts         # Export conversations as JSON, markdown, raw source, or pair files
+│   │   ├── fill.ts          # Import portable conversation file-pair exports
 │   │   ├── talk.ts          # Launch an MCP-capable agent for conversation work
 │   │   ├── list.ts          # List conversations with filters
 │   │   ├── exclude.ts       # Append literal ignore rules to clogignore
@@ -201,6 +202,10 @@ clog/
 │   ├── db/                  # Database layer
 │   │   ├── schema.ts        # Table definitions + migrations
 │   │   └── index.ts         # Query functions
+│   ├── interchange/         # Transport-neutral conversation file-pair IO and reconciliation planning
+│   │   ├── pairs.ts         # Pair discovery, validation, metadata, and safe writing
+│   │   ├── reconcile.ts     # Deterministic git reconciliation planner
+│   │   └── fill.ts          # File-import collision planning
 │   ├── config/              # Config loading, path resolution, init
 │   │   ├── index.ts         # Path helpers (getClogHome, etc.)
 │   │   ├── schema.ts        # Zod schema, load/save
@@ -216,7 +221,7 @@ clog/
 ```
 
 Phase 2 (§10) adds: `src/search/`, plus CLI files (`search.ts`, `search-init.ts`, `index-cmd.ts`)
-Phase 3 (§11.15) adds: `src/sync/`, plus CLI files (`remote.ts`, `sync.ts`, `refresh.ts`)
+Phase 3 (§11.15) adds: `src/sync/`, plus CLI files (`remote.ts`, `sync.ts`, `refresh.ts`). Git reconciliation composes the shared interchange planner rather than owning pair scanning directly.
 
 ---
 
@@ -272,21 +277,26 @@ interface ConversationMeta {
   saveVersion: number;           // Increments on re-save after edits
 
   // File references
-  sourcePath: string;            // Original file path in source location (e.g., ~/.claude/...)
-  filePath: string | null;       // Path to raw JSONL copy in ~/.clog/raw/ (null until add)
+  sourcePath: string;            // Local source path, git checkout path, or managed import path
+  filePath: string | null;       // Managed content path for saved rows; null until save/import
   sourceMtime: string | null;    // ISO 8601 mtime of source file at last scan
+  indexedAt: string | null;      // Phase 2 search cache freshness marker
+
+  // Provenance
+  originKind: "local" | "git" | "file";
+  originRef: string | null;      // Configured git remote URL for git rows; null for every other kind
 
 }
 ```
 
 Phase 2 (§10) adds: `indexedAt`
-Phase 3 (§11.4) adds: `origin`
+Phase 3 (§11.4) adds: `originKind` and `originRef`
 
-For the built-in Phase 1 sources, `id = sourceId`. Claude Code and Codex CLI both emit UUID-shaped native IDs, and `id` remains the physical primary key in the local database. The `(source, sourceId)` pair is also unique and is the logical source identity. If discovery or remote import encounters an `id` collision where the existing row has a different `(source, sourceId)`, clog treats that conversation as a fatal unsupported-source-identity error and does not auto-merge, overwrite, or synthesize a new ID. If a future source does not provide UUID-shaped IDs with comparably low collision risk for clog's scale, that source must define a storage-key strategy before it can be added.
+For the built-in Phase 1 sources, `id = sourceId`. Claude Code and Codex CLI both emit UUID-shaped native IDs, and `id` remains the physical primary key in the local database. The `(source, sourceId)` pair is also unique and is the logical source identity. If discovery or pair import encounters an `id` collision where the existing row has a different `(source, sourceId)`, clog treats that conversation as a fatal unsupported-source-identity error and does not auto-merge, overwrite, or synthesize a new ID. If a future source does not provide UUID-shaped IDs with comparably low collision risk for clog's scale, that source must define a storage-key strategy before it can be added.
 
 This is intentional. clog does not use a composite key for the built-in sources because a single physical `id` keeps identity handling, file naming, CLI resolution, MCP retrieval, and sync reconciliation simpler and less bug-prone for the current sources. At clog's expected scale and with the built-in sources' UUID-shaped IDs, a cross-source collision is not a realistic design constraint for Phase 1.
 
-**Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` is the dirty/status marker for user-visible metadata or content-marker changes; `savedAt` is the latest successful save time and the baseline for cheap modified-since-save checks; `savedMessageCount` is the transcript diff boundary, not a timestamp; `sourceMtime` is the local source scan cache marker; Phase 2 `indexedAt` is the search cache freshness marker.
+**Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` is the dirty/status marker for user-visible metadata or content-marker changes; `savedAt` is the latest successful save time and the baseline for cheap modified-since-save checks; `savedMessageCount` is the transcript diff boundary, not a timestamp; `sourceMtime` is the local source scan cache marker; `indexedAt` is the search cache freshness marker.
 
 **Summary metadata:** `summary` is the prose summary. `summaryKind` records who or what produced that prose:
 
@@ -303,7 +313,7 @@ This is intentional. clog does not use a composite key for the built-in sources 
 
 **Summary freshness:** v1 does not track whether a generated summary/extraction still covers the current saved checkpoint. If a conversation is summarized, later extended, and saved again, the existing `summary`, `summaryKind`, and `summaryExtraction` remain in place until the user or an agent clears or refreshes them. `clog_get` remains the source of truth for transcript content. Future freshness tracking should derive from a content hash of the summarized window rather than an agent-reported message count.
 
-**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to remote metadata by default. `projectName` is the stored project label, usually the basename of `projectPath`. User-facing table columns and `--project <name>` label it "project." MCP tool inputs and responses expose the field as `project` so agents see one name for the concept. Remote metadata uses `projectName` for wire compatibility with the stored model. Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
+**Project metadata:** clog stores project identity in two fields. `projectPath` is the detected local project directory path when available. It is local/contextual metadata, not a stable cross-machine project identity, and must not be written to pair metadata by default. `projectName` is the stored project label, usually the basename of `projectPath`. User-facing table columns and `--project <name>` label it "project." MCP tool inputs and responses expose the field as `project` so agents see one name for the concept. Pair metadata uses `projectName` for wire compatibility with the stored model. Path-based filters such as `includePaths`, `excludePaths`, and path-like `clogignore` rules match against the full normalized `projectPath`.
 
 ### 3.2 Message Format (On-Demand Parsing)
 
@@ -390,9 +400,18 @@ CREATE TABLE conversations (
   saved_at    TEXT,
   saved_message_count INTEGER,
   save_version INTEGER DEFAULT 0,
-  source_path     TEXT NOT NULL,       -- Original file path in source location
-  file_path       TEXT,               -- Path to raw JSONL copy in ~/.clog/raw/ (null until add)
+  source_path     TEXT NOT NULL,       -- Local source path, git checkout path, or managed import path
+  file_path       TEXT,               -- Managed content path for saved rows; null until save/import
   source_mtime    TEXT,               -- ISO 8601 mtime of source file at last scan
+  indexed_at      TEXT,
+  origin_kind     TEXT NOT NULL DEFAULT 'local'
+                  CHECK(origin_kind IN ('local','git','file')),
+  origin_ref      TEXT,
+  CHECK(
+    (origin_kind = 'git' AND origin_ref IS NOT NULL)
+    OR
+    (origin_kind IN ('local','file') AND origin_ref IS NULL)
+  ),
   UNIQUE(source, source_id)
 );
 ```
@@ -409,17 +428,19 @@ Fresh installs create all tables with the latest schema and set the version to t
 |---------|---------|
 | 1 | Initial schema (Phase 1) |
 | 2 | Add `indexed_at` for Phase 2 semantic search |
-| 3 | Add `origin` for Phase 3 team sharing |
+| 3 | Add legacy `origin` for Phase 3 team sharing |
 | 4 | Rename save checkpoint fields and the saved state value from the legacy publish terminology |
 | 5 | Add `summary_kind` and `summary_extraction` for agent-assisted summarization |
 | 6 | Constrain conversation state to `discovered` and `saved` |
+| 7 | Split legacy `origin` into `origin_kind` and `origin_ref` |
 
 Phase 2 (§10) adds: `indexed_at` column (migration version 2)
-Phase 3 (§11.4) adds: `origin` column (migration version 3)
+Phase 3 (§11.4) adds: `origin_kind` and `origin_ref` columns (migration version 7, after the legacy version-3 sync marker)
 The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
 The summarization migration (version 5) adds `summary_kind` with a default of `none` and a CHECK constraint over `none`, `imported`, `generated`, and `curated`; adds nullable `summary_extraction`; and back-fills `summary_kind = 'curated'` for existing rows whose `summary` is non-empty. This conservative back-fill prevents agent summarization from overwriting prose the user may already have edited.
+The provenance migration (version 7) rebuilds the conversations table for sql.js compatibility, replaces legacy `origin` with `origin_kind` and `origin_ref`, back-fills rows whose legacy `origin` value is null as `origin_kind = 'local', origin_ref = NULL`, and back-fills rows whose legacy `origin` value is non-null as `origin_kind = 'git', origin_ref = <legacy origin URL>`. Fresh installs create the version-7 schema directly.
 
-**What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in the JSONL files — at `file_path` (the `~/.clog/raw/` copy) for saved conversations, or at `source_path` (the original source location) for discovered conversations. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
+**What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in JSONL files. For saved conversations, `file_path` points at the managed content file: local rows use `~/.clog/raw/`, git rows use `~/.clog/remote/`, and file-imported rows use `~/.clog/imports/`. For discovered conversations, `source_path` points at the original source location. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
 
 ### 3.5 Storage Location
 
@@ -428,12 +449,15 @@ The summarization migration (version 5) adds `summary_kind` with a default of `n
 ├── clog.db                  # SQLite database — metadata only (~5MB at scale)
 ├── config.json              # User configuration
 ├── clogignore               # User-edited ignore rules for discovery/import filtering
-└── raw/                     # Source JSONL files copied when conversations are saved
-    ├── claude-code/
-    │   ├── c7044ea5-c019-44d6-a77a-500036740f9a.jsonl
-    │   └── 123e4567-e89b-12d3-a456-426614174000.jsonl
-    └── codex-cli/
-        └── 550e8400-e29b-41d4-a716-446655440000.jsonl
+├── raw/                     # Source JSONL files copied when conversations are saved locally
+│   ├── claude-code/
+│   │   ├── c7044ea5-c019-44d6-a77a-500036740f9a.jsonl
+│   │   └── 123e4567-e89b-12d3-a456-426614174000.jsonl
+│   └── codex-cli/
+│       └── 550e8400-e29b-41d4-a716-446655440000.jsonl
+└── imports/                 # Managed JSONL copies imported by clog fill
+    └── claude-code/
+        └── 99999999-9999-4999-9999-999999999999.jsonl
 ```
 
 On Windows, the default location is `%USERPROFILE%\.clog\` (resolved via `os.homedir()`). The `CLOG_HOME` environment variable overrides this on all platforms.
@@ -441,6 +465,7 @@ On Windows, the default location is `%USERPROFILE%\.clog\` (resolved via `os.hom
 **Raw file copies and disk usage:** `clog save` copies the source JSONL file into `~/.clog/raw/`. Before that, clog reads from the source location directly (read-only). This avoids doubling disk usage for conversations the developer never intends to curate. Source-specific raw directories such as `raw/claude-code/` and `raw/codex-cli/` are created lazily when first needed for a write, and are not automatically removed later if they become empty.
 
 Phase 3 (§11.3) adds: `remote/` directory for the git checkout
+`clog fill` adds the flat `imports/<source>/<id>.jsonl` managed store for read-only file imports. `--own` restores into the normal `raw/<source>/<id>.jsonl` path instead.
 
 ---
 
@@ -876,6 +901,8 @@ clog drain <selector>      Export conversation data to stdout (JSON by default)
 clog drain [filters]       Export a filtered set to stdout
 clog drain <selector> --to <path>  Export one conversation to a file
 clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a directory
+clog drain <selectors...> --format pair --to-dir <dir>  Export saved conversations as portable conversation file pairs
+clog fill <dir> [--own]    Import portable conversation file pairs
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
@@ -1005,7 +1032,7 @@ Unsaved conversations:
 
 ### 5.3 The `list` Command
 
-`clog list` with no flags shows saved conversations. This is the knowledge-base view: conversations the user has explicitly saved locally, plus same-author synced saved conversations when sync is configured.
+`clog list` with no flags shows saved conversations. This is the knowledge-base view: conversations the user has explicitly saved locally, plus same-author imported saved conversations from git reconciliation or `clog fill` when `config.author` is set. If `config.author` is unset, the default view shows saved local conversations only. §11.10 defines the exact provenance filter.
 
 **Flags:**
 
@@ -1018,6 +1045,7 @@ Unsaved conversations:
 | `--tag <tag>` | `-t` | Filter by tag |
 | `--grep <text>` | `-g` | Filter by text match on title, summary, or message content |
 | `--columns <cols>` | `-c` | Columns to show (comma-separated: `id,date,state,source,project,author,title`, or `all`) |
+| `--origin <origin>` | | Filter by provenance view: `local` for `origin_kind = 'local'`, `remote` for imported rows (`origin_kind != 'local'`) |
 
 ```bash
 # Filter by state
@@ -1102,7 +1130,7 @@ The raw JSONL copy is the curated content for saved conversations. For a saved c
 
 ### 5.4.1 The `tag` and `untag` Commands
 
-`clog tag` and `clog untag` manage the `tags` array on a saved conversation's metadata row. They operate on saved local conversations; discovered conversations are not part of the curated knowledge base yet, and remote conversations are read-only and are rejected (see §11.6).
+`clog tag` and `clog untag` manage the `tags` array on a saved conversation's metadata row. They operate on saved local conversations; discovered conversations are not part of the curated knowledge base yet, and imported conversations are read-only and are rejected (see §11.6).
 
 ```bash
 # Add tags
@@ -1122,7 +1150,7 @@ If every requested tag is already present, `clog tag` is a no-op: it does not up
 
 If none of the requested tags are present, `clog untag` is a no-op: it does not update `modified_at` and reports that no matching tags were found.
 
-When `clog tag` or `clog untag` actually changes the tag set, `modified_at` is set to the operation time. Saved indexed conversations are marked stale for search according to §10.8.1.
+When `clog tag` or `clog untag` actually changes the tag set, `modified_at` is set to the operation time. Tag changes update database metadata used by filters, but they do not trigger vector re-indexing and do not change `indexedAt` because tags are not part of the embedded search content (§10.8.1).
 
 ### 5.5 Implicit Scanning
 
@@ -1137,15 +1165,16 @@ Scanning is idempotent. Each scan will:
 - Find new conversations not yet in the database → insert as `discovered`
 - When inserting a new local discovered conversation, set `author = config.author`. Later scans must not rewrite `author`; use `clog edit --author` or `clog rename-author` for explicit changes.
 - Skip conversations whose source file hasn't changed (matched by `source + sourceId`, checked via `source_mtime`)
-- **Detect updated source files** for conversations in any state. When a source file's mtime has changed since last scan:
+- If a local source candidate has the same `(source, sourceId)` as a `git` or `file` row, leave the imported row unchanged and do not insert a duplicate local row. The imported row remains authoritative for that identity until the user removes it.
+- **Detect updated source files** for local conversations in any state. When a source file's mtime has changed since last scan:
   - For `discovered` conversations: re-extract metadata (title and summary may change as the conversation grows). If the re-extracted summary is non-blank, set `summaryKind = "imported"`; otherwise set `summaryKind = "none"`. `summaryExtraction` remains `null`.
   - For `saved` conversations: preserve the stored metadata row and preserve the saved raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `summaryKind`, `summaryExtraction`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog save <id>` to refresh and save the newer source content.
-- **Detect moved source files.** When a known conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `saved` conversations, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
+- **Detect moved source files.** When a known local conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `discovered` conversations, also update `projectPath` and `projectName`. For `saved` conversations, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
 - **Prune stale entries per source.** After discovery completes, remove `discovered`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Saved conversations are never pruned because they have their own copies in `~/.clog/raw/`. The scan reports a `pruned` count alongside other filter counts.
 
 **Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting. This includes `clog status`, `clog list`, `clog save --all`, selector-bearing `clog save`, and any other command path that refreshes the discovered corpus before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. The command exit code remains 0 unless the requested operation itself fails.
 
-Source discovery and remote reconciliation warnings use a structured internal shape:
+Source discovery, pair validation, file import, and git reconciliation warnings use a structured internal shape:
 
 ```typescript
 type ClogWarningCode =
@@ -1155,9 +1184,15 @@ type ClogWarningCode =
   | "path_filter_without_project"
   | "unsupported_source"
   | "missing_source_file"
-  | "remote_incomplete_pair"
-  | "remote_invalid_metadata"
-  | "remote_invalid_content";
+  | PairWarningCode;
+
+type PairWarningCode =
+  | "pair_incomplete"
+  | "pair_invalid_metadata"
+  | "pair_id_mismatch"
+  | "pair_invalid_content"
+  | "pair_layout_mismatch"
+  | "pair_duplicate_identity";
 
 interface ClogWarning {
   code: ClogWarningCode;
@@ -1170,17 +1205,19 @@ interface ClogWarning {
     id: string;
     source: string;
   };
-  remote?: {
-    author: string;
+  pair?: {
+    author?: string;
     source: string;
     id: string;
   };
 }
 ```
 
-CLI output may group warnings by `code` to avoid pages of repeated text. MCP surfaces the same warnings in a top-level `warnings` array on tools that perform scanning or remote reconciliation; warnings are never injected into transcript text.
+CLI output may group warnings by `code` to avoid pages of repeated text. MCP surfaces the same warnings in a top-level `warnings` array on tools that perform scanning or git reconciliation; warnings are never injected into transcript text.
 
-This structured warning contract applies to source discovery and remote reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
+Source discovery keeps source-specific codes such as `malformed_jsonl`, `missing_source_id`, `source_id_mismatch`, `path_filter_without_project`, `unsupported_source`, and `missing_source_file`. Conversation file-pair validation and reconciliation use the `pair_*` codes above. A filename stem versus `meta.id` mismatch is `pair_id_mismatch` and the message names both values. A valid pair in the wrong git author or source directory is `pair_layout_mismatch`, not invalid metadata.
+
+This structured warning contract applies to source discovery, conversation file-pair validation, file import, and git reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
 
 **Graceful handling of missing sources in scan-driven save flows.** `clog save --all` and selector-bearing `clog save` require a fresh scan because they operate on the current discovered corpus. If a requested selector no longer matches anything after that refresh, the command fails as "no conversation or project matches." If a source file disappears after scan but before the copy step, clog warns, deletes the stale discovered row, and skips that conversation rather than crashing.
 
@@ -1299,7 +1336,7 @@ The `Summary:` line includes `summaryKind` in parentheses. Extraction lines are 
 
 When source is shown in CLI or MCP metadata, use the canonical raw source key such as `claude-code` or `codex-cli`, not a separate human-friendly display label.
 
-`clog show` and `clog path` resolve content paths by origin and source. Local curated conversations read from `~/.clog/raw/<source>/<id>.jsonl`; discovered conversations read from `sourcePath`; remote conversations read from `~/.clog/remote/<author>/<source>/<id>.jsonl`. `clog diff` is local-only; see §5.8.
+`clog show` and `clog path` resolve content paths from the stored row. Discovered local conversations read from `sourcePath`. Saved conversations read from `filePath`, which points at `~/.clog/raw/<source>/<id>.jsonl` for local saved rows, `~/.clog/remote/<author>/<source>/<id>.jsonl` for git-imported rows, and `~/.clog/imports/<source>/<id>.jsonl` for file-imported rows. `clog diff` is local-only; see §5.8.
 
 ### 5.7.2 The `plunge` Command
 
@@ -1326,7 +1363,7 @@ Unlike normal clog commands, `clog plunge` is not a bootstrap path. It inspects 
 
 It intentionally does not audit search/vector coherence, remote checkout coherence, sync reconciliation state, storage compaction opportunities, orphan raw-file cleanup, or source-location health. Those are separate concerns.
 
-For `plunge`, `local` means `origin IS NULL`.
+For `plunge`, `local` means `origin_kind = 'local'`.
 
 Findings use three severities:
 
@@ -1414,15 +1451,15 @@ Like other DB-touching paths, `clog plunge` acquires the DB lock for the duratio
 ### 5.7.3 The `drain` Command
 
 `clog drain` exports conversations out of clog as portable files or stdout
-payloads. It is the inverse of curation: `add` and `save` bring
-conversations into clog's curated corpus; `drain` lets them flow back out.
+payloads. It is the inverse of curation: `clog save` brings conversations into
+clog's curated corpus; `drain` lets them flow back out.
 
 `clog drain` is read-only. It never modifies the database, raw files,
 source files, or remote checkout contents.
 
 This section defines the user-visible command contract. Lower-level export
 format notes for `drain` live in
-`docs/DRAIN_SPEC_NOTES.md`.
+`docs/IMPLEMENTED/DRAIN_SPEC_NOTES.md`.
 
 Supported command shapes:
 
@@ -1437,6 +1474,7 @@ clog drain [filters] --refresh          Refresh local discovery, then export.
 clog drain --to-dir <dir>               Default curated export to a directory.
 clog drain <selectors...> --to-dir <dir> Multiple conversations to a directory.
 clog drain --to-dir <dir> [filters]     Filtered conversations to a directory.
+clog drain <selectors...> --format pair --to-dir <dir>  Saved conversations as portable conversation file pairs.
 ```
 
 #### 5.7.3.1 Resolved Conversation Set
@@ -1472,7 +1510,7 @@ flags.
   one of its member conversation IDs, does not produce duplicate exports.
 - If neither selectors nor filters is present, the default scope matches
   `clog list`'s curated-by-default view: local curated conversations plus
-  same-author synced remote conversations.
+  same-author imported conversations.
 - If neither selectors nor filters is present and `config.author` is empty or
   unset, the default scope is local curated conversations only.
 - Broader export requires explicit filters such as `--origin remote`,
@@ -1529,13 +1567,21 @@ Drained 41 conversations to ./export/
 Drained 38 conversations to ./export/ (3 failed)
 ```
 
+Pair-format directory mode writes one conversation as two files, `<source>/<id>.jsonl`
+and `<source>/<id>.meta.json`, using the shared interchange writer. Without
+`--force`, either destination file already existing skips that conversation and
+writes neither side. With `--force`, replacement is pair-atomic for overwrite
+policy: clog writes the JSONL through the atomic writer first and installs
+canonical metadata last, so a complete metadata file implies its content file is
+present.
+
 #### 5.7.3.3 Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--to <path>` | `-o` | Write one exported conversation to this file path. Single-file mode only. |
 | `--to-dir <dir>` | | Write one file per conversation to this directory. Directory mode only. |
-| `--format <fmt>` | `-f` | Output format: `json` (default) or `md`. |
+| `--format <fmt>` | `-f` | Output format: `json` (default), `md`, or directory-only `pair`. |
 | `--raw` | | Emit the exact underlying source file instead of parsed export data. Incompatible with `--format`. |
 | `--force` | | File and directory output modes only. Overwrite an existing target file or directory entry. |
 | `--refresh` | | Refresh local discovery before resolving the export set. This may update the discovered corpus and emit aggregated scan warnings to stderr. |
@@ -1560,7 +1606,7 @@ Filter semantics:
 - `--project` matches `projectName` by case-insensitive exact equality
 - `--author` matches `author` by exact, case-sensitive string equality
 - `--tag` matches normalized tags by exact, case-insensitive equality
-- `--origin` matches `local` or `remote` exactly
+- `--origin` matches `local` or `remote` exactly; `remote` means imported rows (`origin_kind != 'local'`)
 
 `clog drain` does not support `clog list` display or discovery-expansion
 flags such as `--columns` or `--all`, and it does not support content-search
@@ -1610,10 +1656,9 @@ selectors, filters, or both; the format-specific match-count rules from
 `clog drain` can export any conversation whose content path resolves
 successfully:
 
-- **Saved (local)** — reads from the curated raw copy at `filePath`
+- **Saved** — reads from `filePath`, whether that path is a local raw copy, a
+  git checkout file, or an import-managed file
 - **Discovered** — reads from `sourcePath` if the source file still exists
-- **Remote** — reads from the resolved remote checkout path, using the same
-  content-path resolution rules as `clog show` and `clog path`
 
 Content-path resolution must reuse the same logic as `clog show` /
 `clog path`.
@@ -1636,19 +1681,20 @@ This order governs:
 
 | Code | Condition |
 |------|-----------|
-| `0` | All requested conversations were successfully drained. |
-| `1` | The command was valid but one or more conversations could not be drained, or the resolved set was empty. Partial success is allowed in directory mode. |
+| `0` | All drainable requested conversations were successfully drained. In pair-format directory mode, discovered rows skipped from broad selections do not make the command fail. |
+| `1` | The command was valid but one or more conversations failed, the resolved set was empty, or a pair-format broad selection matched only unsaved discovered rows. Partial success is allowed in directory mode. |
 | `2` | Usage error (bad flags, ambiguous ID, unsupported match count for the selected stdout format, etc.). |
 
 #### 5.7.3.8 Export Formats and Scope
 
-`clog drain` supports three export formats:
+`clog drain` supports these export formats:
 
 - `json` — the canonical parsed export format, using clog-native metadata
   field names plus parsed `messages`
 - `md` — a human-readable transcript export
-- `--raw` — the exact underlying source file with no parsing or metadata
-  envelope
+- `--raw` — the exact underlying source file with no parsing or metadata envelope
+- `pair` — a directory-only interchange export: one metadata file plus one
+  source JSONL file per saved conversation
 
 The JSON export is a portable export object, not a dump of clog's internal
 database row. It includes user-facing metadata such as `id`, `source`,
@@ -1657,7 +1703,8 @@ database row. It includes user-facing metadata such as `id`, `source`,
 `extraction` is the exported name for `summaryExtraction`. It intentionally omits
 local-only/internal fields such as `sourceId`, `projectPath`,
 `discoveredAt`, `modifiedAt`, `savedMessageCount`, `saveVersion`,
-`sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, and `origin`.
+`sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, `originKind`, and
+`originRef`.
 
 Markdown is a convenience rendering, not the canonical export contract.
 Markdown stdout mode requires exactly one matching conversation. File mode
@@ -1671,10 +1718,32 @@ and `clog show` use. In stdout mode and file mode, `--raw` requires
 exactly one matching conversation. In directory mode, `--raw` writes one
 raw file per conversation.
 
+Pair export is valid only with `--to-dir`. It exports saved rows of any
+provenance kind when their resolved content path is readable. The JSONL file is
+copied byte-for-byte from the same path used by `clog show` and `clog path`; it
+is not parsed and reserialized. Pair metadata uses the shared interchange schema
+from §11.2. It includes save-time metadata such as `summaryKind` and
+`summaryExtraction`, and it omits local database fields such as `originKind`,
+`originRef`, `projectPath`, `discoveredAt`, `indexedAt`, managed content paths,
+and parser checkpoints. The output layout is:
+
+```text
+<target>/<source>/<id>.jsonl
+<target>/<source>/<id>.meta.json
+```
+
+Pair export targets saved conversations only because pair metadata requires
+save-time fields. Discovered rows reached by a broad selection are skipped and
+reported in the final summary. An explicitly named discovered conversation ID is
+a per-conversation failure because the user asked for that row by name. If a
+broad selection matches only discovered rows, `clog drain --format pair` errors
+with a message that those conversations must be saved before pair export.
+
 File mode writes to the exact path supplied by `--to`. Directory mode
 writes one file per conversation and assigns filenames deterministically
 from the full conversation ID and selected format. The exact filename and
-low-level serialization rules are documented in `docs/DRAIN_SPEC_NOTES.md`.
+low-level serialization rules for non-pair exports are documented in
+`docs/IMPLEMENTED/DRAIN_SPEC_NOTES.md`.
 
 #### 5.7.3.9 Scope Boundaries
 
@@ -1697,6 +1766,8 @@ Specific `clog drain` error conditions:
 | No IDs, no filters, no `--to`, no `--to-dir` | Usage error: `clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.` Exit `2`. |
 | `--to` with `--to-dir` | Usage error. Exit `2`. |
 | `--raw` with `--format` | Usage error. Exit `2`. |
+| `--format pair` without `--to-dir` | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
+| `--format pair` with `--to <path>` | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
 | `--force` without `--to` or `--to-dir` | Usage error. Exit `2`. |
 | `--refresh` present | Run the same local discovery refresh as `clog list` before resolving the export set; scan warnings are emitted to stderr. |
 | Ambiguous ID prefix | Same ambiguity behavior as other clog commands. When filters are present, ambiguity is evaluated within the filtered candidate set. Exit `2`. |
@@ -1706,16 +1777,186 @@ Specific `clog drain` error conditions:
 | Stdout `raw` with multiple matches | Usage error: raw stdout requires exactly one conversation. Exit `2`. |
 | `--to` with multiple matches | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
 | Parent directory for `--to` does not exist | Error. Exit `1`. |
-| Source/raw/remote content path missing | Error for that conversation. Stdout mode exits `1`; file mode exits `1`; directory mode continues and exits `1` if any failures occurred. |
+| Source/raw/import/remote content path missing | Error for that conversation. Stdout mode exits `1`; file mode exits `1`; directory mode continues and exits `1` if any failures occurred. |
 | Parse failure in parsed formats | Error for that conversation. Same partial-success model. |
 | Output file already exists (no `--force`) | File mode: error and exit `1`. Directory mode: skip that conversation, report error, continue, exit `1` if any conflicts occurred. |
+| Pair export destination already has either side (no `--force`) | Skip that conversation, write neither side, report the conflict, continue, and exit `1` if any conflicts occurred. |
+| Explicitly named discovered ID with `--format pair` | Per-conversation failure because pair export requires saved metadata. Directory mode continues and exits `1`. |
+| Broad pair export selection resolves only discovered rows | Error naming the unsaved matches and telling the user to save them first. Exit `1`. |
 | `--to-dir` directory cannot be created | Error. Exit `1`. |
 
 In directory mode, failures are reported individually to stderr as they
 occur, identifying the conversation and the reason. Export continues with
 remaining conversations. After processing completes, `clog drain` prints a
 one-line summary reporting the number written and, when non-zero, the
-number failed.
+number failed. Pair-format directory export also reports the count of unsaved
+rows skipped by a broad selection, for example `Drained 5 conversations to
+./export/ (1 failed, 2 unsaved skipped)`.
+
+### 5.7.4 The `fill` Command
+
+`clog fill <dir>` imports portable conversation file pairs written by
+`clog drain --format pair` or by git sync's shared pair writer. It is the
+directory-import counterpart to `clog drain --format pair`.
+
+```bash
+clog fill ./export
+clog fill ./export --own
+clog fill ./export --dry-run
+clog fill ./export --allow-partial
+clog fill ./export --own --allow-partial
+```
+
+Default fill imports read-only rows with `origin_kind = 'file'` and
+`origin_ref = NULL`. `clog fill --own` restores conversation file pairs authored
+by `config.author` as editable local rows with `origin_kind = 'local'` and
+`origin_ref = NULL`. Only `git` rows carry a non-null `origin_ref`.
+
+Input scanning uses the shared pair scanner, so metadata-only and JSONL-only
+stems are visible and reported as `pair_incomplete`. Pair validation is the
+transport-neutral validation from §11.2. Duplicate detection runs on valid
+pairs only, after pair validation and `clogignore` filtering: fill groups the
+remaining candidates by `(source, id)` and rejects every pair in any group with
+more than one member, emitting `pair_duplicate_identity` and choosing no
+traversal-order winner. One valid pair plus one invalid pair for the same
+identity is not a duplicate. Under `--own`, a duplicate group is rejected before
+the author guard runs.
+
+Fill's reject-all here deliberately differs from git reconciliation's first-wins
+(§11.8): git's checkout is author-partitioned, so "first" is a meaningful, stable
+order, while a fill input directory is layout-neutral, so any winner would be
+filesystem-traversal luck.
+
+**Design rationale.** The divergence tracks one real difference in the inputs,
+not a stylistic inconsistency. Git reconciliation runs continuously against a
+shared checkout the user often does not control, where the same conversation
+saved by two teammates is an expected collision (§11.13); failing a whole pull
+over one duplicate would be a denial of sync that no local action could clear, so
+reconciliation must resolve it deterministically — and the author-partitioned
+layout supplies a stable, content-derived order to do so. `clog fill` is instead
+a one-shot import of a directory the user owns and chose, where a duplicate is
+almost always a mistake (most often pointing fill at a full team checkout);
+failing is cheap, recoverable, and informative, and because the tree carries no
+authoritative order, any silent winner would discard one author's curation
+invisibly. Do not harmonize the two: making fill first-wins reintroduces
+arbitrary silent winner-picking, and making git reject-all turns one team
+duplicate into a sync the user cannot complete. The same continuous-and-shared
+versus one-shot-and-owned distinction is why git reconciliation can delete rows
+(§11.8) while fill is additive-only and never deletes.
+
+The import subset of `clogignore` applies to fill: UUID rules and ID prefixes
+match pair IDs, and simple names match pair `projectName` case-insensitively.
+Path-like and filename-only rules do not suppress pair import. Pairs skipped by
+`clogignore` are not failures and are not candidates for the `--own` author
+guard. When one or more candidates are skipped by `clogignore`, fill prints one
+summary line naming the count.
+
+Before any write, fill performs validation, ignore filtering, duplicate
+detection, the `--own` author guard, and collision planning. Without
+`--allow-partial`, any failure-class candidate aborts the command before writing
+database rows or managed files. With `--allow-partial`, fill skips those
+candidates, writes valid candidates, and exits `1`. Failure-class candidates
+are malformed pairs, duplicate input identities, unsupported `file`/`git` to
+`local` promotions, and collisions with existing `git` rows. The `--own` author
+guard remains fail-closed even with `--allow-partial`: every remaining
+candidate's metadata author must equal `config.author`, or fill reports all
+offending pairs and writes nothing.
+
+Fill resolves each candidate by `(source, id)`. Resolution is by provenance and
+deterministic order, never by timestamp, and every outcome is chosen so fill
+never trips the `UNIQUE(source, source_id)` constraint as an error. Fill uses the
+same conversation file-pair layer and resolution policy as git reconciliation
+(§11.8), implemented by a fill-specific planner:
+
+| Existing row | Default `clog fill` | `clog fill --own` |
+|--------------|---------------------|-------------------|
+| none | Insert a read-only `file` row | Insert a writable `local` row after the author guard |
+| local discovered | Skip with guidance to save locally or restore with `--own` | Restore over the discovered row as a saved local row |
+| local saved | Skip because local curation takes precedence | Skip because existing local curation wins |
+| file | Update if metadata or parsed content changed; otherwise unchanged | Failure-class skip because promotion is unsupported |
+| git | Failure-class skip because a synced read-only copy owns the identity | Failure-class skip because promotion is unsupported |
+
+When `--own` restores over an existing local discovered row, the pair metadata
+and content win. Fill preserves only the existing `discoveredAt`, writes the
+managed raw copy to `raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`,
+sets `sourceMtime` from the managed copy, sets `projectPath = null`, and stores
+the row as a clean saved local conversation. A later local source scan may
+reattach a live source path. If a later save would replace filled or restored
+content with a discovered local source version, clog asks for confirmation
+before overwriting the managed copy.
+
+Default fill writes managed content to:
+
+```text
+~/.clog/imports/<source>/<id>.jsonl
+```
+
+`--own` writes the same canonical raw path that `clog save` uses:
+
+```text
+~/.clog/raw/<source>/<id>.jsonl
+```
+
+The managed copy is written with the shared atomic writer. For file-row inserts
+and content updates, fill writes the JSONL copy before flushing the database row.
+If the process exits between the file rename and the DB flush, the managed file
+is valid but the row may still contain stale metadata; the next fill run detects
+the difference and updates the row. Fill imports clean saved artifacts:
+`savedAt` and `modifiedAt` come from pair metadata, and the managed copy write
+time must not make the imported row appear modified.
+
+New imported/restored rows use pair metadata plus these derived fields:
+
+- `sourceId = id`
+- `state = 'saved'`
+- `saveVersion = 1`
+- `savedMessageCount` from the parsed `Message[]` length
+- `projectPath = null`
+- `indexedAt = null`
+- `filePath` and `sourcePath` set to the managed copy
+- `sourceMtime` from the managed copy
+- `discoveredAt` set to import time, except discovered-row restore preserves the existing `discoveredAt`
+
+File-row updates are triggered by a changed pair metadata field or a changed
+parsed `savedMessageCount`. Metadata-only updates do not recopy content. A
+changed `savedMessageCount` overwrites the managed copy and refreshes the
+checkpoint. File-row updates clear `indexedAt` when title, summary, or parsed
+transcript content changes; tag-only changes and path-only locator changes
+preserve `indexedAt` when title, summary, and parsed content are unchanged.
+
+`--dry-run` performs scanning, validation, ignore filtering, duplicate
+detection, the `--own` author guard, collision planning, and summary rendering
+without writing database rows, managed files, vectors, checkout files, source
+files, or `clogignore`.
+
+Fill prints a one-line summary to stderr:
+
+```text
+Processed 12 conversation pairs from ./export/ (9 new, 1 updated; 2 skipped)
+```
+
+It also prints targeted guidance:
+
+- foreign-author default imports are hidden from the default list and can be
+  seen with `clog list --all`
+- when every importable default-mode candidate has `author = config.author`,
+  `--own` restores editable local rows
+- when search is configured and imported or updated rows are stale, `clog index`
+  indexes them
+
+`clog remove` deletes managed `imports/<source>/<id>.jsonl` copies for removed
+file rows, deletes `raw/` copies for removed local rows, and leaves git checkout
+content alone. The stronger only-copy warning applies to a saved local row when
+`sourcePath` is missing, unreadable, or identifies the same managed copy as
+`filePath`.
+
+Exit codes:
+
+| Code | Condition |
+|------|-----------|
+| `0` | All candidates were imported, updated, unchanged, ignored, or benignly skipped, with no failure-class candidates. |
+| `1` | Pair validation failure, duplicate identity, author-guard failure, unreadable directory, no pair stems found, collision failure, or any skipped failure-class candidate under `--allow-partial`. |
+| `2` | Usage error. |
 
 ### 5.8 The `diff` Command
 
@@ -1735,7 +1976,7 @@ $ clog diff --first 5         # alias for --head
 $ clog diff --last 3          # alias for --tail
 ```
 
-`clog diff` works only on local conversations (`origin IS NULL`). Remote conversations are read-only saved artifacts from another author, so clog does not compute local new-since-save diffs for them. With no arguments, `clog diff` ignores remote conversations. If a user explicitly runs `clog diff <remote-id>`, clog returns a clear error explaining that diff is only available for local conversations and suggests `clog show <id>` to inspect the remote content.
+`clog diff` works only on local conversations (`origin_kind = 'local'`). Git-imported and file-imported conversations are read-only saved artifacts, so clog does not compute local new-since-save diffs for them. With no arguments, `clog diff` ignores non-local conversations. If a user explicitly runs `clog diff <imported-id>`, clog returns a clear error explaining that diff is only available for local conversations and suggests `clog show <id>` to inspect the imported content.
 
 `clog diff` uses the saved parser-sequence checkpoint to show only what was added since the last save. `saved_message_count` is the number of parsed messages included in the last saved version. `clog diff` re-parses the current save candidate and shows `messages.slice(savedMessageCount)`. For a saved conversation whose source file exists and differs from the current raw copy, the save candidate is the source file, matching explicit `clog save <id>` behavior. Otherwise, the save candidate is the existing raw copy. Each conversation gets a header:
 
@@ -1749,17 +1990,18 @@ If `saved_message_count` is `null`, the saved baseline is treated as empty and t
 
 The checkpoint assumes source conversations are append-only and adapter parsing is deterministic. `saved_message_count` detects obvious boundary breakage when the current parsed message count is less than the stored checkpoint. It cannot detect every edit before the saved boundary when the current count remains greater than or equal to the checkpoint; in that case the count may no longer point to the same logical message. This is accepted behavior for direct raw-file editing; the recovery path is to review and re-save the conversation so the checkpoint reflects the edited file.
 
-**Modified-since-save model:** A saved conversation is considered modified when any of these are true:
+**Modified-since-save model:** A local saved conversation (`origin_kind = 'local'`) is considered modified when any of these are true:
 
 - user-visible metadata changed after the last save
 - a local source file mtime changed during scan
 - a local raw copy exists and its file mtime is newer than `saved_at`
 - the current parsed message count is greater than `saved_message_count`
-- remote reconciliation changed search-visible metadata or the derived content path
 
 Status and list coloring use this same model. `savedAt` remains display/history metadata; it is not the primary cutoff for new transcript content. `modified_at > saved_at` is sufficient to mark a saved conversation as modified, but it is not sufficient to compute transcript diff content.
 
-`clog status` may use mtime and metadata timestamps as cheap dirty signals. A changed local source mtime means newer source content is available to save directly with `clog save <id>`. To determine whether a dirty saved conversation has new projected transcript messages, clog parses the same save candidate that explicit save would use: the current source file when it differs from the raw copy, otherwise the raw copy. For remote reconciliation changes, it parses the remote content path. It then compares the current parsed message count to `saved_message_count`. It does not need to parse every saved conversation on every status run.
+`clog status` may use mtime and metadata timestamps as cheap dirty signals for local saved rows. A changed local source mtime means newer source content is available to save directly with `clog save <id>`. To determine whether a dirty saved conversation has new projected transcript messages, clog parses the same save candidate that explicit save would use: the current source file when it differs from the raw copy, otherwise the raw copy. It then compares the current parsed message count to `saved_message_count`. It does not need to parse every saved conversation on every status run.
+
+Git reconciliation and `clog fill` updates are read-only imported-row changes. They can make an imported row's search index stale through `indexedAt` (§10.8.1), but they do not make the row eligible for `clog save`, `clog diff`, or the local modified-since-save status model.
 
 `clog diff` is transcript-only. Metadata-only changes can make `clog status` show a saved conversation as modified while `clog diff` shows no messages for that conversation. If the source or raw file changed but the projected message count did not, status may still show the conversation as modified because the save candidate changed, while diff shows no new projected messages.
 
@@ -1778,7 +2020,7 @@ This applies to `clog status`, `clog list`, and any other command that displays 
 
 ### 5.10 `clogignore`, `exclude`, `unexclude`, and `remove`
 
-`~/.clog/clogignore` is the single user-facing ignore file. It is plain text, hand-editable, comment-friendly, and consulted by local discovery, `clog list --all`'s discovery-backed ignored rows, and remote pull reconciliation.
+`~/.clog/clogignore` is the single user-facing ignore file. It is plain text, hand-editable, comment-friendly, and consulted by local discovery, `clog list --all`'s discovery-backed ignored rows, git pull reconciliation, and `clog fill`.
 
 Example:
 
@@ -1808,12 +2050,12 @@ Lines whose first non-whitespace character is `#` are comments. Blank lines are 
 - simple names such as `myapp` match `projectName` case-insensitively, and also match exact path components or basenames case-insensitively; they do not do substring matching
 - unsupported syntaxes such as `project:<name>`, `before:<date>`, and `after:<date>` are not valid `clogignore` rules
 
-**Remote-pull subset:** remote import candidates do not have meaningful local paths, so remote pull uses a narrower subset of the same file:
+**Import subset:** git reconciliation and `clog fill` candidates do not have meaningful local project paths, so they use a narrower subset of the same file:
 
-- UUID-like rules match exact remote IDs
-- short hex rules match remote ID prefixes
-- simple names match remote `projectName` case-insensitively
-- path-like rules and filename-only rules do not suppress remote import
+- UUID-like rules match exact pair IDs
+- short hex rules match pair ID prefixes
+- simple names match pair `projectName` case-insensitively
+- path-like rules and filename-only rules do not suppress pair import
 
 **Discovery order and fail-closed behavior:**
 
@@ -1850,16 +2092,17 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Does not require the rule to already exist in `clogignore`
 - Rejects unsupported ignore-rule syntax such as `project:<name>`, `before:<date>`, and `after:<date>` for the same reason as `exclude`
 - Shows the number of matching conversations and a compact preview before deleting anything
-- Warns that metadata, summaries, tags, search vectors, and local raw copies will be removed
+- Warns that metadata, summaries, tags, search vectors, and managed copies under `raw/` or `imports/` will be removed
 - States that source files under `~/.claude` and `~/.codex` are not modified
 - Mentions `clog drain <id@source...> --to-dir <dir>` as the exact export path before removal
-- Warns more strongly when matched saved local rows no longer have readable source files
+- Warns more strongly when matched saved local rows no longer have readable independent source files
 - Requires interactive confirmation with a default of `N`, unless `--yes` is supplied
 - Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
 - Supports `--dry-run` to preview matches without deleting rows, raw files, or vectors
 - Operates only on `saved`-state rows. Discovered rows are transient artifacts of the latest scan and would simply reappear on the next scan, so they are skipped. Use `clog exclude` to keep discovered rows from coming back.
-- Deletes the union of matching saved DB rows, local or remote
-- Deletes curated raw copies for removed local curated rows
+- Deletes the union of matching saved DB rows across provenance kinds
+- Deletes curated raw copies for removed local curated rows and managed import copies for removed file rows
+- Leaves git checkout files alone
 - Best-effort deletes search vectors for removed searchable rows
 - Reports the number of removed conversations
 - If no saved DB rows match, reports "No saved conversations in clog's database match those rules." and leaves the database unchanged, even when discovered rows would have matched the same rules
@@ -1875,7 +2118,7 @@ The line appears only if at least one count is non-zero. The undiscoverable hint
 
 The filter counts are reason-based and disjoint. If a source file still exists under a watched root but is now ignored, filtered, or undiscoverable, clog removes any stale discovered row without also incrementing `pruned`. `pruned` is reserved for discovered rows whose source file no longer appears in the scanned source roots.
 
-`clogignore` is strictly local. It is never synced to a remote, though the local file is still consulted during remote pull reconciliation.
+`clogignore` is strictly local. It is never synced to a remote, though the local file is still consulted during git pull reconciliation and file import. Git reconciliation and `clog fill` print one summary line when `clogignore` skips one or more candidate conversation file pairs.
 
 ### 5.11 Error Handling
 
@@ -1902,7 +2145,7 @@ This will rename author "bob" to "robert" on 50 local conversations.
 Continue? [y/N]
 ```
 
-This command only modifies the local DB (`UPDATE conversations SET author = 'new' WHERE author = 'old' AND origin IS NULL`). It does not modify config.
+This command only modifies local rows (`origin_kind = 'local'`). It does not modify config or imported read-only rows.
 
 Note: `clog config set author` only changes the config value. It does NOT rename conversations in the DB. It affects only future local discoveries. Saved conversations use the stored `author` on the conversation row; `clog save` does not restamp author from config. `rename-author` is the explicit migration tool.
 
@@ -1952,7 +2195,7 @@ input: {
   project?: string;        // Case-insensitive substring match on project
   author?: string;         // Case-insensitive substring match on author
   grep?: string;           // Case-insensitive substring match on title, summary, or message content
-  origin?: "local" | "remote"; // Filter local vs remote saved conversations
+  origin?: "local" | "remote"; // local rows vs imported saved rows
   limit?: number;          // Default 20, max 100
   offset?: number;         // For pagination
   sortBy?: "createdAt" | "savedAt" | "modifiedAt" | "title" | "project" | "author";
@@ -1969,7 +2212,8 @@ returns: {
     tags: string[];
     author: string;
     project: string | null;
-    origin: string | null;
+    originKind: "local" | "git" | "file";
+    originRef: string | null;
     createdAt: string;
     modifiedAt: string;
     savedAt: string | null;
@@ -2008,7 +2252,8 @@ returns: {
   tags: string[];
   author: string;
   project: string | null;
-  origin: string | null;
+  originKind: "local" | "git" | "file";
+  originRef: string | null;
   state: string;
   createdAt: string;
   messages: Message[];       // Requested message slice
@@ -2077,7 +2322,8 @@ returns: {
     tags: string[];
     author: string;
     project: string | null;
-    origin: string | null;
+    originKind: "local" | "git" | "file";
+    originRef: string | null;
     state: string;
     createdAt: string;
     modifiedAt: string;
@@ -2085,6 +2331,9 @@ returns: {
 }
 
 If the requested update would not change the conversation's title, summary, summary kind, extraction, or tags, `clog_update` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
+
+`clog_update` operates only on saved local rows (`originKind = "local"`). It
+rejects both `git` and `file` rows as imported read-only conversations.
 
 `clog_update` summary-kind rules are applied in order:
 
@@ -2467,7 +2716,7 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness marker:** a saved conversation is not currently searchable and needs indexing or re-indexing when `indexed_at = null`, when `saved_at` is missing, or when `indexed_at < saved_at`. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. If an operation advances `saved_at`, it must also refresh `indexed_at` during indexing or leave the row stale. Changes to `sourcePath` or `filePath` conservatively clear `indexed_at` because they may indicate that the underlying conversation content moved or changed. A raw file mtime newer than `indexed_at` also marks the index stale. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
+**Staleness marker:** a saved conversation is not currently searchable and needs indexing or re-indexing when `indexed_at = null`, when `saved_at` is missing, or when `indexed_at < saved_at`. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. If an operation advances `saved_at`, it must also refresh `indexed_at` during indexing or leave the row stale. Search-visible content changes are title changes, prose-summary changes, and parsed transcript changes. A local raw file mtime newer than `indexed_at` marks the index stale because the saved transcript may have changed. A locator-only update from git reconciliation or `clog fill` preserves `indexed_at` when title, summary, and parsed transcript content are unchanged. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
 **Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
@@ -2521,11 +2770,12 @@ The search index follows the lifecycle of conversations in the database:
 | `tag`, `untag`, MCP `clog_update` tag, `summaryKind`, or `summaryExtraction` change on a saved conversation | Conversation remains `saved`; DB metadata filters or agent-analysis metadata change | No vector re-index occurs because tags and structured extraction are not part of the embedded search content. Tag-based filtering and MCP metadata reads reflect the new DB state immediately. `indexed_at` is unchanged. No-op updates do not bump `modified_at`. |
 | Local scan detects source mtime change on a saved conversation | Conversation remains `saved`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed so status can report that newer source content is available | No immediate search effect. The saved/searchable content has not changed until explicit `clog save <id>` refreshes and resaves it. |
 | A command detects a raw copy mtime newer than `saved_at` or `indexed_at` | Conversation remains `saved`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
-| Remote reconciliation metadata update on a saved conversation | Conversation remains `saved`; DB metadata and derived paths may be refreshed from the checkout | If reconciliation changes title, summary, tags, `sourcePath`, or `filePath`, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Changes only to non-search metadata such as author, projectName, projectPath, slug, `summaryKind`, or `summaryExtraction` do not clear `indexed_at`. |
+| Git reconciliation update on an in-scope git conversation | Conversation remains `saved`; DB metadata, parser checkpoint, and derived checkout path may be refreshed from the checkout | If reconciliation changes title, summary, or parsed transcript content, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Tag-only changes and path-only locator changes preserve `indexed_at` when title, summary, and parsed content are unchanged. |
+| File import update from `clog fill` | Conversation remains `saved`; DB metadata, parser checkpoint, and managed import path may be refreshed from the input pair | If fill changes title, summary, or parsed transcript content, `indexed_at` is set to `null`. Tag-only changes and path-only locator changes preserve `indexed_at` when title, summary, and parsed content are unchanged. |
 | `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
 | `remove` | Only `saved` conversations matched by the rules are removed from the DB; matching `discovered` rows are left in place | If the removed conversation had vectors, they are deleted. The deindex attempt is best-effort: a saved row that was never indexed (or whose vectors were already gone) deletes cleanly as a no-op. |
-| `remote remove` | All conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
-| Remote reconciliation delete/retract | Conversation is removed from the DB or replaced by a non-searchable state | Conversation ceases to be searchable; vectors are deleted |
+| `remote remove` | All git conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
+| Git reconciliation delete/retract | An in-scope git conversation is removed from the DB | Conversation ceases to be searchable; vectors are deleted |
 
 The authoritative definition of whether a conversation is eligible to appear in semantic search is its current row in the local database, not whether it was indexed at some point in the past.
 
@@ -2541,7 +2791,7 @@ input: {
   tags?: string[];         // Filter by tags
   project?: string;        // Case-insensitive substring match on project
   author?: string;         // Case-insensitive substring match on author
-  origin?: "local" | "remote"; // Filter local vs remote saved conversations
+  origin?: "local" | "remote"; // local rows vs imported saved rows
   limit?: number;          // Default 10, max 50
 }
 returns: {
@@ -2555,7 +2805,8 @@ returns: {
     tags: string[];
     author: string;
     project: string | null;
-    origin: string | null;
+    originKind: "local" | "git" | "file";
+    originRef: string | null;
     createdAt: string;
     relevanceScore: number;
     snippet: string;       // Matched content excerpt
@@ -2573,7 +2824,8 @@ returns: {
 
 `clog_search` uses the same MCP metadata filter semantics as `clog_list_saved`:
 `project` and `author` are trimmed case-insensitive substring filters, tags are
-normalized exact OR filters, and `origin` filters local vs remote saved rows.
+normalized exact OR filters, and `origin` maps `local` to `origin_kind = 'local'`
+and `remote` to `origin_kind != 'local'`.
 
 Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with a fresh `indexed_at` at or after `saved_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
 
@@ -2685,9 +2937,9 @@ On first `clog sync pull`, if `~/.clog/remote/` already exists with a `.git/` di
 
 This supports power users who manipulate the git repo directly. Documentation should state: "clog manages `~/.clog/remote/` as a standard git checkout. You can run git commands in it directly — just run `clog sync pull` or `clog refresh` afterward to reconcile."
 
-#### Remote Conversations Are Read-Only (v1)
+#### Imported Conversations Are Read-Only (v1)
 
-Remote conversations cannot be edited or tagged locally. `clog edit`, `clog tag`, and `clog untag` refuse to operate on conversations with `origin IS NOT NULL`, even when `author == config.author`. This avoids the complexity of local overlays, sync-back, and conflicts with the author's edits. Revisit after Phase 3 stabilizes.
+Imported conversations cannot be edited or tagged locally. `clog edit`, `clog tag`, `clog untag`, `clog save`, and `clog diff` refuse rows with `origin_kind != 'local'`, including both git-synced rows and file-imported rows, even when `author == config.author`. This avoids the complexity of local overlays, sync-back, and conflicts with the author's edits. Revisit after Phase 3 stabilizes.
 
 A future version may add an explicit workflow to materialize one or more remote conversations into a local source directory so the user can continue them locally. That continuation flow is out of scope for Phase 3 / v1 sync.
 
@@ -2698,7 +2950,7 @@ Remote conversations use the same local ignore-intent model as local discovery, 
 1. add an ignore rule with `clog exclude <rule>`
 2. remove the current imported DB row with `clog remove <rule>` if desired
 
-During subsequent reconciliation, remote pairs whose IDs or project names match the local `clogignore` remote subset are skipped before import. `clog unexclude` removes the ignore rule again; the next `clog sync pull` or `clog refresh` may then re-import matching remote conversations.
+During subsequent reconciliation, git conversation file pairs whose IDs or project names match the local `clogignore` import subset are skipped before import or update and still protect any existing in-scope git row from deletion. `clog unexclude` removes the ignore rule again; the next `clog sync pull` or `clog refresh` may then re-import matching git conversations.
 
 #### Commits Use the User's Existing Git Identity
 
@@ -2733,9 +2985,30 @@ clog-team/                        # the shared git repo
         └── 123e4567-e89b-12d3-a456-426614174000.jsonl
 ```
 
-The `.meta.json` contains the conversation's metadata. It uses only objective identifiers — no relative terms like "local" or "remote." Its presence in the repo *is* its origin. The `author` field identifies who curated it.
+The `.meta.json` contains the conversation's metadata. It uses only objective identifiers — no relative terms like "local" or "remote." Its presence in the repo establishes its git provenance. The `author` field identifies who curated it.
 
-The remote path tuple is `(author, source, id)`. The source directory and filename are part of the remote storage contract:
+The portable conversation file pair is transport-neutral: `<id>.jsonl` plus
+`<id>.meta.json`. Pair discovery walks the input directory and every
+subdirectory. It looks only at files ending in `.meta.json` or `.jsonl`. Two
+files are a candidate pair when they are in the same relative directory and have
+the same filename before the suffix. A one-file candidate is still returned so
+validation can report `pair_incomplete`. Results are ordered by the normalized
+relative path text using raw character order, so output does not depend on
+filesystem or locale ordering.
+
+Pair validity requires both files to be present, metadata to be valid JSON with
+required fields and ISO timestamps, `meta.source` to be a supported source key,
+both filename stems to equal `meta.id`, and the JSONL to parse through the
+adapter selected by `meta.source`. Pair validation does not perform
+source-native embedded-ID cross-validation; source adapters still apply their
+own discovery-time native-ID checks, such as Codex `session_meta.payload.id`
+validation.
+
+Pair writing uses the shared safe writer: `.jsonl` is written first, then
+`.meta.json`, each through an atomic temp-file-and-rename write. A complete
+metadata file therefore implies its content file is present.
+
+The git remote path tuple is `(author, source, id)`. The source directory and filename are part of the remote storage contract:
 
 - `<author>` is the author directory for the person who saved the conversation
 - `<source>` must be a supported source key such as `claude-code` or `codex-cli`
@@ -2743,7 +3016,13 @@ The remote path tuple is `(author, source, id)`. The source directory and filena
 - `meta.source` must match the `<source>` directory
 - the `.jsonl` and `.meta.json` paths for a conversation must share the same `(author, source, id)` tuple
 
-Remote import identity is `(source, id)`, not `id` alone.
+Git layout invariants are git-specific. In the sync repo, `meta.source` must
+match the `<source>` directory and `meta.author` must match the `<author>`
+directory; layout violations are `pair_layout_mismatch`. `clog fill` and
+`clog drain --format pair` are layout-neutral and do not require author
+directories.
+
+Import identity is `(source, id)`, not `id` alone.
 
 ```json
 {
@@ -2768,7 +3047,7 @@ Remote import identity is `(source, id)`, not `id` alone.
 }
 ```
 
-On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL once for validation. Remote import uses the metadata for DB fields, and the JSONL must parse successfully through the source adapter so clog can treat the imported conversation as a readable saved artifact. Imported remote conversations derive their local `savedMessageCount` from the parsed `Message[]` length at import/update time; this checkpoint is not stored in remote metadata.
+On git pull and file fill, clog reads `.meta.json` files for metadata and parses each paired JSONL once for validation. Import uses the metadata for DB fields, and the JSONL must parse successfully through the source adapter so clog can treat the imported conversation as a readable saved artifact. Imported conversations derive their local `savedMessageCount` from the parsed `Message[]` length at import/update time; this checkpoint is not stored in pair metadata. Git reconciliation derives the row fields below; `clog fill` uses the same pair metadata and validation but derives row fields according to §5.7.4.
 
 **meta.json field reference:**
 
@@ -2781,29 +3060,33 @@ On pull, clog reads `.meta.json` files for metadata and parses each paired JSONL
 | `summaryExtraction` | object or null | Structured summary fields (`topics`, `outcome`, `toolsUsed`, `notableMoments`). Optional for backward compatibility; missing values are interpreted as null |
 | `tags` | string[] | Curated tags |
 | `author` | string | Who curated this conversation |
-| `projectName` | string or null | User-facing project name the conversation is associated with. Remote metadata does not include local project paths |
+| `projectName` | string or null | User-facing project name the conversation is associated with. Pair metadata does not include local project paths |
 | `savedAt` | string | ISO timestamp of the time the conversation was saved to clog |
 | `modifiedAt` | string | ISO timestamp of the last metadata edit or content-change marker |
 | `source` | string | Source adapter (e.g., `"claude-code"`) |
 | `createdAt` | string | Earliest message timestamp — when the conversation started |
 | `slug` | string or null | Session slug from the source (if available) |
 
-Remote metadata is valid only when:
+Pair metadata is valid only when:
 
 - the metadata file is valid JSON
 - all required fields are present with the expected types
 - the paired JSONL parses successfully through the adapter selected by `source`
 - `savedAt`, `modifiedAt`, and `createdAt` are ISO timestamp strings
 - `source` is a supported source key
-- `source` matches the source directory in the path
 - `id` matches the filename stem in both the `.meta.json` and `.jsonl` path
 
-Older remote metadata files without `summaryKind` or `summaryExtraction` remain valid. Import treats a non-empty legacy `summary` as `summaryKind = "curated"` and treats a blank legacy `summary` as `summaryKind = "none"`; `summaryExtraction` defaults to `null`.
+Git reconciliation adds layout validation: `source` must match the source
+directory in the path, and `author` must match the author directory. A valid
+metadata document in the wrong directory is a `pair_layout_mismatch`, not
+invalid metadata.
 
-**Fields derived during import** (not in meta.json):
+Older pair metadata files without `summaryKind` or `summaryExtraction` remain valid. Import treats a non-empty legacy `summary` as `summaryKind = "curated"` and treats a blank legacy `summary` as `summaryKind = "none"`; `summaryExtraction` defaults to `null`.
 
-| DB field | Value for imported conversations |
-|----------|----------------------------------|
+**Fields derived when git reconciliation inserts a row** (not in meta.json):
+
+| DB field | Value for newly inserted git conversations |
+|----------|------------------------------------------|
 | `sourceId` | Same as `id` |
 | `discoveredAt` | Import timestamp (now) |
 | `state` | `"saved"` |
@@ -2814,7 +3097,10 @@ Older remote metadata files without `summaryKind` or `summaryExtraction` remain 
 | `filePath` | Same as `sourcePath` |
 | `sourceMtime` | File mtime from filesystem |
 | `indexedAt` | `null` (not yet indexed) |
-| `origin` | Remote URL from config |
+| `originKind` | `"git"` |
+| `originRef` | Configured git remote URL |
+
+For existing git rows, reconciliation updates fields according to §11.8. `indexedAt` is cleared only when title, summary, or parsed transcript content changes; tag-only updates and path-only locator updates preserve it (§10.8.1).
 
 ### 11.3 File Layout
 
@@ -2822,13 +3108,16 @@ This extends the base storage layout (§3.5) with a `remote/` directory:
 
 ```
 ~/.clog/
-├── clog.db              # SQLite — metadata for ALL conversations (local + remote)
+├── clog.db              # SQLite — metadata for ALL conversations
 ├── config.json          # User configuration (includes sync metadata)
 ├── raw/                 # Locally saved JSONL files
 │   ├── claude-code/
 │   │   └── c7044ea5-c019-44d6-a77a-500036740f9a.jsonl
 │   └── codex-cli/
 │       └── 550e8400-e29b-41d4-a716-446655440000.jsonl
+├── imports/             # Managed JSONL files imported by clog fill
+│   └── claude-code/
+│       └── 99999999-9999-4999-9999-999999999999.jsonl
 └── remote/              # Git clone of team repo
     ├── .git/
     ├── alice/
@@ -2842,38 +3131,68 @@ This extends the base storage layout (§3.5) with a `remote/` directory:
         └── ...
 ```
 
-`raw/` and `remote/` are separate directories with separate purposes:
+`raw/`, `imports/`, and `remote/` are separate directories with separate purposes:
 
 - `raw/` holds files the local user explicitly saved.
+- `imports/` holds managed file-import copies created by default `clog fill`.
 - `remote/` is the git working tree — a clone of the team repo.
 
-Remote conversation content is read directly from the git checkout. No duplication into `raw/`. A `resolveContentPath(conversation)` function checks the origin and local curation state and returns the right path:
+Remote conversation content is read directly from the git checkout. No duplication into `raw/`. Filled read-only conversation content is read directly from `imports/`. A `resolveContentPath(conversation)` function returns the right path from the row state and stored `filePath`:
 
 - Local `discovered` conversations: `sourcePath`
-- Local `saved` conversations: `filePath` / `~/.clog/raw/<source>/<id>.jsonl`
-- Remote conversations: `~/.clog/remote/<author>/<source>/<id>.jsonl`
+- Saved conversations: `filePath`
+
+For saved rows, `filePath` points at `raw/<source>/<id>.jsonl` for local saves,
+`remote/<author>/<source>/<id>.jsonl` for git imports, and
+`imports/<source>/<id>.jsonl` for file imports. Content-path resolution needs no
+special `file`-kind branch because file-imported rows follow the same saved-row
+rule.
 
 ### 11.4 DB Schema Changes
 
-Add an `origin` column to the conversations table:
+Conversation provenance is stored in two local-only columns:
 
 ```sql
-ALTER TABLE conversations ADD COLUMN origin TEXT DEFAULT NULL;
+origin_kind TEXT NOT NULL DEFAULT 'local'
+            CHECK(origin_kind IN ('local','git','file')),
+origin_ref TEXT,
+CHECK(
+  (origin_kind = 'git' AND origin_ref IS NOT NULL)
+  OR
+  (origin_kind IN ('local','file') AND origin_ref IS NULL)
+)
 ```
 
-- `NULL` = local (originated through the local curation workflow)
-- Remote URL string (e.g., `git@github.com:myorg/clog-team.git`) = arrived via sync
+`origin_kind` is the sole provenance class signal:
 
-Using `NULL` for local is idiomatic SQL ("no remote origin") and avoids a magic string. The remote URL is an objective identifier that naturally supports multiple remotes in the future without schema migration.
+| `origin_kind` | `origin_ref` | Meaning |
+|---------------|--------------|---------|
+| `local` | `NULL` | The row originated through local discovery, `clog save`, or `clog fill --own` restore |
+| `git` | Configured git remote URL | The row was imported from the configured git sync checkout |
+| `file` | `NULL` | The row was imported by default `clog fill` as a read-only file import |
 
-This column is local-only. It never appears in `.meta.json` files.
+`origin_ref` is monomorphic: it is a git remote URL or `NULL`. It is read only
+as the git remote URL value. No behavior branches on `origin_ref` nullness;
+local versus imported behavior is always determined by `origin_kind`.
+
+These columns are local-only. They never appear in `.meta.json` files, JSON
+drain exports, markdown frontmatter, or pair metadata.
 
 Purposes:
 
-1. `clog list` can distinguish "my conversations" from "team conversations"
-2. Remote conversations are read-only — edit/tag/untag refuse them
-3. `clog sync push` knows not to re-push conversations that came from the remote
-4. MCP server can optionally filter by origin
+1. `clog list` can distinguish local rows from imported rows
+2. Imported conversations are read-only — edit/tag/untag/save/diff refuse `origin_kind != 'local'`
+3. `clog sync push` exports only local saved conversations
+4. Git reconciliation scopes updates and deletions to `origin_kind = 'git' AND origin_ref = <configured remote URL>`
+5. MCP server filters `origin: "local"` as `origin_kind = 'local'` and `origin: "remote"` as `origin_kind != 'local'`
+
+Authority matrix:
+
+| Kind | Writable | Saved by `clog save` | Pushed by git sync | Deleted by git reconciliation | Default `clog list` visibility |
+|------|----------|----------------------|--------------------|-------------------------------|---------------------------------|
+| `local` | Yes | Yes | Yes, when `author = config.author` | Never | Always |
+| `git` | No | No | No | Only when `origin_ref` equals the configured remote URL | Only when `author = config.author` |
+| `file` | No | No | No | Never | Only when `author = config.author` |
 
 ### 11.5 Config Schema Changes
 
@@ -2986,11 +3305,11 @@ The `--yes` flag bypasses this confirmation (for scripts and tests). `--yes` doe
 
 #### `clog remote show`
 
-Display: configured remote URL, last sync time, counts of local saved and remote conversations.
+Display: configured remote URL, last sync time, local saved count, and count of git conversations whose `origin_kind = 'git'` and `origin_ref` equals the configured remote URL. File-imported rows are not counted as conversations from the configured git remote.
 
 #### `clog remote remove`
 
-Remove the clone directory (`~/.clog/remote/`), purge all conversations with the matching origin from the local DB (and deindex them from the vector store), and clear remote config.
+Remove the clone directory (`~/.clog/remote/`), purge git conversations whose `origin_kind = 'git'` and `origin_ref` equals the configured remote URL from the local DB (and deindex them from the vector store), and clear remote config. File-imported rows are not removed by `clog remote remove`.
 
 Confirmation prompt required:
 
@@ -3058,23 +3377,24 @@ The command does not touch the git checkout, push, or config. On the next `clog 
 - Checkout exists (`~/.clog/remote/`). If not: `"You haven't pulled from the remote yet. Run 'clog sync pull' first."`
 - `remote.visibilityConfirmed` is `true` in config. If not (only reachable via hand-edited config): refuse with `"Remote visibility was never confirmed. Run 'clog remote remove' and 'clog remote add <url>' to re-run the visibility check."`
 
-**Pull phase** (incorporate teammates' changes):
-
-1. `git pull --rebase` in checkout. If rebase conflict: abort rebase, stop, inform user: `"Unexpected conflict during rebase. Inspect with: git -C ~/.clog/remote status"`
-2. Reconcile DB from checkout — same logic as §11.8. This imports any new or updated conversations from teammates.
-
 **Pre-reconcile snapshot** (multi-machine safety):
 
-Before the pull phase, snapshot the set of `(source, id)` tuples for saved conversations where `author = config.author` and `origin = <remote URL>`. These are conversations imported from the remote (possibly pushed from another machine) that the user has not explicitly deleted. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — the pre-reconcile snapshot excludes those so retractions still proceed.
+1. Before the pull phase, snapshot the set of `(source, id)` tuples for every saved conversation where `author = config.author`, regardless of `origin_kind`. This includes local rows, git rows, and file rows by the same author. The snapshot is taken before `reconcileRemote` runs because reconcile may re-import conversations that the user intentionally retracted — a row absent from the pre-reconcile snapshot remains retractable.
 
-This complements the import-side guards in §11.8 (`clogignore` remote gating and local-precedence rule), which prevent most re-imports but not all. If reconcile does re-create a row that wasn't in the snapshot, the export phase still retracts the checkout files.
+This complements the import-side guards in §11.8 (`clogignore` import gating and out-of-scope owner rule). A same-author `file` row protects an existing checkout pair from retraction; an intentionally removed row is absent from the snapshot and stays retractable.
+
+**Pull phase** (incorporate teammates' changes):
+
+2. `git pull --rebase` in checkout. If rebase conflict: abort rebase, stop, inform user: `"Unexpected conflict during rebase. Inspect with: git -C ~/.clog/remote status"`
+3. Reconcile DB from checkout — same logic as §11.8. This imports any new or updated conversations from teammates.
 
 **Export phase** (write local state to checkout):
 
-3. For each locally-originated saved conversation (`origin IS NULL AND state = 'saved'`) where `author = config.author`:
-   - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName`, `summaryKind`, and `summaryExtraction`, but not local-only `projectPath`
+4. For each local saved conversation (`origin_kind = 'local' AND state = 'saved'`) where `author = config.author`:
+   - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName`, `summaryKind`, and `summaryExtraction`, but not local-only `projectPath`, `originKind`, `originRef`, managed paths, or parser checkpoints
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
-4. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a locally-saved conversation or a pre-reconcile remote-origin conversation: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
+   - Use the shared pair writer, which writes JSONL first and metadata last
+5. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a local saved conversation or any same-author saved identity in the pre-reconcile snapshot: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
 
 The export/retraction phase should use the lightest necessary touch:
 
@@ -3125,49 +3445,99 @@ Use "retracted" (not "deleted" or "removed") to distinguish from `clog remote re
 
 ### 11.8 Pull Flow: Full Reconciliation
 
-After `git pull` (or in `clog refresh`, without the git pull), scan the checkout directory by author directory, then source directory, then conversation file pair. Supported source directories are reconciled; unsupported source directories are reported and skipped. Scan order is deterministic: author directory lexicographic, then source directory lexicographic, then ID lexicographic. Reconciliation treats each `.meta.json` + `.jsonl` pair as an atomic remote conversation. Compare on-disk pairs to the subset of DB rows whose `origin` exactly matches the currently configured remote URL:
+After `git pull` (or in `clog refresh`, without the git pull), git
+reconciliation runs the git-specific interchange planner in two stages:
 
-| Remote files for `(author, source, id)` | Imported DB row with matching origin? | Action |
-|------------------------------------------|--------------------------------------|--------|
-| `.meta.json` + `.jsonl`, valid | No | Insert (state = saved, origin = remote URL) |
-| `.meta.json` + `.jsonl`, valid | Yes | Update if metadata or derived checkout path changed |
-| Neither file exists | Yes | Delete imported row |
-| Only `.meta.json` exists | Any | Warn, skip, leave DB unchanged |
-| Only `.jsonl` exists | Any | Warn, skip, leave DB unchanged |
-| Both files exist but metadata or content is invalid | Any | Warn, skip, leave DB unchanged |
+1. a deterministic planner scans checkout conversation file pairs, compares
+   them with a database snapshot, and emits explicit insert, update, delete, and
+   skip actions without writing files, rows, or vectors
+2. a git executor applies the plan in a database transaction and then
+   best-effort deletes vectors for every deleted row
 
-A remote conversation is retracted only when the complete pair is absent from disk after scanning the checkout. Orphaned or invalid pairs are treated as remote repository errors, not deletion intent. During a reconciliation run, track malformed `(author, source, id)` tuples separately and exclude them from deletion decisions for that run; a present-but-invalid pair must never cause an existing imported DB row to be deleted.
+If vector cleanup fails after the database transaction commits, reconciliation
+remains successful and prints a warning naming the affected short ID.
 
-Remote reconciliation is scoped to the configured remote only. Conversations imported from a different remote origin are left untouched, even if they also have `origin IS NOT NULL`. Reconciliation keys remote conversations by `(source, id)`.
+The scanner walks the checkout by author directory, source directory, and
+conversation ID in code-point lexicographic order. Supported source directories
+are reconciled; unsupported source directories emit `unsupported_source` and are
+not modified. The scanner still protects credible supported identities found
+under unsupported directories when readable metadata exposes them.
 
-**Change detection:** "Update if metadata changed" is determined by field-by-field comparison of the `.meta.json` contents against the corresponding DB columns, including `summaryKind` and `summaryExtraction`. The derived local `savedMessageCount` is refreshed from the parsed JSONL whenever the remote row is inserted or updated, but it is not part of remote metadata comparison. An alternative considered was comparing only `modifiedAt` timestamps, which is simpler but could miss changes if clocks are skewed or if files are edited without updating the timestamp.
+Reconciliation is scoped to the configured git remote only:
 
-Reconciliation also compares the derived checkout path for the conversation. If the same imported conversation now lives at a different checkout path (for example because the author directory changed), update `sourcePath` and `filePath` in place on the existing DB row rather than treating it as a delete plus re-import.
+- in-scope rows are `origin_kind = 'git' AND origin_ref = <configured remote URL>`
+- rows from other git remotes are out of scope
+- `local` and `file` rows are out of scope
+- deletion applies only to in-scope rows
 
-For search coherence, imported conversations follow the same stale-index rule as local edits: changes to search-visible metadata (`title`, `summary`, or `tags`) or content-indicating fields (`sourcePath`, `filePath`) clear `indexed_at`. Changes only to non-search metadata such as `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, or `summaryExtraction` do not.
+The planner keys conversations by `(source, id)`. A valid pair insertion checks
+the global owner for that identity. Any out-of-scope owner blocks the git insert:
+a local discovered row, a local saved row, a file-imported row, or a git row
+from a different remote. Every resolution outcome is chosen so reconciliation
+never trips the `UNIQUE(source, source_id)` constraint as an error.
 
-**Unsupported source directories:** If an author directory contains a source directory that clog does not support, skip it and print a warning. Unknown source directories are never modified or deleted by clog.
+Git reconciliation and `clog fill` (§5.7.4) share one policy-parameterized
+resolution engine, so the two transports stay deliberately consistent where their
+inputs agree and diverge only where they must. Resolution is by provenance and
+deterministic order, never by timestamp: the engine does not compare `modifiedAt`
+or `savedAt` to choose a winner, so a git pull never overwrites more up-to-date
+local work. The one place recency is ignored on purpose is the cross-author
+duplicate (§11.13), resolved by deterministic first-wins rather than a
+clock-skew-prone recency tiebreak.
 
-**Incomplete or invalid pairs are non-destructive.** The table above is the authoritative reconciliation policy. Incomplete or invalid pairs skip import/update for the current command and leave any existing DB row unchanged. Do not delete, degrade, or partially reconcile an existing imported row because the current checkout contains a malformed pair.
+The authoritative reconciliation policy:
 
-**Orphaned files:** If a `.meta.json` exists without a corresponding `.jsonl`, or a `.jsonl` exists without a `.meta.json`, skip the conversation and print a warning. Do not import incomplete pairs.
+| Checkout state for `(source, id)` | In-scope git row? | Action |
+|-----------------------------------|-------------------|--------|
+| Complete valid pair, no owner | No | Insert saved `git` row with `origin_ref = <configured remote URL>` |
+| Complete valid pair, in-scope owner | Yes | Update if pair metadata, derived checkout path, or parsed `savedMessageCount` changed |
+| Complete valid pair, out-of-scope owner | Any | Skip; the existing owner takes precedence |
+| Complete valid duplicate pairs in one checkout | Any | First valid pair wins by deterministic author/source/id order; later copies are skipped with a duplicate notice |
+| Pair matches the import subset of `clogignore` | Any | Skip import/update and treat the pair as present for deletion planning |
+| Complete pair absent | Yes | Delete the in-scope git row |
+| Incomplete, invalid, or layout-mismatched pair present | Any | Warn, skip, leave DB rows unchanged, and protect credible identities from deletion |
 
-**Corrupt metadata or content:** If a `.meta.json` fails to parse or validate, or the paired JSONL fails to parse through the source adapter, skip the conversation and print a warning. This includes invalid JSON, missing required fields, unsupported `source`, path source not matching metadata `source`, or filename stem not matching metadata `id`. Invalid remote metadata must not be imported with degraded semantics.
+Retraction requires both files to be absent. A metadata-only file, JSONL-only
+file, invalid metadata file, invalid content file, or layout-mismatched pair is
+present-but-bad repository state, not deletion intent. During a reconciliation
+run, every incomplete or invalid pair protects every credible `(source, id)`
+identity derivable from the path tuple and readable metadata. Deletion
+protection is keyed by `(source, id)` across the whole checkout, not by author,
+so a pair relocated between author directories cannot cause the existing row to
+be deleted.
 
-**Remote validation warnings:** Warnings are emitted during the command that performs validation and are not persisted as conversation state. Each warning uses the `ClogWarning` shape with `remote: { author, source, id }`, affected `paths`, validation reason, reconciliation action taken, and a concrete fix suggestion. For example, if the paired JSONL fails to parse through the selected source adapter, the warning should say that the pair was skipped, any existing local imported row was left unchanged, and the original author should save the conversation again or repair/remove the pair in the remote repo.
+Git layout validation uses pair warnings accurately:
 
-**Ignored conversations:** Before importing, check `~/.clog/clogignore` using the remote-pull subset from §5.10. If the remote ID or project name matches a local ignore rule, skip import. Path-like rules and filename-only rules do not suppress remote import.
+- metadata source differing from the source directory is `pair_layout_mismatch`
+- metadata author differing from the author directory is `pair_layout_mismatch`
+- filename stem differing from `meta.id` is `pair_id_mismatch`
+- JSONL parse failure is `pair_invalid_content`
 
-**Local takes precedence on duplicates:** During reconciliation, if a conversation with the same `source + source_id` already exists with `origin IS NULL` (user has their own local copy), skip the remote version entirely. The user's own curation takes precedence.
+Warnings are emitted during the command that performs validation and are not
+persisted as conversation state. Each warning uses the `ClogWarning` shape with
+`pair: { author?, source, id }`, affected paths, the validation reason, the
+reconciliation action taken, and a concrete fix suggestion when possible.
 
-For remote-vs-remote duplicates (two remote authors saved the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the `UNIQUE(source, source_id)` constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
+Ignored valid git pairs are non-destructive. Before importing or updating, the
+planner checks `~/.clog/clogignore` using the import subset from §5.10. If a
+pair ID or project name matches a local ignore rule, the pair is skipped but
+still protects any existing in-scope git row from deletion. When reconciliation
+skips one or more pairs because of `clogignore`, the command prints one summary
+line naming the count.
+
+Change detection is field-based. An in-scope git row updates when a `.meta.json`
+field changes, the derived checkout path changes, or the parsed JSONL produces a
+different `savedMessageCount`. A changed `savedMessageCount` is a parsed content
+change. Reconciliation clears `indexedAt` only when title, summary, or parsed
+transcript content changes. Tag-only changes and path-only locator changes
+preserve `indexedAt` when title, summary, and parsed content are unchanged.
 
 Properties:
 
 - Idempotent — running pull/refresh twice produces the same result
 - Robust to interrupted pulls
 - No sync state to track beyond the git checkout itself
-- O(all remote conversations) per pull — fine at <10 devs scale
+- O(all git checkout conversations) per pull — fine at <10 devs scale
 
 Update `config.remote.lastSyncHead` with new HEAD after reconciliation.
 
@@ -3192,31 +3562,31 @@ Not shown on `clog show`, `clog search`, or other commands that retrieve specifi
 
 #### Default filter
 
-`clog list` remains curated-by-default in Phase 3. With no flags, it shows the user's local curated library on this machine plus that same user's synced curated conversations from other machines:
+`clog list` remains curated-by-default in Phase 3. With no flags, it shows the user's local curated library on this machine plus same-author imported saved conversations:
 
 ```sql
 WHERE state = 'saved'
-  AND (author = <configured author> OR origin IS NULL)
+  AND (origin_kind = 'local' OR (origin_kind != 'local' AND author = <configured author>))
 ```
 
 If `config.author` is empty or unset, fall back to:
 
 ```sql
 WHERE state = 'saved'
-  AND origin IS NULL
+  AND origin_kind = 'local'
 ```
 
 This shows:
-- All curated local conversations (`origin IS NULL`), regardless of `author`
-- All remote curated conversations whose `author` matches `config.author`
+- All curated local conversations (`origin_kind = 'local'`), regardless of `author`
+- Same-author imported conversations from git or file fills
 
 Discovered conversations remain visible through `clog status`, `clog list --state discovered`, or `clog list --all`.
 
-This preserves the Phase 1 mental model that `clog list` is the curated library view on the current machine, while still supporting the multi-machine solo user: someone using clog on laptop and desktop sees all of their curated local conversations on each machine plus their same-author synced conversations from the other machine.
+This preserves the Phase 1 mental model that `clog list` is the curated library view on the current machine, while still supporting multi-machine solo users and same-author file imports: someone using clog on laptop and desktop sees all of their curated local conversations on each machine plus same-author imported conversations.
 
 #### Team conversation hint
 
-When a remote is configured and remote conversations exist in the DB, append a footer:
+When a remote is configured and git conversations from that configured remote exist in the DB with other authors, append a footer:
 
 ```
 47 team conversations available (use `clog list --all` to include)
@@ -3226,18 +3596,18 @@ When a remote is configured and remote conversations exist in the DB, append a f
 
 Phase 3 adds `--origin <origin>` to `clog list`. Its semantics:
 
-- `--all` — show all conversations (local + remote), including rediscovered ignored local source conversations per §5.3
+- `--all` — show all conversations (local + imported), including rediscovered ignored local source conversations per §5.3
 - `--author <name>` — filter by author
-- `--origin local` — only local conversations (`origin IS NULL`)
-- `--origin remote` — only remote conversations (`origin IS NOT NULL`)
+- `--origin local` — only local conversations (`origin_kind = 'local'`)
+- `--origin remote` — imported conversations (`origin_kind != 'local'`), including both git and file rows
 
 These compose with existing filters (`--state`, `--project`, `--tag`, `--grep`).
 
 ### 11.11 Search Indexing After Pull
 
-`clog save` auto-indexes newly saved local conversations when search is configured and dependencies are available. `clog sync pull` does not auto-index imported remote conversations. Bulk imports may add hundreds of conversations, and embedding them during pull could turn sync into a long-running indexing job.
+`clog save` auto-indexes newly saved local conversations when search is configured and dependencies are available. `clog sync pull` does not auto-index imported git conversations. Bulk imports may add hundreds of conversations, and embedding them during pull could turn sync into a long-running indexing job.
 
-After pull, imported or updated remote conversations that need indexing remain with `indexed_at = null`. The pull output must make this visible as a separate warning-style block, using spacing and color when available:
+After pull, imported or updated git conversations that need indexing remain with `indexed_at = null`. The pull output must make this visible as a separate warning-style block, using spacing and color when available:
 
 ```
 Pulled 583 conversations from remote.
@@ -3253,7 +3623,7 @@ The DB already tracks `indexed_at` per conversation, so tracking unindexed conve
 
 ### 11.12 MCP Server Changes
 
-The MCP server already reads from the DB — if remote conversations are in the DB as saved, they're served automatically.
+The MCP server already reads from the DB — if imported conversations are in the DB as saved, they're served automatically.
 
 Phase 3 extends the Phase 1/2 MCP tool schemas with an optional `origin` filter on `clog_list_saved` and `clog_search`:
 
@@ -3265,13 +3635,16 @@ origin?: "local" | "remote";
 origin?: "local" | "remote";
 ```
 
-Its semantics are:
+Its input semantics are:
 
-- `"local"` — only `origin IS NULL`
-- `"remote"` — only `origin IS NOT NULL`
+- `"local"` — only `origin_kind = 'local'`
+- `"remote"` — imported conversations (`origin_kind != 'local'`), including both git and file rows
 - Omitted — both
 
-This lets an agent say "show me only my team's conversations" or "show me only my own."
+Response payloads expose `originKind` and `originRef`; they do not expose a
+legacy nullable `origin` field.
+
+This lets an agent say "show me imported conversations" or "show me only local conversations" while preserving exact provenance in responses.
 
 ### 11.13 Duplicate Conversations
 
@@ -3279,7 +3652,7 @@ If two developers independently curate and save the same underlying conversation
 
 The DB primary key and `UNIQUE(source, source_id)` constraint enforce that a conversation exists at most once in the local database. For built-in sources, the source-native UUID is treated as the conversation's global identity.
 
-**On pull:** local takes precedence. If a conversation with the same `source + source_id` already exists with `origin IS NULL`, the remote version is skipped entirely. For remote-vs-remote duplicates (two remote authors saved the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped due to the uniqueness constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
+**On pull:** any out-of-scope owner takes precedence. If a conversation with the same `source + source_id` already exists as a local row, file row, or git row from a different remote, the incoming git version is skipped. For git-vs-git duplicates within one checkout (two remote authors saved the same `(source, id)` conversation), the first encountered copy is imported; subsequent copies are skipped before hitting the uniqueness constraint. Deterministic scan order (author, source, then ID) determines which copy wins.
 
 **Implication:** When duplicates exist across authors, only one author's metadata (title, tags, summary) is visible locally. The content is identical regardless.
 
@@ -3325,20 +3698,24 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 
 #### New code
 
+- `src/interchange/` — shared conversation file-pair and reconciliation module
+  - `pairs.ts` — transport-neutral pair discovery, validation, metadata, and safe writing
+  - `reconcile.ts` — deterministic git reconciliation planner
+  - `fill.ts` — fill collision planner
 - `src/sync/` — new module
   - `git.ts` — git command execution (clone, pull, push, rev-parse, status)
   - `push.ts` — push flow (export, commit, push)
-  - `pull.ts` — pull flow (pull, reconcile, import)
-  - `meta.ts` — `.meta.json` serialization/deserialization
+  - `pull.ts` — git reconciliation executor
+  - `meta.ts` — git-facing wrapper around interchange pair metadata
   - `staleness.ts` — HEAD hash comparison
-  - `resolve-content-path.ts` — branch on origin to return correct file path
 - `src/cli/remote.ts` — `remote add/show/remove` command handler
 - `src/cli/sync.ts` — `sync push/pull` command handler
 - `src/cli/refresh.ts` — `refresh` command handler
+- `src/cli/fill.ts` — `fill` command handler
 
 #### DB schema changes
 
-- Add `origin TEXT DEFAULT NULL` to conversations table (see §11.4, migration version 3 per §3.4.1)
+- Add `origin_kind` and `origin_ref` to conversations table (see §11.4, migration version 7 per §3.4.1)
 
 #### Config schema changes
 
@@ -3346,24 +3723,25 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 
 #### Existing code changes
 
-- `src/cli/list.ts` — default filter to `author = config.author OR origin IS NULL`; add `--all`, `--origin` flags; team conversation footer
-- `src/cli/edit.ts`, `src/cli/tag.ts`, `src/cli/untag.ts` — refuse remote conversations
+- `src/cli/list.ts` — default filter to local rows plus same-author imported rows; add `--all`, `--origin` flags; configured-git team conversation footer
+- `src/cli/edit.ts`, `src/cli/tag.ts`, `src/cli/untag.ts`, `src/cli/save.ts`, `src/cli/diff.ts` — refuse imported read-only conversations
 - `src/cli/exclude.ts`, `src/cli/unexclude.ts`, `src/cli/remove.ts`, `src/cli/clogignore.ts` — shared ignore-rule model and explicit current-row removal
-- `src/sync/pull.ts` — check `clogignore` before importing during reconciliation, using ID/project-name semantics only
-- `src/cli/status.ts` — report remote info, unindexed count, staleness warning
-- `src/mcp/server.ts` — add optional `origin` filter to `clog_list_saved` and `clog_search`; include `source` metadata
-- `src/index.ts` — register new commands (remote, sync, refresh)
-- `src/db/index.ts` — add `origin` to `insertConversation`, `rowToConversation`, and `listConversations` filters
+- `src/sync/pull.ts` — apply the interchange reconciliation plan, check `clogignore` before importing, and best-effort delete vectors for deleted rows
+- `src/sync/push.ts` — write pairs through the shared writer and protect same-author saved identities across provenance kinds from retraction
+- `src/cli/status.ts` — report configured-git remote info, unindexed count, staleness warning
+- `src/mcp/server.ts` and `src/mcp/handlers.ts` — add optional `origin` filter to `clog_list_saved` and `clog_search`; include `source`, `originKind`, and `originRef` metadata
+- `src/index.ts` — register new commands (remote, sync, refresh, fill)
+- `src/db/index.ts` — add provenance helpers and `originKind` / `originRef` row mapping, inserts, updates, and filters
 
 #### What doesn't change
 
-- Phase 1 local curation workflow (edit, tag, save — other than remote read-only guards)
-- Search indexer (`src/search/indexer.ts` — indexes saved conversations regardless of origin)
+- Phase 1 local curation workflow for local rows
+- Search indexer (`src/search/indexer.ts` — indexes saved conversations regardless of provenance kind)
 - Chunker, embedding providers, vector stores
 
 #### Tests
 
-See §13.2 and §13.4 for the sync test inventory (`sync-meta.test.ts`, `sync-pull.test.ts`, `sync-push.test.ts`, `sync-integration.test.ts`).
+See §13.2 and §13.4 for the interchange and sync test inventory (`interchange.test.ts`, `reconcile.test.ts`, `fill.test.ts`, `sync-meta.test.ts`, `sync-pull.test.ts`, `sync-push.test.ts`, `sync-integration.test.ts`).
 
 ---
 
@@ -3387,10 +3765,11 @@ See §13.2 and §13.4 for the sync test inventory (`sync-meta.test.ts`, `sync-pu
 | 4.6 | Cross-developer context handoff — MCP tool that lets an agent load a teammate's saved conversation as reference context in a new session, enabling "pick up where they left off" workflows without writing to source locations |
 | 4.7 | Content-aware deduplication of conversations shared by multiple authors |
 | 4.8 | Conversation diff functionality beyond new-since-save output |
-| 4.9 | Local metadata overlays on remote conversations (local tags, notes) |
-| 4.10 | `clog rename-author` automatic cleanup of old remote directory |
-| 4.11 | Multi-remote support |
-| 4.12 | Automatic retries on push rejection |
+| 4.9 | Cross-kind promotion from a synced or filled read-only copy to a local editable row |
+| 4.10 | Local metadata overlays on imported conversations (local tags, notes) |
+| 4.11 | `clog rename-author` automatic cleanup of old remote directory |
+| 4.12 | Multi-remote support |
+| 4.13 | Automatic retries on push rejection |
 
 ---
 
@@ -3417,14 +3796,22 @@ tests/
 ├── mcp.test.ts              # MCP tool handler tests (list, get, update, browse, search)
 ├── models.test.ts           # Zod schema validation for conversation and message types
 ├── scan.test.ts             # Scan pipeline, ignore/config filtering, stale entry pruning
+├── plunge.test.ts           # Corruption audit (clog plunge)
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
 ├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
+├── vectra-store.test.ts     # Vectra vector-store backend (Phase 2)
 ├── summaries.test.ts        # Agent-assisted summarization fields, MCP guides, and lifecycle rules
 ├── workflow.test.ts         # Multi-step workflows: save → edit → re-save, exclude → remove, etc.
+├── interchange.test.ts      # Conversation file-pair discovery, validation, and safe writing
+├── reconcile.test.ts        # Shared git reconciliation planner behavior
+├── fill.test.ts             # fill import planning and command behavior
+├── remote-guards.test.ts    # Read-only guards rejecting imported (git/file) rows
+├── save-restored-overwrite.test.ts # Restored-content overwrite confirmation guard
 ├── sync-meta.test.ts        # .meta.json serialization/deserialization (Phase 3)
 ├── sync-pull.test.ts        # Reconciliation logic: import, update, delete (Phase 3)
 ├── sync-push.test.ts        # Commit message generation, export logic (Phase 3)
 ├── sync-integration.test.ts # End-to-end sync with bare git repos (Phase 3)
+├── sync-visibility.test.ts  # Remote URL parsing and repo visibility probe (Phase 3)
 ├── e2e.test.ts              # End-to-end CLI tests via subprocess
 └── helpers/
     └── fixtures.ts          # Small helpers for writing programmatic JSONL fixtures
@@ -3489,7 +3876,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Tool handler tests for `clog_list_saved`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`, `clog_summarization_guide`, and `clog_analysis_suggestions`
 - Input validation and error responses
 - Filter behavior (tags, project, author, grep)
-- `source`, `summaryKind`, `extraction`, and `origin` metadata in list/get/search payloads
+- `source`, `summaryKind`, `extraction`, `originKind`, and `originRef` metadata in list/get/search payloads
 - Structured scan warnings surfaced as top-level `warnings`
 
 **Summaries tests** (`summaries.test.ts`):
@@ -3544,6 +3931,36 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Literal ignore-rule handling: exact-line append/remove semantics, `project:<name>` rejection on ignore-rule commands, and `clog remove` deleting current DB rows without editing `clogignore`
 - State transitions through `withDb`
 
+**Interchange tests** (`interchange.test.ts`):
+
+- Complete conversation file-pair round-trip
+- Union scanning of metadata-only and JSONL-only stems
+- Deterministic nested scan order
+- Same pair discovered in flat, nested, and git-style trees
+- Filename stem versus `meta.id` mismatch emits `pair_id_mismatch` and names both values
+- Pair writing routes both files through the atomic writer and installs metadata last
+
+**Reconcile tests** (`reconcile.test.ts`):
+
+- Exact git kind/ref scope and deletion enablement
+- Out-of-scope owner collisions with local discovered, local saved, file, and other-git rows
+- Deterministic duplicate winner for git checkout duplicates
+- Ignore-rule gating and ignored valid pairs protecting in-scope rows from deletion
+- Incomplete or invalid pair identities protecting deletion by every credible `(source, id)`
+- Deleted row IDs returned in the plan
+
+**Fill tests** (`fill.test.ts`):
+
+- Usage and exit-code branches, including `--dry-run` and `--allow-partial`
+- Metadata-only and JSONL-only input warnings
+- Duplicate input identities rejected with `pair_duplicate_identity`
+- Default fail-before-writes behavior for validation failures, duplicate identities, unsupported promotions, and git-row collisions
+- `--own` author guard, discovered-row restore, and full collision matrix
+- Filled rows stored as clean saved artifacts under `imports/<source>/<id>.jsonl`
+- File-row metadata-only and content updates, including `indexedAt` preservation/clearing rules
+- Removal of file-import managed content and restored-local only-copy warning
+- Drain-to-fill workflow coverage for foreign fill and `--own` restore
+
 **Sync meta tests** (`sync-meta.test.ts`, Phase 3):
 
 - `.meta.json` Zod schema validation
@@ -3554,22 +3971,25 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Sync pull tests** (`sync-pull.test.ts`, Phase 3):
 
-- Reconciliation: insert new, update changed, delete only cleanly absent pairs, and preserve existing DB rows for orphaned or invalid pairs
-- Remote conversations skipped when `clogignore` matches by ID or project name
-- Local-takes-precedence on duplicates
+- Reconciliation executor: insert new, update changed, delete only cleanly absent in-scope git rows, and preserve existing DB rows for orphaned or invalid pairs
+- Git conversations skipped when `clogignore` matches by ID or project name
+- Out-of-scope owners block git insert without uniqueness errors
 - Source-separated remote layout scanning
-- Remote identity keyed by `(source, id)`, not `id` alone
-- Deterministic remote duplicate resolution by author/source/id order
+- Git identity keyed by `(source, id)`, not `id` alone
+- Deterministic git duplicate resolution by author/source/id order
 - Unsupported source directories warn and skip without deletion
 - Path/metadata mismatch for source or id warns and skips
-- Remote import derives local `savedMessageCount` from parsed `Message[]` length
+- Git import derives local `savedMessageCount` from parsed `Message[]` length
+- Reconciliation deletion best-effort deletes vectors
 
 **Sync push tests** (`sync-push.test.ts`, Phase 3):
 
 - Commit message generation (single-author, multi-author, ≤10 and >10 changes)
-- Export logic for saved conversations
+- Export logic for local saved conversations
 - Source-separated remote layout export and retraction
 - Lightest-necessary-touch behavior: unrelated files, unknown source dirs, orphaned files, and empty dirs are not proactively removed
+- Shared pair writer use (`jsonl` first, metadata last)
+- Same-author file rows preventing push retraction
 
 **Sync integration tests** (`sync-integration.test.ts`, Phase 3):
 
@@ -3579,9 +3999,11 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **E2E tests** (`e2e.test.ts`):
 
 - Full CLI subprocess tests via `npx tsx src/index.ts`
-- Complete workflow: status → add → edit → tag → save → show
+- Complete workflow: status → save → edit → tag → save → show
 - Exclude/unexclude round-trip
 - Config get/set
+- Drain pair → foreign fill → show/list/drain round trip
+- Drain pair → `fill --own` → editable local workflow
 
 ### 13.5 Fixture Generation
 
