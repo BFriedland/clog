@@ -2,6 +2,7 @@
   "name": "clog",
   "version": "0.1.0",
   "description": "Discover, curate, and share AI coding agent conversations as a searchable knowledge base",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
