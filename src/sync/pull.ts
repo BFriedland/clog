@@ -1,21 +1,18 @@
 import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "../cli/clogignore.js";
 import type { Config } from "../config/schema.js";
 import {
-  deleteConversationInDb,
-  insertConversationInDb,
   listConversationsInDb,
-  updateConversationInDb,
   withDb,
 } from "../db/index.js";
 import {
   planGitReconciliation,
   scanGitCheckoutPairs,
   type GitReconciliationPlan,
-  type ReconcileAction,
 } from "../interchange/reconcile.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { getRemoteRoot } from "./paths.js";
+import { applyGitReconciliationActionInDb } from "./reconcile-executor.js";
 
 export interface PullStats {
   inserted: number;
@@ -46,7 +43,7 @@ export async function reconcileRemote(
     });
 
     for (const action of planned.actions) {
-      applyReconciliationAction(db, action);
+      applyGitReconciliationActionInDb(db, remoteUrl, action);
     }
 
     return planned;
@@ -55,25 +52,6 @@ export async function reconcileRemote(
   const cleanupFailures = await tryDeleteConversationVectors(plan.deletedRowIds);
 
   return buildStats(plan, cleanupFailures);
-}
-
-function applyReconciliationAction(
-  db: Parameters<typeof insertConversationInDb>[0],
-  action: ReconcileAction,
-): void {
-  if (action.kind === "insert") {
-    insertConversationInDb(db, action.conversation);
-    return;
-  }
-
-  if (action.kind === "update") {
-    updateConversationInDb(db, action.conversation);
-    return;
-  }
-
-  if (action.kind === "delete") {
-    deleteConversationInDb(db, action.rowId);
-  }
 }
 
 function buildStats(

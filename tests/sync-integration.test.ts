@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import {
   getConversationById,
-  insertConversation,
   listConversations,
 } from "../src/db/index.js";
 import { runSyncPull, runSyncPush } from "../src/cli/sync.js";
@@ -19,6 +18,7 @@ import {
   getRawConversationPath,
   getRawSourceDir,
 } from "../src/utils/paths.js";
+import { deleteConversation, insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutput } from "./helpers/output.js";
 
@@ -187,7 +187,6 @@ describeIfGit("sync integration (requires git)", () => {
     });
 
     // Now delete the local row and push again — retraction expected.
-    const { deleteConversation } = await import("../src/db/index.js");
     await deleteConversation(id);
 
     await captureOutput(async () => {

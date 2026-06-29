@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   getConversationById,
-  insertConversation,
-  updateConversation,
   withDb,
 } from "../src/db/index.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
@@ -22,6 +20,7 @@ import {
 import { buildEditCommand } from "../src/cli/edit.js";
 import { maybePrintSummarizationHint } from "../src/cli/save.js";
 import { isUnsummarized } from "../src/models/conversation.js";
+import { insertConversation, updateConversation } from "./helpers/db.js";
 import { captureOutput } from "./helpers/output.js";
 
 describe("agent-assisted summarization", () => {

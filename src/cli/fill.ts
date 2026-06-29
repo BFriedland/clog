@@ -3,10 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { Command } from "commander";
-import type { Database } from "sql.js";
 
 import { loadConfig } from "../config/index.js";
-import { insertConversationInDb, listConversationsInDb, updateConversationInDb, withDb } from "../db/index.js";
+import { listConversationsInDb, withDb } from "../db/index.js";
 import {
   isFillWriteAction,
   planFill,
@@ -14,12 +13,9 @@ import {
   type FillCandidate,
   type FillMode,
   type FillPlan,
-  type FillWriteAction,
 } from "../interchange/fill.js";
 import { scanPairs, validatePair, type ValidatedPair } from "../interchange/pairs.js";
-import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
-import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import {
   getImportConversationPath,
@@ -28,6 +24,7 @@ import {
 } from "../utils/paths.js";
 import { nowIso } from "../utils/time.js";
 import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "./clogignore.js";
+import { applyFillWriteAction } from "./fill-executor.js";
 
 interface FillOptions {
   own?: boolean;
@@ -205,35 +202,6 @@ function getManagedPath(pair: ValidatedPair, mode: FillMode): string {
   }
 
   return getImportConversationPath(pair.meta.source, pair.meta.id);
-}
-
-async function applyFillWriteAction(
-  db: Database,
-  action: FillWriteAction,
-): Promise<ConversationMeta> {
-  await ensureManagedContent(action);
-  const sourceMtime = (await fs.stat(action.managedPath)).mtime.toISOString();
-  const conversation = {
-    ...action.conversation,
-    sourceMtime,
-  };
-
-  if (action.kind === "insert") {
-    insertConversationInDb(db, conversation);
-  } else {
-    updateConversationInDb(db, conversation);
-  }
-
-  return conversation;
-}
-
-async function ensureManagedContent(action: FillWriteAction): Promise<void> {
-  if (!action.copyContent && (await fileExists(action.managedPath))) {
-    return;
-  }
-
-  const content = await fs.readFile(action.pair.jsonlPath);
-  await writeFileAtomic(action.managedPath, content);
 }
 
 async function promoteMissingManagedCopies(plan: FillPlan): Promise<FillPlan> {

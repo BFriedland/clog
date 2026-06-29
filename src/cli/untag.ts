@@ -1,7 +1,7 @@
 import { Command } from "commander";
 
 import { nowIso } from "../utils/time.js";
-import { updateConversation } from "../db/index.js";
+import { updateLocalConversation } from "../db/index.js";
 import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 import { normalizeTags } from "./tag.js";
 
@@ -26,10 +26,10 @@ export function buildUntagCommand(): Command {
         return;
       }
 
-      await updateConversation({
+      await updateLocalConversation({
         ...conversation,
         tags: nextTags,
         modifiedAt: nowIso(),
-      });
+      }, { command: "clog untag" });
     });
 }

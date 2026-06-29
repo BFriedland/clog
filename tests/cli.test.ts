@@ -109,7 +109,7 @@ import { applyHeadTail } from "../src/cli/common.js";
 import { shouldSkipPreAction } from "../src/cli/prelude.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
-import { getConversationById, insertConversation, setConversationIndexedAt } from "../src/db/index.js";
+import { getConversationById, setConversationIndexedAt } from "../src/db/index.js";
 import { scanPairs, validatePair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
@@ -117,6 +117,7 @@ import { getRemoteRoot } from "../src/sync/paths.js";
 import { ClogError } from "../src/utils/errors.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutputWithError } from "./helpers/output.js";
 
@@ -2635,7 +2636,7 @@ describe("cli", () => {
       await seedSavedConversationWithRawMessages(id, 3, 1, provenance);
 
       await expect(runBuiltCommand(buildDiffCommand, [id])).rejects.toThrow(
-        /imported conversations are read-only/i,
+        `clog diff can only operate on local conversations. Use 'clog show ${id.slice(0, 8)}' to inspect this imported conversation.`,
       );
     });
 

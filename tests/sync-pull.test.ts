@@ -7,13 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDefaultConfig } from "../src/config/index.js";
 import {
   getConversationById,
-  insertConversation,
   listConversations,
 } from "../src/db/index.js";
+import * as dbModule from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { reconcileRemote } from "../src/sync/pull.js";
 import { getRemoteRoot } from "../src/sync/paths.js";
 import { SearchNotConfiguredError } from "../src/search/errors.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 const REMOTE_URL = "git@github.com:myorg/clog-team.git";
@@ -65,6 +66,32 @@ describe("sync pull reconciliation", () => {
     expect(rows[0]?.originRef).toBe(REMOTE_URL);
     expect(rows[0]?.author).toBe("alice");
     expect(rows[0]?.state).toBe("saved");
+  });
+
+  it("runs the reconciliation database phase in a single withDb critical section", async () => {
+    await writeRemotePair("alice", "claude-code", "a1111111-1111-1111-1111-111111111111", {
+      title: "First",
+      messageCount: 1,
+    });
+    await writeRemotePair("alice", "claude-code", "a2222222-2222-2222-2222-222222222222", {
+      title: "Second",
+      messageCount: 1,
+    });
+    await writeRemotePair("alice", "claude-code", "a3333333-3333-3333-3333-333333333333", {
+      title: "Third",
+      messageCount: 1,
+    });
+
+    // Reconciliation scans checkout pairs before opening the DB. Once it enters
+    // the database phase, planning and all writes should share one
+    // acquire/load/apply/flush/release cycle for the whole reconciliation batch.
+    const withDbSpy = vi.spyOn(dbModule, "withDb");
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+    const withDbCalls = withDbSpy.mock.calls.length;
+    withDbSpy.mockRestore();
+
+    expect(stats.inserted).toBe(3);
+    expect(withDbCalls).toBe(1);
   });
 
   it("updates existing rows when metadata changes and clears indexed_at on search-visible changes", async () => {

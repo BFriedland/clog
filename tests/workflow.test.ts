@@ -14,9 +14,10 @@ import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnexcludeCommand } from "../src/cli/unexclude.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
-import { getConversationById, insertConversation } from "../src/db/index.js";
+import { getConversationById } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutput } from "./helpers/output.js";
 

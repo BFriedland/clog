@@ -10,18 +10,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   browseValues,
   clearSavedIndexedAt,
-  deleteConversation,
   getConversationById,
   getConversationBySourceIdentityInDb,
-  insertConversation,
   listConversations,
   listConversationsNeedingIndex,
   resolveConversationId,
   setConversationIndexedAt,
-  updateConversation,
   withDb,
 } from "../src/db/index.js";
 import { nowIso } from "../src/utils/time.js";
+import { deleteConversation, insertConversation, updateConversation } from "./helpers/db.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);

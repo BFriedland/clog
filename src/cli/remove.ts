@@ -1,6 +1,11 @@
 import { Command } from "commander";
 
-import { deleteConversation, isFileConversation, isLocalConversation, listConversations } from "../db/index.js";
+import {
+  isLocalConversation,
+  listConversations,
+  removeConversationCopies,
+  type RemovedConversationCopy,
+} from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
 import { ClogError, UsageError } from "../utils/errors.js";
@@ -57,16 +62,12 @@ export function buildRemoveCommand(): Command {
         }
       }
 
-      for (const conversation of matches) {
-        if (isLocalConversation(conversation)) {
-          await removeRawCopyIfPresent(conversation);
-        } else if (isFileConversation(conversation)) {
-          await removeImportCopyIfPresent(conversation);
-        }
-        await deleteConversation(conversation.id);
+      const removed = await removeConversationCopies(matches, { command: "clog remove" });
+      for (const removal of removed) {
+        await applyRemovalFileEffect(removal);
       }
 
-      const failures = await tryDeleteConversationVectors(matches.map((conversation) => conversation.id));
+      const failures = await tryDeleteConversationVectors(removed.map((conversation) => conversation.id));
       for (const failedId of failures) {
         process.stderr.write(
           `warning: ${failedId.slice(0, 8)} was removed but its search vectors could not be deleted\n`,
@@ -74,9 +75,17 @@ export function buildRemoveCommand(): Command {
       }
 
       process.stdout.write(
-        `Removed ${matches.length} conversation${matches.length === 1 ? "" : "s"} from clog's database.\n`,
+        `Removed ${removed.length} conversation${removed.length === 1 ? "" : "s"} from clog's database.\n`,
       );
     });
+}
+
+async function applyRemovalFileEffect(removal: RemovedConversationCopy): Promise<void> {
+  if (removal.fileEffect === "raw") {
+    await removeRawCopyIfPresent(removal);
+  } else if (removal.fileEffect === "import") {
+    await removeImportCopyIfPresent(removal);
+  }
 }
 
 function assertValidLiteralRules(rules: string[]): void {

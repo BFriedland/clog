@@ -2,13 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
-import { getConversationById, insertConversation, listConversations } from "../src/db/index.js";
+import { getConversationById, listConversations } from "../src/db/index.js";
+import * as dbModule from "../src/db/index.js";
 import { getScanWarningsForCommand } from "../src/cli/common.js";
 import { scanLocalSources, type ScanResult } from "../src/cli/scan.js";
 import type { ClogWarning } from "../src/models/warnings.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 describe("scan", () => {
@@ -55,6 +57,28 @@ describe("scan", () => {
     expect(result.counts.ignored).toBe(2);
     expect(conversations).toHaveLength(1);
     expect(conversations[0]?.id).toBe("44444444-4444-4444-4444-444444444444");
+  });
+
+  it("runs the scan database phase in a single withDb critical section", async () => {
+    const claudeRoot = path.join(tempDir, "claude");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["codex-cli"].enabled = false;
+
+    await writeClaudeConversation(claudeRoot, "61616161-6161-6161-6161-616161616161", "/Users/alice/work/a");
+    await writeClaudeConversation(claudeRoot, "62626262-6262-6262-6262-626262626262", "/Users/alice/work/b");
+    await writeClaudeConversation(claudeRoot, "63636363-6363-6363-6363-636363636363", "/Users/alice/work/c");
+
+    // Local scan gathers filesystem candidates before opening the DB. Once it
+    // enters the database phase, every discovered-row write should share one
+    // acquire/load/apply/flush/release cycle for the whole scan batch.
+    const withDbSpy = vi.spyOn(dbModule, "withDb");
+    const result = await scanLocalSources(config);
+    const withDbCalls = withDbSpy.mock.calls.length;
+    withDbSpy.mockRestore();
+
+    expect(result.counts.discovered).toBe(3);
+    expect(withDbCalls).toBe(1);
   });
 
   it("treats ~/ path rules in clogignore as home-expanded project-path matches", async () => {

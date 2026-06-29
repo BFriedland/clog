@@ -11,7 +11,7 @@ import {
   handleSearch,
   handleUpdate,
 } from "../src/mcp/handlers.js";
-import { getConversationById, insertConversation } from "../src/db/index.js";
+import { getConversationById } from "../src/db/index.js";
 import { SearchNotConfiguredError } from "../src/search/errors.js";
 import type {
   EmbeddingProvider,
@@ -19,6 +19,7 @@ import type {
   VectorStore,
 } from "../src/search/types.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 vi.mock("../src/search/deps.js", async () => {

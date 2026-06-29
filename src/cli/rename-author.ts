@@ -1,6 +1,6 @@
 import { Command } from "commander";
 
-import { listConversations, updateConversation } from "../db/index.js";
+import { listConversations, renameLocalAuthor } from "../db/index.js";
 import { nowIso } from "../utils/time.js";
 import { confirm } from "./common.js";
 
@@ -36,14 +36,7 @@ export async function runRenameAuthor(
     return;
   }
 
-  const timestamp = nowIso();
-  for (const conversation of conversations) {
-    await updateConversation({
-      ...conversation,
-      author: newName,
-      modifiedAt: timestamp,
-    });
-  }
+  const renamed = await renameLocalAuthor(oldName, newName, { modifiedAt: nowIso() });
 
-  process.stdout.write(`Renamed author on ${conversations.length} conversation(s)\n`);
+  process.stdout.write(`Renamed author on ${renamed} conversation(s)\n`);
 }

@@ -5,10 +5,12 @@ import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import {
+  type LocalConversation,
+  requireLocalConversation,
+} from "../conversations/write-guards.js";
+import {
   getConversationById,
-  isLocalConversation,
   resolveConversationId,
-  updateConversation,
 } from "../db/index.js";
 import type { ConversationMeta, Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
@@ -83,20 +85,14 @@ export async function resolveManyConversationsOrFail(
 export function assertNotRemote(
   conversation: ConversationMeta,
   command: string,
-): void {
-  if (isLocalConversation(conversation)) {
-    return;
-  }
-
-  throw new ClogError(
-    `${command} cannot modify conversation ${conversation.id.slice(0, 8)} — imported conversations are read-only. Edit it on the original author's machine or remove the imported copy.`,
-  );
+): asserts conversation is LocalConversation {
+  requireLocalConversation(conversation, command);
 }
 
 export function assertNoneRemote(
   conversations: ConversationMeta[],
   command: string,
-): void {
+): asserts conversations is LocalConversation[] {
   for (const conversation of conversations) {
     assertNotRemote(conversation, command);
   }
@@ -191,15 +187,6 @@ export async function ensureRawCopy(
   }
 
   return destination;
-}
-
-export async function refreshConversation(
-  conversation: ConversationMeta,
-  updates: Partial<ConversationMeta>,
-): Promise<ConversationMeta> {
-  const next = { ...conversation, ...updates };
-  await updateConversation(next);
-  return next;
 }
 
 export function printConversationRows(conversations: ConversationMeta[]): void {
@@ -537,7 +524,9 @@ function dimTextInline(value: string): string {
   return `\u001b[2m${value}\u001b[22m`;
 }
 
-export async function removeRawCopyIfPresent(conversation: ConversationMeta): Promise<void> {
+export async function removeRawCopyIfPresent(
+  conversation: Pick<ConversationMeta, "id" | "source">,
+): Promise<void> {
   const rawPath = getRawConversationPath(conversation.source, conversation.id);
   try {
     await fs.rm(rawPath);
@@ -548,7 +537,9 @@ export async function removeRawCopyIfPresent(conversation: ConversationMeta): Pr
   }
 }
 
-export async function removeImportCopyIfPresent(conversation: ConversationMeta): Promise<void> {
+export async function removeImportCopyIfPresent(
+  conversation: Pick<ConversationMeta, "id" | "source">,
+): Promise<void> {
   const importPath = getImportConversationPath(conversation.source, conversation.id);
   try {
     await fs.rm(importPath);

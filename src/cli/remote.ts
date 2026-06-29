@@ -5,10 +5,10 @@ import chalk from "chalk";
 import { Command } from "commander";
 
 import {
-  deleteConversationInDb,
   gitOriginFilter,
   listConversations,
   listConversationsInDb,
+  removeGitConversationsForRemoteInDb,
   withDb,
 } from "../db/index.js";
 import { tryDeleteConversationVectors } from "../search/coherence.js";
@@ -193,9 +193,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   // Delete DB rows, best-effort deindex, clear config, remove checkout.
   const idsToDelete = remoteRows.map((row) => row.id);
   await withDb((db) => {
-    for (const id of idsToDelete) {
-      deleteConversationInDb(db, id);
-    }
+    removeGitConversationsForRemoteInDb(db, remote.url!);
   });
 
   const failures = await tryDeleteConversationVectors(idsToDelete);

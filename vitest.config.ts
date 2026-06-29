@@ -8,7 +8,7 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       "**/coverage/**",
-      "**/.OLD_*/**",
+      "**/.*/**",
     ],
     coverage: {
       provider: "v8",

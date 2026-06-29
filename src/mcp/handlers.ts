@@ -4,10 +4,9 @@ import { loadConfig } from "../config/index.js";
 import {
   browseValues,
   getConversationById,
-  isLocalConversation,
   listConversations,
   resolveConversationId,
-  updateConversation,
+  updateLocalConversation,
 } from "../db/index.js";
 import {
   type ConversationMeta,
@@ -28,6 +27,7 @@ import { isConversationSearchable, maybeReindexUpdatedConversation } from "../se
 import { searchConversations } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
 import { filterConversationsByGrep, parseConversationMessages } from "../cli/common.js";
+import { requireLocalConversation } from "../conversations/write-guards.js";
 
 const listSortBySchema = z.enum([
   "createdAt",
@@ -254,11 +254,7 @@ export async function handleUpdate(input: unknown) {
     throw new Error("clog_update only works on saved conversations.");
   }
 
-  if (!isLocalConversation(conversation)) {
-    throw new Error(
-      `clog_update cannot modify conversation ${conversation.id.slice(0, 8)} — imported conversations are read-only.`,
-    );
-  }
+  requireLocalConversation(conversation, "clog_update");
 
   const addTags = normalizeTags(parsed.addTags ?? []);
   const removeTags = new Set(normalizeTags(parsed.removeTags ?? []));
@@ -332,7 +328,7 @@ export async function handleUpdate(input: unknown) {
     )
       ? await maybeReindexUpdatedConversation(nextConversation)
       : nextConversation;
-  await updateConversation(finalConversation);
+  await updateLocalConversation(finalConversation, { command: "clog_update" });
 
   return {
     conversation: summarizeConversation(finalConversation),

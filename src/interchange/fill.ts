@@ -298,8 +298,8 @@ function planFillCollision(args: {
       reason: "local_saved_precedence",
       message:
         mode === "own"
-          ? `Skipping ${pair.meta.id.slice(0, 8)} - existing local curation wins.`
-          : `Skipping ${pair.meta.id.slice(0, 8)} - existing local saved copy takes precedence.`,
+          ? `Skipping ${pair.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill --own' will not replace local metadata or content; remove the local copy first if you want this pair to replace it.`
+          : `Skipping ${pair.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill' imports read-only copies and will not replace local metadata or content.`,
       failure: false,
       pair,
       owner,

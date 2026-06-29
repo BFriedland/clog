@@ -2099,6 +2099,7 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Requires interactive confirmation with a default of `N`, unless `--yes` is supplied
 - Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
 - Supports `--dry-run` to preview matches without deleting rows, raw files, or vectors
+- After confirmation, `clog remove` rechecks every previewed saved row before deleting anything; if any previewed row changed or disappeared, the whole removal exits before deleting database rows, managed files, or search vectors
 - Operates only on `saved`-state rows. Discovered rows are transient artifacts of the latest scan and would simply reappear on the next scan, so they are skipped. Use `clog exclude` to keep discovered rows from coming back.
 - Deletes the union of matching saved DB rows across provenance kinds
 - Deletes curated raw copies for removed local curated rows and managed import copies for removed file rows

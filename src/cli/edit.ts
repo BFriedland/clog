@@ -2,7 +2,7 @@ import { Command } from "commander";
 
 import type { ConversationMeta } from "../models/conversation.js";
 import { nowIso } from "../utils/time.js";
-import { updateConversation } from "../db/index.js";
+import { updateLocalConversation } from "../db/index.js";
 import { maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 
@@ -81,7 +81,7 @@ export function buildEditCommand(): Command {
         nextConversation = await maybeReindexUpdatedConversation(nextConversation);
       }
 
-      await updateConversation(nextConversation);
+      await updateLocalConversation(nextConversation, { command: "clog edit" });
       process.stdout.write(`Updated ${conversation.id.slice(0, 8)}\n`);
     });
 

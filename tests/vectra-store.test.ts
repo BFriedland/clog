@@ -4,10 +4,11 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getConversationById, insertConversation } from "../src/db/index.js";
+import { getConversationById } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { resetVectraIndex, VectraStore } from "../src/search/vectorstores/vectra.js";
 import { getVectorsRoot } from "../src/utils/paths.js";
+import { insertConversation } from "./helpers/db.js";
 
 describe("VectraStore", () => {
   let tempDir: string;

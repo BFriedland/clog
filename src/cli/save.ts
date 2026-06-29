@@ -3,10 +3,10 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
-  deleteConversation,
   listConversations,
   listConversationsNeedingIndex,
-  updateConversation,
+  removeConversationCopy,
+  saveLocalConversation,
 } from "../db/index.js";
 import { isUnsummarized, type ConversationMeta } from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
@@ -102,8 +102,10 @@ export function buildSaveCommand(): Command {
             indexedAt: null,
           };
 
-          await updateConversation(savedConversation);
-          savedConversations.push(savedConversation);
+          const saved = await saveLocalConversation(savedConversation, {
+            command: "clog save",
+          });
+          savedConversations.push(saved);
         } catch (error) {
           if (await skipMissingDiscoveredSource(error, conversation)) {
             continue;
@@ -233,7 +235,7 @@ async function skipMissingDiscoveredSource(
     return false;
   }
 
-  await deleteConversation(conversation.id);
+  await removeConversationCopy(conversation, { command: "clog save" });
   process.stderr.write(
     `warning: skipped ${conversation.id.slice(0, 8)} because its source file is missing; removed stale discovered row from clog's database (path=${conversation.sourcePath})\n`,
   );

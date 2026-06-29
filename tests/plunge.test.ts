@@ -9,9 +9,9 @@ import { buildPlungeCommand, generatePlungeReport } from "../src/cli/plunge.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import * as dbModule from "../src/db/index.js";
-import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { getClogDbPath, getClogIgnorePath, getConfigPath, getRawConversationPath } from "../src/utils/paths.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutput } from "./helpers/output.js";
 

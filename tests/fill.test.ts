@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { applyFillWriteAction } from "../src/cli/fill-executor.js";
 import { buildFillCommand } from "../src/cli/fill.js";
 import { buildRemoveCommand } from "../src/cli/remove.js";
 import { buildTagCommand } from "../src/cli/tag.js";
@@ -12,16 +13,18 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import {
   getConversationById,
-  insertConversation,
   setConversationIndexedAt,
+  withDb,
 } from "../src/db/index.js";
-import { planFill, type FillMode } from "../src/interchange/fill.js";
+import * as dbModule from "../src/db/index.js";
+import { planFill, type FillMode, type FillWriteAction } from "../src/interchange/fill.js";
 import { writePair, type PairMetadata, type ValidatedPair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   getImportConversationPath,
   getRawConversationPath,
 } from "../src/utils/paths.js";
+import { insertConversation, updateConversation } from "./helpers/db.js";
 import { captureOutputWithError } from "./helpers/output.js";
 
 describe("clog fill", () => {
@@ -71,6 +74,23 @@ describe("clog fill", () => {
 
     await fs.rm(pairDir, { recursive: true, force: true });
     await expect(fs.readFile(row!.filePath!, "utf8")).resolves.toContain("Message 1");
+  });
+
+  it("runs the fill database phase in a single withDb critical section", async () => {
+    await writePairFixture(pairDir, "c1111111-1111-1111-1111-111111111111", { author: "bob", title: "First" }, 1);
+    await writePairFixture(pairDir, "c2222222-2222-2222-2222-222222222222", { author: "bob", title: "Second" }, 1);
+    await writePairFixture(pairDir, "c3333333-3333-3333-3333-333333333333", { author: "bob", title: "Third" }, 1);
+
+    // Fill scans and validates pair files before opening the DB. Once it enters
+    // the database phase, planning and all writes should share one
+    // acquire/load/apply/flush/release cycle for the whole import batch.
+    const withDbSpy = vi.spyOn(dbModule, "withDb");
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+    const withDbCalls = withDbSpy.mock.calls.length;
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain("Processed 3 conversation pair");
+    expect(withDbCalls).toBe(1);
   });
 
   it("hints to use --own when every importable pair is the configured author's", async () => {
@@ -447,6 +467,53 @@ describe("clog fill", () => {
     expect(row?.indexedAt).toBe("2026-03-01T10:00:00.000Z");
   });
 
+  it("rejects a stale write target before overwriting managed content", async () => {
+    const id = "bb1b1b1b-1b1b-1b1b-1b1b-1b1b1b1b1b1b";
+    await writePairFixture(pairDir, id, { author: "bob", title: "Updated pair" }, 2);
+
+    const managedPath = getImportConversationPath("claude-code", id);
+    await fs.mkdir(path.dirname(managedPath), { recursive: true });
+    await fs.writeFile(managedPath, "existing import content\n", "utf8");
+
+    const fileRow = conversation({
+      id,
+      sourceId: id,
+      author: "bob",
+      originKind: "file",
+      originRef: null,
+      sourcePath: managedPath,
+      filePath: managedPath,
+    });
+    await insertConversation(fileRow);
+
+    await updateConversation({
+      ...fileRow,
+      originKind: "local",
+      originRef: null,
+    });
+
+    const action: FillWriteAction = {
+      kind: "update",
+      rowId: id,
+      pair: validatedPairFromFixture(pairDir, id, { author: "bob", title: "Updated pair" }),
+      managedPath,
+      copyContent: true,
+      conversation: {
+        ...fileRow,
+        title: "Updated pair",
+        savedMessageCount: 2,
+      },
+    };
+
+    await expect(withDb((db) => applyFillWriteAction(db, action))).rejects.toThrow(
+      /managed file import/,
+    );
+
+    await expect(fs.readFile(managedPath, "utf8")).resolves.toBe("existing import content\n");
+    const row = await getConversationById(id);
+    expect(row?.originKind).toBe("local");
+  });
+
   it("plans the fill collision matrix without unique-constraint failures", () => {
     const pair = validatedPair("b8888888-8888-8888-8888-888888888888", {
       author: "alice",
@@ -612,6 +679,19 @@ function validatedPair(id: string, overrides: Partial<PairMetadata> = {}): Valid
     jsonlPath: `/tmp/pairs/${id}.jsonl`,
     meta: makePairMetadata(id, overrides),
     messageCount: 1,
+  };
+}
+
+function validatedPairFromFixture(
+  dir: string,
+  id: string,
+  overrides: Partial<PairMetadata> = {},
+): ValidatedPair {
+  return {
+    ...validatedPair(id, overrides),
+    rootDir: dir,
+    metaPath: path.join(dir, `${id}.meta.json`),
+    jsonlPath: path.join(dir, `${id}.jsonl`),
   };
 }
 

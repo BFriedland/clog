@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { insertConversation } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   buildCommitMessage,
@@ -18,6 +17,7 @@ import {
   getRawSourceDir,
 } from "../src/utils/paths.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
+import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 const TEST_REMOTE_URL = "git@github.com:myorg/clog-team.git";

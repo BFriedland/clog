@@ -4,9 +4,9 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { insertConversation } from "../src/db/index.js";
 import { assertNotRemote } from "../src/cli/common.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import { insertConversation } from "./helpers/db.js";
 
 describe("assertNotRemote", () => {
   let tempDir: string;

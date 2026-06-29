@@ -1,7 +1,7 @@
 import { Command } from "commander";
 
 import { nowIso } from "../utils/time.js";
-import { updateConversation } from "../db/index.js";
+import { updateLocalConversation } from "../db/index.js";
 import { assertNotRemote, resolveConversationOrFail } from "./common.js";
 
 export function buildTagCommand(): Command {
@@ -24,11 +24,11 @@ export function buildTagCommand(): Command {
         return;
       }
 
-      await updateConversation({
+      await updateLocalConversation({
         ...conversation,
         tags: nextTags,
         modifiedAt: nowIso(),
-      });
+      }, { command: "clog tag" });
     });
 }
 

@@ -1,12 +1,12 @@
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
+import { isLocallyWritable } from "../conversations/write-guards.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { ClogError } from "../utils/errors.js";
 import { listConversations } from "../db/index.js";
 import {
   applyHeadTail,
-  assertNotRemote,
   getSaveCandidate,
   parseConversationMessages,
   parseConversationMessagesFromPath,
@@ -80,7 +80,11 @@ function parseCount(value?: string): number | undefined {
 }
 
 function validateDiffTarget(conversation: ConversationMeta): void {
-  assertNotRemote(conversation, "clog diff");
+  if (!isLocallyWritable(conversation)) {
+    throw new ClogError(
+      `clog diff can only operate on local conversations. Use 'clog show ${conversation.id.slice(0, 8)}' to inspect this imported conversation.`,
+    );
+  }
 
   if (conversation.state !== "saved") {
     throw new ClogError(

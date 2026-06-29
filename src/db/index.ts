@@ -7,17 +7,22 @@ import lockfile from "proper-lockfile";
 import initSqlJs, { type Database, type QueryExecResult, type SqlJsStatic } from "sql.js";
 
 import {
+  type LocalConversation,
+  requireLocalConversation,
+  throwImportedReadOnlyError,
+} from "../conversations/write-guards.js";
+import {
   type ConversationMeta,
   conversationMetaSchema,
   type ConversationState,
   type OriginKind,
   parseSummaryExtraction,
-  serializeSummaryExtraction,
 } from "../models/conversation.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
 import { applyMigrations } from "./schema.js";
+import { unsafeUpdateLocalConversationInDb } from "./unsafe-conversations.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
 const require = createRequire(import.meta.url);
@@ -46,6 +51,14 @@ export interface ListConversationFilters {
 export interface ResolvedConversationId {
   id: string;
   source: string;
+}
+
+export type ConversationRemovalFileEffect = "raw" | "import" | "none";
+
+export interface RemovedConversationCopy {
+  id: string;
+  source: string;
+  fileEffect: ConversationRemovalFileEffect;
 }
 
 interface SqlWhere {
@@ -112,25 +125,18 @@ export async function withDb<T>(
   }
 }
 
-export async function insertConversation(
-  conversation: ConversationMeta,
-): Promise<void> {
-  await withDb((db) => insertConversationInDb(db, conversation));
-}
-
-export async function updateConversation(
-  conversation: ConversationMeta,
-): Promise<void> {
-  await withDb((db) => updateConversationInDb(db, conversation));
-}
-
 export async function getConversationById(
   id: string,
 ): Promise<ConversationMeta | null> {
-  return withDb((db) => {
-    const result = db.exec("SELECT * FROM conversations WHERE id = ?", [id]);
-    return firstConversation(result);
-  });
+  return withDb((db) => getConversationByIdInDb(db, id));
+}
+
+export function getConversationByIdInDb(
+  db: Database,
+  id: string,
+): ConversationMeta | null {
+  const result = db.exec("SELECT * FROM conversations WHERE id = ?", [id]);
+  return firstConversation(result);
 }
 
 export async function listConversations(
@@ -227,10 +233,6 @@ export async function resolveConversationId(
   });
 }
 
-export async function deleteConversation(id: string): Promise<void> {
-  await withDb((db) => deleteConversationInDb(db, id));
-}
-
 export function isLocalConversation(
   conversation: Pick<ConversationMeta, "originKind">,
 ): boolean {
@@ -266,110 +268,224 @@ export function gitOriginFilter(remoteUrl: string): OriginFilter {
   return { kind: "git", ref: remoteUrl };
 }
 
-export function insertConversationInDb(
+export async function updateLocalConversation(
+  conversation: ConversationMeta,
+  options: { command: string },
+): Promise<LocalConversation> {
+  return withDb((db) => updateLocalConversationInDb(db, conversation, options));
+}
+
+export async function saveLocalConversation(
+  conversation: ConversationMeta,
+  options: { command: string },
+): Promise<LocalConversation> {
+  return updateLocalConversation(conversation, options);
+}
+
+export function updateLocalConversationInDb(
   db: Database,
   conversation: ConversationMeta,
-): void {
-  db.run(
-    `
-      INSERT INTO conversations (
-        id,
-        source_id,
-        source,
-        title,
-        summary,
-        summary_kind,
-        summary_extraction,
-        author,
-        project_name,
-        project_path,
-        tags_json,
-        slug,
-        created_at,
-        discovered_at,
-        modified_at,
-        state,
-        saved_at,
-        saved_message_count,
-        save_version,
-        source_path,
-        file_path,
-        source_mtime,
-        indexed_at,
-        origin_kind,
-        origin_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    conversationToParams(conversation),
+  options: { command: string },
+): LocalConversation {
+  const requested = requireLocalConversation(conversation, options.command);
+  const current = getConversationByIdInDb(db, conversation.id);
+  if (!current) {
+    throw new ClogError(`Conversation "${conversation.id}" not found.`);
+  }
+  requireLocalConversation(current, options.command);
+
+  const modified = unsafeUpdateLocalConversationInDb(db, requested);
+  if (modified !== 1) {
+    throwImportedReadOnlyError(requested, options.command);
+  }
+
+  const updated = getConversationByIdInDb(db, conversation.id);
+  if (!updated) {
+    throw new ClogError(`Conversation "${conversation.id}" not found after update.`);
+  }
+
+  return requireLocalConversation(updated, options.command);
+}
+
+export async function renameLocalAuthor(
+  oldName: string,
+  newName: string,
+  options: { modifiedAt: string },
+): Promise<number> {
+  return withDb((db) => {
+    db.run(
+      `
+        UPDATE conversations
+        SET author = ?, modified_at = ?
+        WHERE author = ?
+          AND origin_kind = 'local'
+          AND origin_ref IS NULL
+      `,
+      [newName, options.modifiedAt, oldName],
+    );
+    return db.getRowsModified();
+  });
+}
+
+export async function removeConversationCopy(
+  conversation: ConversationMeta,
+  options: { command: string },
+): Promise<RemovedConversationCopy> {
+  const [removed] = await removeConversationCopies([conversation], options);
+  return removed!;
+}
+
+export async function removeConversationCopies(
+  conversations: ConversationMeta[],
+  options: { command: string },
+): Promise<RemovedConversationCopy[]> {
+  return withDb((db) => removeConversationCopiesInDb(db, conversations, options));
+}
+
+export function removeConversationCopiesInDb(
+  db: Database,
+  conversations: ConversationMeta[],
+  options: { command: string },
+): RemovedConversationCopy[] {
+  const currentRows: ConversationMeta[] = [];
+  const seenIds = new Set<string>();
+
+  for (const conversation of conversations) {
+    if (seenIds.has(conversation.id)) {
+      continue;
+    }
+    seenIds.add(conversation.id);
+
+    const current = getConversationByIdInDb(db, conversation.id);
+    if (!current || !sameRemovalTarget(conversation, current)) {
+      throw new ClogError(
+        `${options.command} cannot remove conversation ${conversation.id.slice(0, 8)} because it changed after preview. Run '${options.command}' again to review the current row.`,
+      );
+    }
+    currentRows.push(current);
+  }
+
+  return currentRows.map((conversation) =>
+    removeValidatedConversationCopyInDb(db, conversation, options),
   );
 }
 
-export function updateConversationInDb(
+function removeValidatedConversationCopyInDb(
   db: Database,
   conversation: ConversationMeta,
-): void {
-  db.run(
-    `
-      UPDATE conversations
-      SET
-        source_id = ?,
-        source = ?,
-        title = ?,
-        summary = ?,
-        summary_kind = ?,
-        summary_extraction = ?,
-        author = ?,
-        project_name = ?,
-        project_path = ?,
-        tags_json = ?,
-        slug = ?,
-        created_at = ?,
-        discovered_at = ?,
-        modified_at = ?,
-        state = ?,
-        saved_at = ?,
-        saved_message_count = ?,
-        save_version = ?,
-        source_path = ?,
-        file_path = ?,
-        source_mtime = ?,
-        indexed_at = ?,
-        origin_kind = ?,
-        origin_ref = ?
-      WHERE id = ?
-    `,
-    [
-      conversation.sourceId,
-      conversation.source,
-      conversation.title,
-      conversation.summary,
-      normalizeSummaryKind(conversation),
-      serializeSummaryExtraction(conversation.summaryExtraction),
-      conversation.author,
-      conversation.projectName,
-      conversation.projectPath,
-      JSON.stringify(conversation.tags),
-      conversation.slug,
-      conversation.createdAt,
-      conversation.discoveredAt,
-      conversation.modifiedAt,
-      conversation.state,
-      conversation.savedAt,
-      conversation.savedMessageCount,
-      conversation.saveVersion,
-      conversation.sourcePath,
-      conversation.filePath,
-      conversation.sourceMtime,
-      conversation.indexedAt,
-      conversation.originKind,
-      conversation.originRef,
-      conversation.id,
-    ],
-  );
+  options: { command: string },
+): RemovedConversationCopy {
+  if (conversation.originKind === "local") {
+    db.run(
+      `
+        DELETE FROM conversations
+        WHERE id = ?
+          AND origin_kind = 'local'
+          AND origin_ref IS NULL
+      `,
+      [conversation.id],
+    );
+    return removedConversationCopy(db, conversation, "raw");
+  } else if (conversation.originKind === "file") {
+    db.run(
+      `
+        DELETE FROM conversations
+        WHERE id = ?
+          AND origin_kind = 'file'
+          AND origin_ref IS NULL
+      `,
+      [conversation.id],
+    );
+    return removedConversationCopy(db, conversation, "import");
+  } else {
+    if (conversation.originRef == null) {
+      throw new ClogError(
+        `${options.command} cannot remove conversation ${conversation.id.slice(0, 8)} because its git remote is missing.`,
+      );
+    }
+    db.run(
+      `
+        DELETE FROM conversations
+        WHERE id = ?
+          AND origin_kind = 'git'
+          AND origin_ref = ?
+      `,
+      [conversation.id, conversation.originRef],
+    );
+    return removedConversationCopy(db, conversation, "none");
+  }
 }
 
-export function deleteConversationInDb(db: Database, id: string): void {
-  db.run("DELETE FROM conversations WHERE id = ?", [id]);
+function removedConversationCopy(
+  db: Database,
+  conversation: ConversationMeta,
+  fileEffect: ConversationRemovalFileEffect,
+): RemovedConversationCopy {
+  const removedCount = db.getRowsModified();
+  if (removedCount !== 1) {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} changed before it could be removed. Run the command again to review the current row.`,
+    );
+  }
+
+  return {
+    id: conversation.id,
+    source: conversation.source,
+    fileEffect,
+  };
+}
+
+function sameRemovalTarget(
+  previewed: ConversationMeta,
+  current: ConversationMeta,
+): boolean {
+  return Object.keys(removalTargetFields).every((field) => {
+    const key = field as keyof ConversationMeta;
+    return JSON.stringify(previewed[key]) === JSON.stringify(current[key]);
+  });
+}
+
+const removalTargetFields = {
+  id: true,
+  sourceId: true,
+  source: true,
+  title: true,
+  summary: true,
+  summaryKind: true,
+  summaryExtraction: true,
+  author: true,
+  projectName: true,
+  projectPath: true,
+  tags: true,
+  slug: true,
+  createdAt: true,
+  discoveredAt: true,
+  modifiedAt: true,
+  state: true,
+  savedAt: true,
+  savedMessageCount: true,
+  saveVersion: true,
+  sourcePath: true,
+  filePath: true,
+  sourceMtime: true,
+  indexedAt: true,
+  originKind: true,
+  originRef: true,
+} satisfies Record<keyof ConversationMeta, true>;
+
+export function removeGitConversationsForRemoteInDb(
+  db: Database,
+  remoteUrl: string,
+): number {
+  db.run(
+    `
+      DELETE FROM conversations
+      WHERE origin_kind = 'git'
+        AND origin_ref = ?
+    `,
+    [remoteUrl],
+  );
+  return db.getRowsModified();
 }
 
 export function listConversationsInDb(
@@ -508,36 +624,6 @@ function buildAmbiguousIdMessage(
   return `Conversation ID "${input}" is ambiguous. Matches: ${candidates}`;
 }
 
-function conversationToParams(conversation: ConversationMeta): unknown[] {
-  return [
-    conversation.id,
-    conversation.sourceId,
-    conversation.source,
-    conversation.title,
-    conversation.summary,
-    normalizeSummaryKind(conversation),
-    serializeSummaryExtraction(conversation.summaryExtraction),
-    conversation.author,
-    conversation.projectName,
-    conversation.projectPath,
-    JSON.stringify(conversation.tags),
-    conversation.slug,
-    conversation.createdAt,
-    conversation.discoveredAt,
-    conversation.modifiedAt,
-    conversation.state,
-    conversation.savedAt,
-    conversation.savedMessageCount,
-    conversation.saveVersion,
-    conversation.sourcePath,
-    conversation.filePath,
-    conversation.sourceMtime,
-    conversation.indexedAt,
-    conversation.originKind,
-    conversation.originRef,
-  ];
-}
-
 function provenanceWhere(filter: OriginFilter): SqlWhere {
   if (filter === "local") {
     return { sql: "origin_kind = 'local'", params: [] };
@@ -558,15 +644,6 @@ function provenanceWhere(filter: OriginFilter): SqlWhere {
     }
   }
   return { sql, params };
-}
-
-function normalizeSummaryKind(
-  conversation: Pick<ConversationMeta, "summary" | "summaryKind">,
-): ConversationMeta["summaryKind"] {
-  if (conversation.summaryKind) {
-    return conversation.summaryKind;
-  }
-  return conversation.summary.trim() ? "curated" : "none";
 }
 
 function normalizeSummaryKindFromRow(
