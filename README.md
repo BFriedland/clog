@@ -10,6 +10,10 @@ With clog, you can build a library from your Claude Code and Codex CLI conversat
 
 `npm run setup` builds clog, installs the `clog` command globally from your local checkout, and runs `clog init`.
 
+## Requirements
+
+clog requires Node.js 22 or newer. Local development is tested with Node.js 22.
+
 ## Install
 
 ```bash
@@ -262,6 +266,8 @@ The `search` and `remote` config blocks are managed by `clog search --init` and 
 | `CLOG_DEBUG` | Bypass CLI error wrapping and surface raw stack traces |
 
 ## Development
+
+Use Node.js 22 or newer for local development. The `.nvmrc` file selects the Node.js 22 release line for version managers that support it.
 
 ```bash
 npm test               # Run tests

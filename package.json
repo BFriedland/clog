@@ -10,7 +10,8 @@
     "clog-mcp": "dist/mcp/server.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/fix-bin-permissions.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc && node scripts/fix-bin-permissions.mjs",
     "setup": "npm run build && npm link && node dist/index.js init",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -20,27 +21,27 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^8.4.1",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
-    "glob": "^11.0.1",
+    "glob": "^13.0.6",
     "proper-lockfile": "^4.1.2",
     "sql.js": "^1.12.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@huggingface/transformers": "^3.8.1",
+    "@huggingface/transformers": "^4.2.0",
     "@types/node": "^22.13.4",
     "@types/proper-lockfile": "^4.1.4",
-    "@vitest/coverage-v8": "^3.2.4",
-    "eslint": "^9.22.0",
-    "tsx": "^4.19.3",
+    "@vitest/coverage-v8": "^4.1.9",
+    "eslint": "^10.6.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.24.1",
-    "vectra": "^0.14.0",
-    "vitest": "^3.0.5"
+    "typescript-eslint": "^8.62.0",
+    "vectra": "^0.15.0",
+    "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }
