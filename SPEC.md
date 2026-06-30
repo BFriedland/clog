@@ -2412,14 +2412,17 @@ This allows agents to `@`-mention clog resources directly.
 ### 6.4 Running the Server
 
 ```bash
-# Register with Claude Code
-claude mcp add clog -- npx -y clog-mcp
+# Register both supported clients
+clog mcp setup both
 
-# Register with Codex CLI
-codex mcp add clog -- npx -y clog-mcp
+# Register only Claude Code
+clog mcp setup claude
+
+# Register only Codex CLI
+clog mcp setup codex
 ```
 
-`clog mcp setup` wraps those commands and is the preferred setup path from the clog CLI. `clog mcp setup claude` registers Claude Code, `clog mcp setup codex` registers Codex CLI, and `clog mcp setup both` does both in sequence. If a server named `clog` already exists for a selected client, clog replaces it automatically.
+`clog mcp setup` is the preferred setup path from the clog CLI. It registers the currently installed local copy of clog with an absolute Node command that imports that installation's `dist/mcp/server.js` file. It does not register an `npx` command or install packages when an MCP client starts the server. If clog is moved, reinstalled, or rebuilt in a different location, the user must run `clog mcp setup` again so Claude Code or Codex CLI points at the current server file. `clog mcp setup claude` registers Claude Code, `clog mcp setup codex` registers Codex CLI, and `clog mcp setup both` does both in sequence. If a server named `clog` already exists for a selected client, clog replaces it automatically.
 
 The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. MCP tools expose **saved** conversations only. Discovered conversations remain local CLI-visible source rows until the user explicitly saves them.
 

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { select } from "@inquirer/prompts";
 import { Command } from "commander";
@@ -15,7 +17,12 @@ interface ExternalCommandError extends Error {
 }
 
 const MCP_SERVER_NAME = "clog";
-const MCP_SERVER_COMMAND = ["npx", "-y", "clog-mcp"] as const;
+const MCP_SERVER_PATH = resolveMcpServerPath();
+const MCP_SERVER_COMMAND = [
+  process.execPath,
+  "-e",
+  buildMcpLauncherScript(MCP_SERVER_PATH),
+] as const;
 
 const CLIENT_CONFIG: Record<McpClient, {
   label: string;
@@ -72,12 +79,12 @@ export async function promptForMcpSetupTarget(): Promise<McpSetupTarget> {
       {
         value: "claude",
         name: "Claude Code",
-        description: "Run 'claude mcp add clog -- npx -y clog-mcp'",
+        description: "Register this installed clog MCP server with Claude Code",
       },
       {
         value: "codex",
         name: "Codex CLI",
-        description: "Run 'codex mcp add clog -- npx -y clog-mcp'",
+        description: "Register this installed clog MCP server with Codex CLI",
       },
     ],
     default: "both",
@@ -85,6 +92,8 @@ export async function promptForMcpSetupTarget(): Promise<McpSetupTarget> {
 }
 
 export async function runMcpSetup(target: McpSetupTarget): Promise<void> {
+  assertMcpServerFileExists(MCP_SERVER_PATH);
+
   const clients = target === "both" ? (["claude", "codex"] as const) : [target];
 
   for (const client of clients) {
@@ -101,13 +110,23 @@ export function parseMcpSetupTarget(input: string): McpSetupTarget {
   throw new UsageError(`Unknown MCP client "${input}". Use claude, codex, or both.`);
 }
 
+export function assertMcpServerFileExists(serverPath: string): void {
+  if (existsSync(serverPath)) {
+    return;
+  }
+
+  throw new ClogError(
+    `clog MCP server file not found at ${serverPath}. Build or reinstall clog, then run 'clog mcp setup <claude|codex|both>' again.`,
+  );
+}
+
 async function runSingleClientMcpSetup(client: McpClient): Promise<void> {
   const config = CLIENT_CONFIG[client];
 
   try {
     await runExternalCommand(config.executable, config.addArgs);
     process.stdout.write(
-      `${config.label} MCP integration configured using '${buildCommandPreview(config.executable, config.addArgs)}'.\n`,
+      `${config.label} MCP integration configured using local clog MCP server at ${MCP_SERVER_PATH}.\n`,
     );
     return;
   } catch (error) {
@@ -153,7 +172,7 @@ async function runSingleClientMcpSetup(client: McpClient): Promise<void> {
   }
 
   process.stdout.write(
-    `${config.label} MCP integration replaced using '${buildCommandPreview(config.executable, config.addArgs)}'.\n`,
+    `${config.label} MCP integration replaced using local clog MCP server at ${MCP_SERVER_PATH}.\n`,
   );
 }
 
@@ -195,6 +214,36 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 function buildCommandPreview(command: string, args: string[]): string {
   return [command, ...args].join(" ");
+}
+
+function resolveMcpServerPath(): string {
+  const currentModuleUrl = import.meta.url;
+  const serverUrl = currentModuleUrl.endsWith("/src/cli/mcp.ts")
+    ? new URL("../../dist/mcp/server.js", currentModuleUrl)
+    : new URL("../mcp/server.js", currentModuleUrl);
+
+  return fileURLToPath(serverUrl);
+}
+
+function buildMcpLauncherScript(serverPath: string): string {
+  const serverPathLiteral = JSON.stringify(serverPath);
+
+  return [
+    "(async()=>{",
+    `const serverPath=${serverPathLiteral};`,
+    "const {existsSync}=await import('node:fs');",
+    "const {pathToFileURL}=await import('node:url');",
+    "if(!existsSync(serverPath)){",
+    "console.error(`clog MCP server file not found at ${serverPath}. Run \\`clog mcp setup <claude|codex|both>\\` again after reinstalling or rebuilding clog.`);",
+    "process.exit(1);",
+    "}",
+    "await import(pathToFileURL(serverPath).href);",
+    "})().catch((error)=>{",
+    "const message=error instanceof Error ? error.stack ?? error.message : String(error);",
+    "console.error(`clog MCP server failed to start: ${message}`);",
+    "process.exit(1);",
+    "});",
+  ].join("");
 }
 
 function renderExternalCommandError(command: string, args: string[], error: unknown): string {

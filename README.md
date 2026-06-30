@@ -119,19 +119,19 @@ The easiest path is:
 clog mcp setup both
 ```
 
-With Claude Code:
+For Claude Code only:
 
 ```bash
-claude mcp add clog -- npx -y clog-mcp
+clog mcp setup claude
 ```
 
-With Codex CLI:
+For Codex CLI only:
 
 ```bash
-codex mcp add clog -- npx -y clog-mcp
+clog mcp setup codex
 ```
 
-If a `clog` MCP server is already registered for one of those clients, `clog mcp setup` replaces it automatically.
+`clog mcp setup` registers the currently installed local copy of clog with an absolute Node command. It does not use `npx` or install packages at MCP startup. If clog is moved, reinstalled, or rebuilt in a different location, run `clog mcp setup` again.
 
 This gives agents the following tools:
 

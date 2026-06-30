@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { fileURLToPath } from "node:url";
 
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,18 @@ vi.mock("node:child_process", async () => {
     ...actual,
     execFile: vi.fn(),
     spawn: vi.fn(actual.spawn),
+  };
+});
+
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    // MCP setup checks that the built server file exists before registering it.
+    // Make existsSync controllable so these tests can run against src/ without a
+    // dist/ build and can exercise the missing-file path. The suite beforeEach
+    // sets the default, treating only the resolved server path as present.
+    existsSync: vi.fn(actual.existsSync),
   };
 });
 
@@ -85,13 +98,22 @@ const actualSearchDepsModule = await vi.importActual<typeof import("../src/searc
 );
 const mockedGetSearchProviders = vi.mocked(searchDepsModule.getSearchProviders);
 const mockedSearchAvailable = vi.mocked(searchDepsModule.searchAvailable);
+const fsModule = await import("node:fs");
+const actualFsModule = await vi.importActual<typeof import("node:fs")>("node:fs");
+const mockedExistsSync = vi.mocked(fsModule.existsSync);
+const expectedServerPath = fileURLToPath(new URL("../dist/mcp/server.js", import.meta.url));
+const expectedMcpServerCommand = [
+  process.execPath,
+  "-e",
+  expect.stringContaining(JSON.stringify(expectedServerPath)),
+];
 
 import { buildConfigCommand } from "../src/cli/config.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
 import { buildInitCommand } from "../src/cli/init.js";
-import { buildMcpCommand } from "../src/cli/mcp.js";
+import { assertMcpServerFileExists, buildMcpCommand } from "../src/cli/mcp.js";
 import { buildListCommand } from "../src/cli/list.js";
 import { buildPathCommand } from "../src/cli/path.js";
 import { buildSaveCommand } from "../src/cli/save.js";
@@ -147,6 +169,10 @@ describe("cli", () => {
     mockedExecFile.mockReset();
     mockedSpawn.mockReset();
     mockedSpawn.mockImplementation(actualChildProcessModule.spawn);
+    mockedExistsSync.mockReset();
+    mockedExistsSync.mockImplementation((target) =>
+      target === expectedServerPath ? true : actualFsModule.existsSync(target),
+    );
     mockedGetSearchProviders.mockImplementation(actualSearchDepsModule.getSearchProviders);
     mockedSearchAvailable.mockImplementation(actualSearchDepsModule.searchAvailable);
   });
@@ -271,7 +297,7 @@ describe("cli", () => {
       expect(stdout).toContain("Codex CLI MCP integration configured");
       expect(mockedExecFile).toHaveBeenCalledWith(
         "codex",
-        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        ["mcp", "add", "clog", "--", ...expectedMcpServerCommand],
         expect.any(Function),
       );
     });
@@ -289,6 +315,22 @@ describe("cli", () => {
   });
 
   describe("mcp", () => {
+    it("reports a missing MCP server file", () => {
+      expect(() => assertMcpServerFileExists(path.join(tempDir, "missing-server.js"))).toThrow(
+        /Build or reinstall clog/,
+      );
+    });
+
+    it("does not change client config when the MCP server file is missing", async () => {
+      mockedExistsSync.mockReturnValue(false);
+      mockExecFileSuccess();
+
+      await expect(runBuiltCommand(buildMcpCommand, ["setup", "both"])).rejects.toThrow(
+        /Build or reinstall clog/,
+      );
+      expect(mockedExecFile).not.toHaveBeenCalled();
+    });
+
     it("configures Codex CLI MCP integration", async () => {
       mockExecFileSuccess();
 
@@ -297,7 +339,7 @@ describe("cli", () => {
       expect(stdout).toContain("Codex CLI MCP integration configured");
       expect(mockedExecFile).toHaveBeenCalledWith(
         "codex",
-        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        ["mcp", "add", "clog", "--", ...expectedMcpServerCommand],
         expect.any(Function),
       );
     });
@@ -312,13 +354,13 @@ describe("cli", () => {
       expect(mockedExecFile).toHaveBeenNthCalledWith(
         1,
         "claude",
-        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        ["mcp", "add", "clog", "--", ...expectedMcpServerCommand],
         expect.any(Function),
       );
       expect(mockedExecFile).toHaveBeenNthCalledWith(
         2,
         "codex",
-        ["mcp", "add", "clog", "--", "npx", "-y", "clog-mcp"],
+        ["mcp", "add", "clog", "--", ...expectedMcpServerCommand],
         expect.any(Function),
       );
     });
