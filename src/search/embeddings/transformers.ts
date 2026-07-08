@@ -1,11 +1,15 @@
 import type { TransformersConfig } from "../providers.js";
 import { SearchSetupIncompleteError } from "../errors.js";
+import { importSearchRuntimePackage } from "../runtime.js";
 import type { EmbeddingProvider } from "../types.js";
+import { getSearchRuntimeModelCacheRoot } from "../../utils/paths.js";
 
 type FeatureExtractionPipeline = (
   input: string,
   options: Record<string, unknown>,
 ) => Promise<{ tolist(): number[][] }>;
+
+type TransformersModule = typeof import("@huggingface/transformers");
 
 const KNOWN_MODEL_DIMENSIONS: Record<string, number> = {
   "Xenova/all-MiniLM-L6-v2": 384,
@@ -63,9 +67,15 @@ async function getPipeline(model: string, localFilesOnly: boolean): Promise<Feat
   }
 
   const created = (async () => {
-    const { pipeline } = await import("@huggingface/transformers");
+    const transformers = await importSearchRuntimePackage<TransformersModule>(
+      "@huggingface/transformers",
+    );
+    if (transformers.env) {
+      transformers.env.cacheDir = getSearchRuntimeModelCacheRoot();
+    }
+
     try {
-      return (await pipeline("feature-extraction", model, {
+      return (await transformers.pipeline("feature-extraction", model, {
         dtype: "fp32",
         local_files_only: localFilesOnly,
       })) as FeatureExtractionPipeline;

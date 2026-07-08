@@ -4,6 +4,7 @@ import path from "node:path";
 import { clearSavedIndexedAt } from "../../db/index.js";
 import { writeFileAtomic } from "../../utils/atomic-write.js";
 import { getVectorsRoot } from "../../utils/paths.js";
+import { importSearchRuntimePackage } from "../runtime.js";
 import type { IndexedChunk, SearchHit, VectorStore } from "../types.js";
 
 type VectraLocalIndex = InstanceType<typeof import("vectra").LocalIndex>;
@@ -85,7 +86,9 @@ async function getVectraIndex(): Promise<VectraLocalIndex> {
 }
 
 async function createVectraIndex(): Promise<VectraLocalIndex> {
-  const { LocalIndex, LocalFileStorage } = await import("vectra");
+  const { LocalIndex, LocalFileStorage } = await importSearchRuntimePackage<typeof import("vectra")>(
+    "vectra",
+  );
 
   // Vectra's default upsertFile writes index.json non-atomically. A Ctrl-C
   // mid-write leaves a torn file that subsequent runs can't read.

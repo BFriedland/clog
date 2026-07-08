@@ -4,6 +4,23 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/search/runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/search/runtime.js")>(
+    "../src/search/runtime.js",
+  );
+
+  return {
+    ...actual,
+    importSearchRuntimePackage: vi.fn(async (moduleName: string) => {
+      if (moduleName === "vectra") {
+        return import("vectra");
+      }
+
+      return actual.importSearchRuntimePackage(moduleName);
+    }),
+  };
+});
+
 import { getConversationById } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { resetVectraIndex, VectraStore } from "../src/search/vectorstores/vectra.js";

@@ -2508,7 +2508,7 @@ Initialized clog at /Users/alice/.clog
 
 The prompt shows the OS username as the default (accepted by pressing Enter). In non-TTY contexts (e.g., the MCP server), the OS username is used automatically with no prompt.
 
-`clog init` can also be run explicitly at any time. It is idempotent — it creates anything that's missing without overwriting anything that exists. On an interactive explicit run, it asks for the default author name, using the current configured author as the default when `config.json` already exists and the OS username otherwise. If search is not configured yet, it then offers to start vector search setup immediately. In non-TTY contexts, it keeps the existing configured author when present, or uses the OS username when bootstrapping a new config.
+`clog init` can also be run explicitly at any time. It is idempotent — it creates anything that's missing without overwriting anything that exists. On an interactive explicit run, it asks for the default author name, using the current configured author as the default when `config.json` already exists and the OS username otherwise. If semantic search is not configured yet, it then offers to start vector search setup. If semantic search is configured but the optional vector-search runtime packages are missing or cannot be imported from the clog-owned runtime directory, `clog init` offers to repair vector search setup. The vector search setup flow shows the runtime package location, package-install size, and embedding-model download size before asking for confirmation; package installation, embedding-model download, and search configuration only happen after the user accepts that setup confirmation. If setup installs or repairs runtime packages, it prints the exact npm command when it runs that command. In non-TTY contexts, `clog init` keeps the existing configured author when present, or uses the OS username when bootstrapping a new config.
 
 **Health checks (every command):**
 
@@ -2542,7 +2542,7 @@ To keep scope clear, these are explicitly **not** in Phase 1:
 - Automatic redaction of secrets (users edit raw files directly if needed)
 - Support for non-built-in conversation sources (Claude.ai web, Cursor, etc.)
 - Message-level editing (users edit raw JSONL files directly if needed)
-- Interactive CLI prompts for routine operations — commands like `edit`, `tag`, `config` use flags, not step-through wizards. The main exception is explicit interactive `clog init`, which acts as a short rerunnable setup flow: it confirms the default author and can then offer vector search setup. The principle: don't make users step through an interactive flow when they just want to set one field.
+- Interactive CLI prompts for routine operations — commands like `edit`, `tag`, `config` use flags, not step-through wizards. The main exception is explicit interactive `clog init`, which acts as a short rerunnable setup flow: it confirms the default author, offers vector search setup when semantic search is unset, and offers vector search repair when semantic search is configured but the optional runtime packages are missing or unusable. The vector search setup flow has its own informed confirmation before package installation, embedding-model download, or search configuration. The principle: don't make users step through an interactive flow when they just want to set one field.
 
 ---
 
@@ -2582,7 +2582,7 @@ Phase 2 adds semantic search over the conversation knowledge base. Phase 1 provi
 
 #### Search Is Optional
 
-Search requires two heavy dependencies (a vector store and an embedding provider) that would violate clog's zero-native-dep install story if bundled. Keeping them as separate `npm install` additions preserves the core guarantee: `npm install clog` works everywhere with no build toolchain. The search module is always present in the codebase but inert until configured via `clog search --init`.
+Search requires two heavy dependencies (a vector store and an embedding provider) that would violate clog's zero-native-dep install story if bundled. Installing those packages into a clog-owned runtime directory preserves the core guarantee: `npm install clog` works everywhere with no build toolchain. The search module is always present in the codebase but inert until configured via `clog search --init`.
 
 #### Local Embeddings as Default
 
@@ -2610,13 +2610,19 @@ Any third-party package installation or embedding-model download required for se
 
 ### 10.2 Install and Configuration
 
-Search dependencies are installed separately from core clog:
+The semantic-search setup command installs optional search runtime packages separately from the core clog package. Users do not install `vectra` or `@huggingface/transformers` into their project or global Node.js environment as a setup step.
 
 ```bash
-npm install vectra @huggingface/transformers
+clog search --init
 ```
 
-If the search dependencies aren't installed, `clog search --init` is the setup entry point that installs them after confirmation. `clog search` and `clog index` do not install packages themselves. All other commands work normally.
+If the search runtime packages are missing, `clog search --init` shows the package-install size and model-download size before making changes. After explicit confirmation, clog prints and runs an install command equivalent to:
+
+```bash
+npm install --prefix ~/.clog/search-runtime vectra @huggingface/transformers
+```
+
+The semantic-search setup command saves the search configuration only after the package installation succeeds, the selected search runtime packages can be imported from `~/.clog/search-runtime`, and the configured embedding model initializes successfully. If package installation, runtime-package validation, or embedding-model initialization fails, search remains unconfigured; re-running `clog search --init` resumes setup from the current runtime state. `clog search` and `clog index` do not install packages themselves. All other commands work normally.
 
 Search is configured in `config.json` via interactive setup (`clog search --init`):
 
@@ -2734,7 +2740,7 @@ If a deindex operation fails after the database has already been updated, the co
 
 Phase 2 adds three commands:
 
-**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint and exact install command, writes the selection to `config.json`, installs the required search packages after explicit confirmation, and initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`. Package-install output is shown in the same terminal session. After setup succeeds, clog offers to index all currently saved conversations immediately. Users can reach this flow either directly with `clog search --init` or by accepting the follow-up prompt during a fresh interactive `clog init`.
+**`clog search --init`** — Interactive setup. Uses `@inquirer/prompts` to let the user choose an embedding provider and vector store from the available options, explains the runtime footprint, installs the required search packages after explicit confirmation, validates that those packages can be imported from `~/.clog/search-runtime`, initializes the configured embedding provider so any required model download happens during setup rather than later during `clog index` or `clog search`, and then writes the selection to `config.json`. When setup installs or repairs runtime packages, it prints the exact npm command and package-install output in the same terminal session. After setup succeeds, clog offers to index saved conversations whose vector-search metadata is missing or stale. Users can reach this flow directly with `clog search --init`; a fresh interactive `clog init` also offers this flow when semantic search is unset or when the configured semantic-search runtime packages are missing or unusable, and the search setup confirmation remains the point where users approve package installation, embedding-model download, and search configuration.
 
 **`clog search <query>`** — Semantic search across saved conversations.
 

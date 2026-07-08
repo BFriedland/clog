@@ -240,11 +240,15 @@ describe("cli", () => {
         vectorStore: { type: "vectra" },
       };
       await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValueOnce(true);
       mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
       const { stdout } = await runBuiltCommand(buildInitCommand, []);
 
-      expect(stdout).toContain("Warning: Vector search is already configured.");
+      expect(stdout).toContain("Vector search is already configured.");
+      expect(stdout).toContain(
+        "Re-running setup can change the search provider or vector store and may require re-indexing saved conversations.",
+      );
       expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Re-run vector search setup?",
         default: false,
@@ -265,6 +269,7 @@ describe("cli", () => {
         vectorStore: { type: "vectra" },
       };
       await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValueOnce(true);
       mockedPromptConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
       await runBuiltCommand(buildInitCommand, []);
@@ -272,6 +277,53 @@ describe("cli", () => {
       expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Re-run vector search setup?",
         default: false,
+      });
+      expect(mockedRunSearchInitCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("offers to repair vector search setup when configured runtime packages are unavailable", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValueOnce(false);
+      mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const { stdout } = await runBuiltCommand(buildInitCommand, []);
+
+      expect(stdout).toContain("Vector search is configured, but runtime packages are missing or unusable");
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
+        message: "Repair vector search setup?",
+        default: true,
+      });
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(2, {
+        message: "Set up MCP integration now?",
+        default: true,
+      });
+      expect(mockedRunSearchInitCommand).not.toHaveBeenCalled();
+    });
+
+    it("runs search setup when the configured runtime repair prompt is accepted", async () => {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      const config = await loadConfig();
+      config.search = {
+        embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
+        vectorStore: { type: "vectra" },
+      };
+      await saveConfig(config);
+      mockedSearchAvailable.mockResolvedValueOnce(false);
+      mockedPromptConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      await runBuiltCommand(buildInitCommand, []);
+
+      expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
+        message: "Repair vector search setup?",
+        default: true,
       });
       expect(mockedRunSearchInitCommand).toHaveBeenCalledTimes(1);
     });
@@ -1883,7 +1935,7 @@ describe("cli", () => {
 
       expect(result.error).toBeInstanceOf(SearchDepsError);
       expect(result.error).toMatchObject({
-        message: expect.stringContaining("npm install vectra"),
+        message: expect.stringContaining('Run "clog search --init"'),
       });
       expect(result.stdout).toBe("");
       expect(result.stderr).toBe("");
@@ -1896,7 +1948,7 @@ describe("cli", () => {
 
       expect(result.error).toBeInstanceOf(SearchDepsError);
       expect(result.error).toMatchObject({
-        message: expect.stringContaining("npm install vectra"),
+        message: expect.stringContaining('Run "clog search --init"'),
       });
       expect(result.stdout).toBe("");
       expect(result.stderr).toBe("");

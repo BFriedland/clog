@@ -1,12 +1,12 @@
 import { confirm } from "@inquirer/prompts";
 import { Command } from "commander";
-import chalk from "chalk";
 
 import { promptForMcpSetupTarget, runMcpSetup } from "./mcp.js";
 import { runSearchInitCommand } from "./search-init.js";
 import { loadConfig } from "../config/index.js";
 import { initializeClog } from "../config/init.js";
-import { getClogHome } from "../utils/paths.js";
+import { searchAvailable } from "../search/deps.js";
+import { getClogHome, getSearchRuntimeRoot } from "../utils/paths.js";
 
 export function buildInitCommand(): Command {
   return new Command("init")
@@ -17,7 +17,7 @@ export function buildInitCommand(): Command {
       const result = await initializeClog({ interactive, forcePromptAuthor: interactive });
 
       if (result.createdConfig) {
-        process.stdout.write(`Initialized clog at ${getClogHome()}\n`);
+        process.stdout.write(`\nInitialized clog at ${getClogHome()}\n\n`);
       }
 
       if (!interactive) {
@@ -26,17 +26,33 @@ export function buildInitCommand(): Command {
 
       const config = await loadConfig();
       if (config.search) {
-        process.stdout.write(
-          `${chalk.bold("\nWarning: Vector search is already configured. Re-running setup may replace your current search configuration and require re-indexing saved conversations.\n")}`,
-        );
+        if (await searchAvailable()) {
+          process.stdout.write("\nVector search is already configured.\n");
+          process.stdout.write(
+            "Re-running setup can change the search provider or vector store and may require re-indexing saved conversations.\n",
+          );
 
-        const rerunSearchSetup = await confirm({
-          message: "Re-run vector search setup?",
-          default: false,
-        });
+          const rerunSearchSetup = await confirm({
+            message: "Re-run vector search setup?",
+            default: false,
+          });
 
-        if (rerunSearchSetup) {
-          await runSearchInitCommand();
+          if (rerunSearchSetup) {
+            await runSearchInitCommand();
+          }
+        } else {
+          process.stdout.write(
+            `\nVector search is configured, but runtime packages are missing or unusable in ${getSearchRuntimeRoot()}.\n`,
+          );
+
+          const repairSearchSetup = await confirm({
+            message: "Repair vector search setup?",
+            default: true,
+          });
+
+          if (repairSearchSetup) {
+            await runSearchInitCommand();
+          }
         }
       } else {
         const setupSearch = await confirm({
@@ -48,6 +64,8 @@ export function buildInitCommand(): Command {
           await runSearchInitCommand();
         }
       }
+
+      process.stdout.write("\n");
 
       const setupMcp = await confirm({
         message: "Set up MCP integration now?",

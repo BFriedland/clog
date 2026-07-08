@@ -159,10 +159,9 @@ The agent reads the `clog_summarization_guide` MCP tool, then works through unsu
 
 ## Semantic Search
 
-Search is optional — it takes a one-time setup and two extra packages.
+Search is optional. `clog search --init` installs vector search support into `~/.clog/search-runtime` when you enable it. The setup prompt shows the package and model download sizes before installing anything (~470 MB).
 
 ```bash
-npm install vectra @huggingface/transformers
 clog search --init
 ```
 
@@ -174,6 +173,8 @@ clog search "database migration" --project myapp --limit 5
 ```
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
+
+If you skip vector search setup, `clog_search` is unavailable, but agents can still use the `grep` filter on the `clog_list_saved` MCP tool for dependency-free keyword search across saved conversation titles, summaries, and message content.
 
 ## Team Sharing
 

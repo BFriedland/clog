@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { searchRuntimePackagesInstalled } from "./runtime.js";
+
 export interface ProviderRegistryEntry<TConfig> {
   name: string;
   description: string;
@@ -58,13 +60,5 @@ export const SearchConfigSchema = z
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
 export async function checkPackages(packages: string[]): Promise<boolean> {
-  for (const pkg of packages) {
-    try {
-      await import(pkg);
-    } catch {
-      return false;
-    }
-  }
-
-  return true;
+  return searchRuntimePackagesInstalled(packages);
 }

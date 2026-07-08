@@ -1,15 +1,8 @@
 import { loadConfig } from "../config/index.js";
-import { SearchDepsError, SearchNotConfiguredError } from "./errors.js";
+import { SearchNotConfiguredError } from "./errors.js";
 import type { SearchConfig } from "./providers.js";
+import { assertSearchRuntimePackagesImportable } from "./runtime.js";
 import type { EmbeddingProvider, VectorStore } from "./types.js";
-
-async function importOptionalPackage(moduleName: string): Promise<void> {
-  try {
-    await import(moduleName);
-  } catch {
-    throw new SearchDepsError([moduleName]);
-  }
-}
 
 let cachedProviders: { embedding: EmbeddingProvider; vectorStore: VectorStore } | null = null;
 let pendingInit: Promise<{ embedding: EmbeddingProvider; vectorStore: VectorStore }> | null = null;
@@ -66,7 +59,7 @@ async function createEmbeddingProvider(
 ): Promise<EmbeddingProvider> {
   switch (config.embedding.type) {
     case "transformers":
-      await importOptionalPackage("@huggingface/transformers");
+      await assertSearchRuntimePackagesImportable(["@huggingface/transformers"]);
       return new (await import("./embeddings/transformers.js")).TransformersEmbedding(
         config.embedding,
         { localFilesOnly: true },
@@ -81,7 +74,7 @@ async function createVectorStore(
 ): Promise<VectorStore> {
   switch (config.vectorStore.type) {
     case "vectra":
-      await importOptionalPackage("vectra");
+      await assertSearchRuntimePackagesImportable(["vectra"]);
       return new (await import("./vectorstores/vectra.js")).VectraStore();
     default:
       throw new Error(`Unknown vector store: ${(config.vectorStore as { type: string }).type}`);

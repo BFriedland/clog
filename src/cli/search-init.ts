@@ -1,9 +1,8 @@
 import chalk from "chalk";
-import { spawn } from "node:child_process";
 
 import { runIndexCommand } from "./index-cmd.js";
 import { loadConfig, saveConfig } from "../config/index.js";
-import { listConversations } from "../db/index.js";
+import { listConversationsNeedingIndex } from "../db/index.js";
 import { resetSearchProviders } from "../search/deps.js";
 import { SearchSetupIncompleteError } from "../search/errors.js";
 import {
@@ -14,8 +13,14 @@ import {
   type VectorStoreProviderType,
   vectorStoreProviders,
 } from "../search/providers.js";
-
-const SEARCH_INSTALL_COMMAND = ["npm", "install", "vectra", "@huggingface/transformers"] as const;
+import {
+  assertSearchRuntimePackagesImportable,
+  formatSearchRuntimeInstallCommand,
+  installSearchRuntimePackages,
+  SEARCH_RUNTIME_MODEL_DOWNLOAD_SIZE,
+  SEARCH_RUNTIME_PACKAGE_INSTALL_SIZE,
+} from "../search/runtime.js";
+import { getSearchRuntimeModelCacheRoot, getSearchRuntimeRoot } from "../utils/paths.js";
 
 export async function runSearchInitCommand(): Promise<void> {
   const { confirm, select } = await loadInquirerPrompts();
@@ -54,39 +59,22 @@ export async function runSearchInitCommand(): Promise<void> {
         : undefined,
   });
 
+  const requiredPackages = getRequiredSearchPackages(nextSearchConfig);
+  const packagesInstalled = embeddingPackagesInstalled && vectorStorePackagesInstalled;
+  process.stdout.write(
+    `${buildSearchSetupConsentPrompt({ packagesInstalled, packages: requiredPackages })}\n\n`,
+  );
   const accepted = await confirm({
-    message: "Save this configuration and continue setup?",
+    message: "Enable local vector search with this configuration?",
     default: true,
   });
 
   if (!accepted) {
-    process.stdout.write("Setup cancelled.\n");
+    process.stdout.write("Vector search setup cancelled.\n");
     return;
   }
 
-  await saveConfig({
-    ...config,
-    search: nextSearchConfig,
-  });
-  resetSearchProviders();
-
-  let installCompleted = embeddingPackagesInstalled && vectorStorePackagesInstalled;
-  if (!installCompleted) {
-    const installAccepted = await confirm({
-      message: `Install the required runtime packages now?\n\n  ${SEARCH_INSTALL_COMMAND.join(" ")}`,
-      default: true,
-    });
-
-    if (!installAccepted) {
-      process.stdout.write(
-        '\nSearch config was saved, but setup is incomplete. Run "clog search --init" to finish setup.\n',
-      );
-      return;
-    }
-
-    await runVisibleInstall();
-    installCompleted = true;
-  }
+  await ensureRequiredSearchRuntimePackages(requiredPackages, { packagesInstalled });
 
   process.stdout.write("\nInitializing the embedding model now.\n\n");
 
@@ -103,32 +91,36 @@ export async function runSearchInitCommand(): Promise<void> {
     );
   }
 
+  await saveConfig({
+    ...config,
+    search: nextSearchConfig,
+  });
+  resetSearchProviders();
+
   process.stdout.write(`${chalk.green("Search configured successfully.")}\n`);
   process.stdout.write(`  Embedding: ${embeddingProviders[embeddingType].name}\n`);
   process.stdout.write(`  Vector store: ${vectorStoreProviders[vectorStoreType].name}\n\n`);
 
-  if (installCompleted) {
-    const savedCount = await getSavedConversationCount();
-    if (savedCount === 0) {
-      process.stdout.write("No saved conversations are available to index right now.\n");
-      return;
-    }
-
-    const indexAccepted = await confirm({
-      message: `Index all ${savedCount} saved conversation${
-        savedCount === 1 ? "" : "s"
-      } now?`,
-      default: true,
-    });
-
-    if (indexAccepted) {
-      process.stdout.write("\n");
-      await runIndexCommand({});
-      return;
-    }
-
-    process.stdout.write('\nRun "clog index" whenever you want to index saved conversations.\n');
+  const indexingCount = await getConversationNeedingIndexCount();
+  if (indexingCount === 0) {
+    process.stdout.write("No saved conversations need indexing right now.\n");
+    return;
   }
+
+  const indexAccepted = await confirm({
+    message: `Index ${indexingCount} saved conversation${
+      indexingCount === 1 ? "" : "s"
+    } that ${indexingCount === 1 ? "needs" : "need"} vector indexing now? Large conversation libraries may take a long time to process. The "clog index" command can also be run later.`,
+    default: true,
+  });
+
+  if (indexAccepted) {
+    process.stdout.write("\n");
+    await runIndexCommand({});
+    return;
+  }
+
+  process.stdout.write('\nRun "clog index" whenever you want to index saved conversations.\n');
 }
 
 function renderSetupSummary(input: {
@@ -168,13 +160,25 @@ function renderSetupSummary(input: {
   process.stdout.write(
     `    ${renderPackageStatus(input.vectorStorePackagesInstalled, vectorStoreProviders[input.vectorStoreType].packages)}\n\n`,
   );
+}
 
-  process.stdout.write(
-    `If packages are missing, setup will automatically run:\n  ${SEARCH_INSTALL_COMMAND.join(" ")}\n\n`,
-  );
-  process.stdout.write(
-    "Setup will also initialize the embedding model now. For the default local provider, transformers.js may download Xenova/all-MiniLM-L6-v2 from the Hugging Face Hub if it is not already cached locally, at a size of about 30MB.\n\n",
-  );
+export function buildSearchSetupConsentPrompt(options: {
+  packagesInstalled: boolean;
+  packages: string[];
+}): string {
+  const packageSize = chalk.bold(chalk.yellow(SEARCH_RUNTIME_PACKAGE_INSTALL_SIZE));
+  const modelSize = chalk.bold(chalk.yellow(SEARCH_RUNTIME_MODEL_DOWNLOAD_SIZE));
+
+  const packageLine = options.packagesInstalled
+    ? `  • Packages already in ${getSearchRuntimeRoot()} (${packageSize} if reinstalled)`
+    : `  • Packages (${packageSize}) installed into ${getSearchRuntimeRoot()}`;
+
+  return [
+    "This will enable local vector search:",
+    packageLine,
+    `  • Runtime packages: ${options.packages.join(", ")}`,
+    `  • Model files (${modelSize}, downloaded once if not cached) in ${getSearchRuntimeModelCacheRoot()}`,
+  ].join("\n");
 }
 
 function renderPackageStatus(packagesInstalled: boolean, packages: string[]): string {
@@ -185,27 +189,29 @@ function renderPackageStatus(packagesInstalled: boolean, packages: string[]): st
   return chalk.yellow(`Runtime packages missing: ${packages.join(" ")}`);
 }
 
-async function runVisibleInstall(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["install", "vectra", "@huggingface/transformers"],
-      {
-        stdio: "inherit",
-        shell: false,
-      },
-    );
+async function ensureRequiredSearchRuntimePackages(
+  packages: string[],
+  options: { packagesInstalled: boolean },
+): Promise<void> {
+  if (!options.packagesInstalled) {
+    writeSearchRuntimeInstallCommand("Installing vector search packages", packages);
+    await installSearchRuntimePackages(packages);
+    await assertSearchRuntimePackagesImportable(packages);
+    return;
+  }
 
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
+  try {
+    await assertSearchRuntimePackagesImportable(packages);
+  } catch {
+    writeSearchRuntimeInstallCommand("Repairing vector search packages", packages);
+    await installSearchRuntimePackages(packages);
+    await assertSearchRuntimePackagesImportable(packages);
+  }
+}
 
-      reject(new Error(`Package installation failed with exit code ${code ?? "unknown"}.`));
-    });
-  });
+function writeSearchRuntimeInstallCommand(action: string, packages: string[]): void {
+  process.stdout.write(`\n${action} in ${getSearchRuntimeRoot()}.\n`);
+  process.stdout.write(`Running: ${formatSearchRuntimeInstallCommand(packages)}\n\n`);
 }
 
 async function warmConfiguredEmbeddingModel(searchConfig: NonNullable<SearchConfig>): Promise<void> {
@@ -220,8 +226,15 @@ async function warmConfiguredEmbeddingModel(searchConfig: NonNullable<SearchConf
   }
 }
 
-async function getSavedConversationCount(): Promise<number> {
-  const conversations = await listConversations({ states: ["saved"] });
+function getRequiredSearchPackages(searchConfig: NonNullable<SearchConfig>): string[] {
+  return Array.from(new Set([
+    ...embeddingProviders[searchConfig.embedding.type].packages,
+    ...vectorStoreProviders[searchConfig.vectorStore.type].packages,
+  ]));
+}
+
+async function getConversationNeedingIndexCount(): Promise<number> {
+  const conversations = await listConversationsNeedingIndex();
   return conversations.length;
 }
 

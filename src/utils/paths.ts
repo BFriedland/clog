@@ -54,6 +54,14 @@ export function getVectorsRoot(): string {
   return path.join(getClogHome(), "vectors");
 }
 
+export function getSearchRuntimeRoot(): string {
+  return path.join(getClogHome(), "search-runtime");
+}
+
+export function getSearchRuntimeModelCacheRoot(): string {
+  return path.join(getSearchRuntimeRoot(), "models");
+}
+
 export function getRawSourceDir(source: string): string {
   return path.join(getRawRoot(), source);
 }
