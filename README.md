@@ -8,8 +8,6 @@ Turn your AI coding agent conversations into a searchable, shareable knowledge b
 
 With clog, you can build a library from your Claude Code and Codex CLI conversations and make it available to your team and your agents. Use titles, summaries, and tags to curate it, then explore it through MCP tools, semantic search, or git-based sharing.
 
-`npm run setup` builds clog, installs the `clog` command globally from your local checkout, and runs `clog init`.
-
 ## Requirements
 
 clog requires Node.js 22 or newer. Local development is tested with Node.js 22.
@@ -17,9 +15,11 @@ clog requires Node.js 22 or newer. Local development is tested with Node.js 22.
 ## Install
 
 ```bash
-npm install
-npm run setup
+npm install -g @getclog/clog
+clog init
 ```
+
+To install from a local checkout instead, see [Development](#development).
 
 ## Quick Start
 
@@ -270,12 +270,20 @@ The `search` and `remote` config blocks are managed by `clog search --init` and 
 
 Use Node.js 22 or newer for local development. The `.nvmrc` file selects the Node.js 22 release line for version managers that support it.
 
+To install the `clog` command globally from a local checkout:
+
+```bash
+git clone https://github.com/BFriedland/clog.git
+cd clog
+npm install            # Install dependencies and build (via the prepare script)
+npm run setup          # Link the clog command globally and run clog init
+```
+
 ```bash
 npm test               # Run tests
 npm run test:watch     # Watch mode
 npm run test:coverage  # Run tests with coverage report
 npm run lint           # Lint src/ and tests/
 npm run build          # Build clog and fix bin permissions
-npm run setup          # Build, link, and initialize clog
 npm run dev -- status  # Run without building
 ```

@@ -2582,7 +2582,7 @@ Phase 2 adds semantic search over the conversation knowledge base. Phase 1 provi
 
 #### Search Is Optional
 
-Search requires two heavy dependencies (a vector store and an embedding provider) that would violate clog's zero-native-dep install story if bundled. Installing those packages into a clog-owned runtime directory preserves the core guarantee: `npm install clog` works everywhere with no build toolchain. The search module is always present in the codebase but inert until configured via `clog search --init`.
+Search requires two heavy dependencies (a vector store and an embedding provider) that would violate clog's zero-native-dep install story if bundled. Installing those packages into a clog-owned runtime directory preserves the core guarantee: `npm install -g @getclog/clog` works everywhere with no build toolchain. The search module is always present in the codebase but inert until configured via `clog search --init`.
 
 #### Local Embeddings as Default
 

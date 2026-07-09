@@ -1,8 +1,28 @@
 {
-  "name": "clog",
+  "name": "@getclog/clog",
   "version": "0.1.0",
   "description": "Discover, curate, and share AI coding agent conversations as a searchable knowledge base",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "conversations",
+    "knowledge-base",
+    "search",
+    "mcp",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BFriedland/clog.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BFriedland/clog/issues"
+  },
+  "author": "Ben Friedland",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -12,12 +32,14 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc && node scripts/fix-bin-permissions.mjs",
-    "setup": "npm run build && npm link && node dist/index.js init",
+    "prepare": "npm run build",
+    "setup": "npm link && node dist/index.js init",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "dev": "tsx src/index.ts",
-    "lint": "eslint src/ tests/"
+    "lint": "eslint src/ tests/",
+    "smoke:global-runtime": "node scripts/smoke-global-runtime.mjs"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.4.1",
@@ -43,5 +65,11 @@
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "clog.png"
+  ]
 }
