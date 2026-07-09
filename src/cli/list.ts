@@ -85,7 +85,7 @@ export function buildListCommand(): Command {
         renderConversationTable(conversations, {
           emptyMessage: hasFilters
             ? "No conversations found."
-            : 'No saved conversations. Use "clog status" or "clog list --state discovered".',
+            : 'No saved conversations. Use "clog status" or "clog list --state unsaved".',
           stateLabelMode: true,
           columns,
         });
@@ -260,13 +260,13 @@ function parseOriginFilter(value?: string): "local" | "remote" | undefined {
   throw new ClogError(`--origin must be "local" or "remote", got "${value}".`);
 }
 
-function parseStateFilter(value?: string): "discovered" | "saved" | undefined {
+function parseStateFilter(value?: string): "unsaved" | "saved" | undefined {
   if (!value) return undefined;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "discovered" || normalized === "saved") {
+  if (normalized === "unsaved" || normalized === "saved") {
     return normalized;
   }
-  throw new ClogError(`--state must be "discovered" or "saved", got "${value}".`);
+  throw new ClogError(`--state must be "unsaved" or "saved", got "${value}".`);
 }
 
 function parseColumnsOption(value?: string): DisplayColumnKey[] | undefined {

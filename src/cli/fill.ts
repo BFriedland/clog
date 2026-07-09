@@ -248,7 +248,7 @@ function summarizePlannedActions(plan: FillPlan): FillStats {
   for (const action of plan.actions) {
     if (action.kind === "insert") {
       stats.newCount += 1;
-    } else if (action.kind === "update" || action.kind === "restore_discovered") {
+    } else if (action.kind === "update" || action.kind === "restore_unsaved") {
       stats.updatedCount += 1;
     } else if (action.kind === "unchanged") {
       stats.unchangedCount += 1;

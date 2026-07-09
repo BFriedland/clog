@@ -87,7 +87,7 @@ export function applyLocalDiscoveryResultsInDb(
       continue;
     }
 
-    if (localFound.state === "discovered") {
+    if (localFound.state === "unsaved") {
       unsafeUpdateConversationInDb(db, {
         ...localFound,
         title: candidate.metadata.title,
@@ -115,7 +115,7 @@ export function applyLocalDiscoveryResultsInDb(
   }
 
   for (const conversation of existing) {
-    if (conversation.state !== "discovered" || !isLocallyWritable(conversation)) {
+    if (conversation.state !== "unsaved" || !isLocallyWritable(conversation)) {
       continue;
     }
 
@@ -163,7 +163,7 @@ function buildDiscoveredConversation(
     createdAt: candidate.metadata.createdAt,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "discovered",
+    state: "unsaved",
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,

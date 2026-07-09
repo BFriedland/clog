@@ -69,7 +69,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 | Command | What it does |
 |---------|-------------|
-| `clog save [selector...]` | Save discovered conversations by ID/project, or resave saved conversations with pending changes (`--all`) |
+| `clog save [selector...]` | Save unsaved conversations by ID/project, or resave saved conversations with pending changes (`--all`) |
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog path <id>` | Print the content path for a conversation |

@@ -567,7 +567,7 @@ describe("mcp handlers", () => {
 
   it("clog_get throws on a discovered conversation", async () => {
     await insertOtherSaved("b6666666-6666-6666-6666-666666666666", {
-      state: "discovered",
+      state: "unsaved",
     });
     await expect(handleGet({ id: "b6666666" })).rejects.toThrow(
       /saved/,
@@ -584,7 +584,7 @@ describe("mcp handlers", () => {
 
   it("clog_update throws on a discovered conversation", async () => {
     await insertOtherSaved("b7777777-7777-7777-7777-777777777777", {
-      state: "discovered",
+      state: "unsaved",
     });
 
     await expect(

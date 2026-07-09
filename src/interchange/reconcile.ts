@@ -45,7 +45,7 @@ export interface GitPairScan {
 export type ReconcileSkipReason =
   | "ignored"
   | "duplicate"
-  | "local_discovered_owner"
+  | "local_unsaved_owner"
   | "local_saved_owner"
   | "file_owner"
   | "other_git_owner"
@@ -610,8 +610,8 @@ function uniqueIdentities(identities: SourceIdentity[]): SourceIdentity[] {
 }
 
 function ownerSkipReason(owner: ConversationMeta): ReconcileSkipReason {
-  if (owner.originKind === "local" && owner.state === "discovered") {
-    return "local_discovered_owner";
+  if (owner.originKind === "local" && owner.state === "unsaved") {
+    return "local_unsaved_owner";
   }
 
   if (owner.originKind === "local") {
@@ -628,8 +628,8 @@ function ownerSkipReason(owner: ConversationMeta): ReconcileSkipReason {
 function ownerSkipMessage(pair: GitValidatedPair, owner: ConversationMeta): string {
   const shortId = pair.id.slice(0, 8);
 
-  if (owner.originKind === "local" && owner.state === "discovered") {
-    return `Skipping remote conversation ${shortId} - a local discovered copy already exists. Run 'clog save ${shortId}' to keep the local copy, or remove the local row before using the imported copy.`;
+  if (owner.originKind === "local" && owner.state === "unsaved") {
+    return `Skipping remote conversation ${shortId} - a local unsaved copy already exists. Run 'clog save ${shortId}' to keep the local copy, or remove the local row before using the imported copy.`;
   }
 
   if (owner.originKind === "local") {

@@ -56,7 +56,7 @@ describe("e2e", () => {
 
     const { stdout } = await run(["status"]);
     expect(stdout).toContain("api-service");
-    expect(stdout).toContain("1 discovered");
+    expect(stdout).toContain("1 unsaved");
     expect(stdout).not.toContain("11111111");
   });
 
@@ -136,7 +136,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stdout } = await run(["list", "--state", "discovered"]);
+    const { stdout } = await run(["list", "--state", "unsaved"]);
     expect(stdout).toContain("44444444");
     expect(stdout).toContain("Implicit scan test");
   });
@@ -188,7 +188,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stdout } = await run(["list", "--state", "discovered", "--columns", "id,date,title"]);
+    const { stdout } = await run(["list", "--state", "unsaved", "--columns", "id,date,title"]);
     const [header] = stdout.trim().split("\n");
 
     expect(header).toContain("ID");
@@ -633,11 +633,11 @@ describe("e2e", () => {
     await run(["status"]);
     await run(["exclude", id.slice(0, 8)]);
 
-    const afterExclude = await run(["list", "--state", "discovered"]);
+    const afterExclude = await run(["list", "--state", "unsaved"]);
     expect(afterExclude.stdout).not.toContain("Exclude and unexclude");
 
     await run(["unexclude", id.slice(0, 8)]);
-    const afterUnexclude = await run(["list", "--state", "discovered"]);
+    const afterUnexclude = await run(["list", "--state", "unsaved"]);
     expect(afterUnexclude.stdout).toContain("Exclude and unexclude");
   });
 
@@ -898,7 +898,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stdout } = await run(["list", "--state", "discovered"], {
+    const { stdout } = await run(["list", "--state", "unsaved"], {
       COLUMNS: "55",
     });
 

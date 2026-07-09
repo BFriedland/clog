@@ -65,7 +65,7 @@ describe("isConversationSearchable (SPEC §10.7)", () => {
 
   it("returns false when state is not saved, even with a non-null indexedAt", () => {
     const conversation = makeConversation({
-      state: "discovered",
+      state: "unsaved",
       savedAt: "2026-02-01T10:00:00.000Z",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
@@ -120,7 +120,7 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
 
   it("is a no-op when the conversation is not saved", async () => {
     const conversation = makeConversation({
-      state: "discovered",
+      state: "unsaved",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
     await insertConversation(conversation);
@@ -313,7 +313,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: now,
     discoveredAt: now,
     modifiedAt: now,
-    state: "discovered",
+    state: "unsaved",
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,

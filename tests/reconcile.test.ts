@@ -68,15 +68,15 @@ describe("git reconciliation planner", () => {
 
   it.each([
     {
-      label: "local discovered",
+      label: "local unsaved",
       owner: conversation({
         id: "b1111111-1111-1111-1111-111111111111",
-        state: "discovered",
+        state: "unsaved",
         originKind: "local",
         originRef: null,
       }),
-      reason: "local_discovered_owner",
-      message: "local discovered copy",
+      reason: "local_unsaved_owner",
+      message: "local unsaved copy",
     },
     {
       label: "local saved",

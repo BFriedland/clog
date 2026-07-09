@@ -33,7 +33,7 @@ describe("conversationMetaSchema", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       discoveredAt: "2026-01-01T00:00:00.000Z",
       modifiedAt: "2026-01-01T00:00:00.000Z",
-      state: "discovered",
+      state: "unsaved",
       savedAt: null,
       savedMessageCount: null,
       saveVersion: 0,
@@ -45,6 +45,6 @@ describe("conversationMetaSchema", () => {
       originRef: null,
     });
 
-    expect(parsed.state).toBe("discovered");
+    expect(parsed.state).toBe("unsaved");
   });
 });

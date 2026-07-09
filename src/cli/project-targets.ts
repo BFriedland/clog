@@ -10,15 +10,15 @@ export async function collectBareSaveTargets(): Promise<ConversationMeta[]> {
 }
 
 export async function collectProjectSaveTargets(): Promise<ConversationMeta[]> {
-  const discovered = await listConversations({ states: ["discovered"], origin: "local" });
+  const unsaved = await listConversations({ states: ["unsaved"], origin: "local" });
   const saveableSaved = await collectSavedSaveTargets({ includeSourceChanges: true });
-  return [...discovered, ...saveableSaved];
+  return [...unsaved, ...saveableSaved];
 }
 
 export async function collectAllSaveTargets(): Promise<ConversationMeta[]> {
-  const discovered = await listConversations({ states: ["discovered"], origin: "local" });
+  const unsaved = await listConversations({ states: ["unsaved"], origin: "local" });
   const saveableSaved = await collectSavedSaveTargets({ includeSourceChanges: true });
-  return [...discovered, ...saveableSaved];
+  return [...unsaved, ...saveableSaved];
 }
 
 async function collectSavedSaveTargets(options: {

@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 export function applyMigrations(db: Database): void {
   if (!tableExists(db, "schema_version")) {
@@ -45,6 +45,11 @@ export function applyMigrations(db: Database): void {
     migrateToV7(db);
     setSchemaVersion(db, 7);
   }
+
+  if (currentVersion < 8) {
+    migrateToV8(db);
+    setSchemaVersion(db, 8);
+  }
 }
 
 function createLatestSchema(db: Database): void {
@@ -76,8 +81,8 @@ function createConversationsTable(db: Database): void {
       created_at TEXT NOT NULL,
       discovered_at TEXT NOT NULL,
       modified_at TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'discovered'
-        CHECK(state IN ('discovered','saved')),
+      state TEXT NOT NULL DEFAULT 'unsaved'
+        CHECK(state IN ('unsaved','saved')),
       saved_at TEXT,
       saved_message_count INTEGER,
       save_version INTEGER DEFAULT 0,
@@ -305,6 +310,74 @@ function migrateToV7(db: Database): void {
 
     DROP TABLE conversations;
     ALTER TABLE conversations_v7 RENAME TO conversations;
+  `);
+}
+
+function migrateToV8(db: Database): void {
+  if (!tableExists(db, "conversations")) {
+    return;
+  }
+
+  // Rename the user-facing state value: the old internal "discovered" becomes
+  // "unsaved" so a single vocabulary spans the CLI, MCP, and storage. The CHECK
+  // constraint has to change too, which SQLite can only do via table rebuild.
+  db.exec(`
+    CREATE TABLE conversations_v8 (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      summary_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(summary_kind IN ('none','imported','generated','curated')),
+      summary_extraction TEXT,
+      author TEXT NOT NULL,
+      project_name TEXT,
+      project_path TEXT,
+      tags_json TEXT DEFAULT '[]',
+      slug TEXT,
+      created_at TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'unsaved'
+        CHECK(state IN ('unsaved','saved')),
+      saved_at TEXT,
+      saved_message_count INTEGER,
+      save_version INTEGER DEFAULT 0,
+      source_path TEXT NOT NULL,
+      file_path TEXT,
+      source_mtime TEXT,
+      indexed_at TEXT,
+      origin_kind TEXT NOT NULL DEFAULT 'local'
+        CHECK(origin_kind IN ('local','git','file')),
+      origin_ref TEXT,
+      CHECK(
+        (origin_kind = 'git' AND origin_ref IS NOT NULL)
+        OR
+        (origin_kind IN ('local','file') AND origin_ref IS NULL)
+      ),
+      UNIQUE(source, source_id)
+    );
+
+    INSERT INTO conversations_v8 (
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at, state, saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at,
+      origin_kind, origin_ref
+    )
+    SELECT
+      id, source_id, source, title, summary, summary_kind, summary_extraction,
+      author, project_name, project_path, tags_json, slug, created_at,
+      discovered_at, modified_at,
+      CASE WHEN state = 'discovered' THEN 'unsaved' ELSE state END,
+      saved_at, saved_message_count,
+      save_version, source_path, file_path, source_mtime, indexed_at,
+      origin_kind, origin_ref
+    FROM conversations;
+
+    DROP TABLE conversations;
+    ALTER TABLE conversations_v8 RENAME TO conversations;
   `);
 }
 

@@ -116,7 +116,7 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
 ];
 
 const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
-const VALID_STATES = new Set(["discovered", "saved"]);
+const VALID_STATES = new Set(["unsaved", "saved"]);
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
@@ -466,7 +466,7 @@ async function inspectDatabase(
     }
   }
 
-  for (const row of rows.filter((candidate) => candidate.state === "discovered")) {
+  for (const row of rows.filter((candidate) => candidate.state === "unsaved")) {
     const hasDirtyCurationFields =
       row.file_path != null ||
       row.saved_at != null ||
@@ -478,7 +478,7 @@ async function inspectDatabase(
         check: 10,
         subsystem: "checkpoints",
         severity: "corruption",
-        message: "Discovered row still has curation or save checkpoint fields set.",
+        message: "Unsaved row still has curation or save checkpoint fields set.",
         recovery: "Investigate this row manually.",
         sortKey: row.id,
       }));

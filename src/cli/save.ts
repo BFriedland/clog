@@ -38,7 +38,7 @@ export function buildSaveCommand(): Command {
   return new Command("save")
     .description("Save conversations")
     .argument("[selectors...]")
-    .option("--all", "Save all discovered conversations and saved pending changes")
+    .option("--all", "Save all unsaved conversations and saved pending changes")
     .action(async (selectors: string[], options: { all?: boolean }) => {
       if (options.all && selectors.length > 0) {
         throw new UsageError(
@@ -57,7 +57,7 @@ export function buildSaveCommand(): Command {
           : await collectBareSaveTargets();
 
       if (conversations.length === 0) {
-        process.stdout.write('No conversations need saving. Use "clog save <id>" or "clog save <project>" to save discovered conversations.\n');
+        process.stdout.write('No conversations need saving. Use "clog save <id>" or "clog save <project>" to save unsaved conversations.\n');
         await maybePrintUnindexedHint(config);
         return;
       }
@@ -71,7 +71,7 @@ export function buildSaveCommand(): Command {
         try {
           const candidate = await getSaveCandidate(conversation);
           const rawPath =
-            conversation.state === "discovered" || !conversation.filePath
+            conversation.state === "unsaved" || !conversation.filePath
               ? defaultSaveFilePath(conversation)
               : conversation.filePath;
 
@@ -131,7 +131,7 @@ export function buildSaveCommand(): Command {
     });
 }
 
-// CR-05/06: a save that would replace filled/restored content with a discovered
+// CR-05/06: a save that would replace filled/restored content with a live
 // local source version must confirm before overwriting the managed copy. This is
 // reachable today — the scan at the top of `clog save` re-attaches a live
 // sourcePath to a restored `fill --own` row (leaving projectPath null), so a
@@ -153,7 +153,7 @@ async function confirmRestoredOverwriteIfNeeded(
   }
 
   const accepted = await confirm(
-    `Conversation ${conversation.id.slice(0, 8)} was restored from pair files. Refreshing it will overwrite the managed raw copy with the discovered local source file. Continue?`,
+    `Conversation ${conversation.id.slice(0, 8)} was restored from pair files. Refreshing it will overwrite the managed raw copy with the live local source file. Continue?`,
   );
   if (!accepted) {
     process.stdout.write(
@@ -231,13 +231,13 @@ async function skipMissingDiscoveredSource(
   error: unknown,
   conversation: ConversationMeta,
 ): Promise<boolean> {
-  if (!(error instanceof SourceFileMissingError) || conversation.state !== "discovered") {
+  if (!(error instanceof SourceFileMissingError) || conversation.state !== "unsaved") {
     return false;
   }
 
   await removeConversationCopy(conversation, { command: "clog save" });
   process.stderr.write(
-    `warning: skipped ${conversation.id.slice(0, 8)} because its source file is missing; removed stale discovered row from clog's database (path=${conversation.sourcePath})\n`,
+    `warning: skipped ${conversation.id.slice(0, 8)} because its source file is missing; removed stale unsaved row from clog's database (path=${conversation.sourcePath})\n`,
   );
   return true;
 }

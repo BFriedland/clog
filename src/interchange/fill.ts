@@ -13,7 +13,7 @@ export type FillSkipReason =
   | "invalid_pair"
   | "duplicate_identity"
   | "author_mismatch"
-  | "local_discovered_precedence"
+  | "local_unsaved_precedence"
   | "local_saved_precedence"
   | "git_collision"
   | "unsupported_promotion";
@@ -35,7 +35,7 @@ export type FillWriteAction =
       copyContent: boolean;
     }
   | {
-      kind: "restore_discovered";
+      kind: "restore_unsaved";
       pair: ValidatedPair;
       rowId: string;
       conversation: ConversationMeta;
@@ -251,7 +251,7 @@ export function isFillWriteAction(action: FillAction): action is FillWriteAction
   return (
     action.kind === "insert" ||
     action.kind === "update" ||
-    action.kind === "restore_discovered"
+    action.kind === "restore_unsaved"
   );
 }
 
@@ -264,10 +264,10 @@ function planFillCollision(args: {
 }): FillAction {
   const { mode, pair, owner, managedPath, importTime } = args;
 
-  if (owner.originKind === "local" && owner.state === "discovered") {
+  if (owner.originKind === "local" && owner.state === "unsaved") {
     if (mode === "own") {
       return {
-        kind: "restore_discovered",
+        kind: "restore_unsaved",
         rowId: owner.id,
         pair,
         managedPath,
@@ -284,8 +284,8 @@ function planFillCollision(args: {
 
     return {
       kind: "skip",
-      reason: "local_discovered_precedence",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local source copy is already discovered. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or 'clog fill <dir> --own' to restore pair metadata.`,
+      reason: "local_unsaved_precedence",
+      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or 'clog fill <dir> --own' to restore pair metadata.`,
       failure: false,
       pair,
       owner,

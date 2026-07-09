@@ -6,7 +6,7 @@ export function colorizeStateLabel(
   label: string,
   conversation: ConversationMeta,
 ): string {
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     return chalk.red(label);
   }
 

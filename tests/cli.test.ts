@@ -1175,7 +1175,7 @@ describe("cli", () => {
           makeConversation({
             id,
             sourceId: id,
-            state: "discovered",
+            state: "unsaved",
             sourcePath: source,
             title: "Discovered pair",
             tags: ["pair-partial"],
@@ -1217,7 +1217,7 @@ describe("cli", () => {
         makeConversation({
           id: discoveredId,
           sourceId: discoveredId,
-          state: "discovered",
+          state: "unsaved",
           sourcePath: discoveredSource,
           title: "Explicit discovered pair",
         }),
@@ -1271,7 +1271,7 @@ describe("cli", () => {
         makeConversation({
           id: skippedId,
           sourceId: skippedId,
-          state: "discovered",
+          state: "unsaved",
           sourcePath: skippedSource,
           title: "Skipped combo pair",
           projectName: "pair-combo",
@@ -1281,7 +1281,7 @@ describe("cli", () => {
         makeConversation({
           id: failedId,
           sourceId: failedId,
-          state: "discovered",
+          state: "unsaved",
           sourcePath: failedSource,
           title: "Failed combo pair",
           projectName: "other-combo",
@@ -1323,7 +1323,7 @@ describe("cli", () => {
         makeConversation({
           id: discoveredId,
           sourceId: discoveredId,
-          state: "discovered",
+          state: "unsaved",
           sourcePath: discoveredSource,
           title: "Discovered only",
           tags: ["pair-empty"],
@@ -2062,7 +2062,7 @@ describe("cli", () => {
       expect((await getConversationById(firstId))?.state).toBe("saved");
       expect((await getConversationById(secondId))?.state).toBe("saved");
       expect((await getConversationById("73333333-3333-3333-3333-333333333333"))?.state).toBe(
-        "discovered",
+        "unsaved",
       );
     });
 
@@ -2607,7 +2607,7 @@ describe("cli", () => {
         makeConversation({
           id: convId,
           sourceId: convId,
-          state: "discovered",
+          state: "unsaved",
           sourcePath,
         }),
       );
@@ -2795,14 +2795,14 @@ describe("cli", () => {
           id: "a3333333-3333-3333-3333-333333333333",
           sourceId: "a3333333-3333-3333-3333-333333333333",
           title: "Discovered one",
-          state: "discovered",
+          state: "unsaved",
         }),
       );
       await seedSavedConversation("a4444444-4444-4444-4444-444444444444", {
         title: "Saved one",
       });
 
-      const { stdout } = await runBuiltCommand(buildListCommand, ["--state", "discovered"]);
+      const { stdout } = await runBuiltCommand(buildListCommand, ["--state", "unsaved"]);
       expect(stdout).toContain("Discovered one");
       expect(stdout).not.toContain("Saved one");
     });
@@ -2962,7 +2962,7 @@ describe("cli", () => {
           id: "b6666666-6666-6666-6666-666666666666",
           sourceId: "b6666666-6666-6666-6666-666666666666",
           title: "Discovered all",
-          state: "discovered",
+          state: "unsaved",
         }),
       );
 
@@ -3058,14 +3058,14 @@ describe("cli", () => {
           id: "c2222222-2222-2222-2222-222222222222",
           sourceId: "c2222222-2222-2222-2222-222222222222",
           title: "Pending discovery",
-          state: "discovered",
+          state: "unsaved",
         }),
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Unsaved conversations:");
       expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 discovered");
+      expect(stdout).toContain("1 unsaved");
       expect(stdout).not.toContain("Pending discovery");
     });
 
@@ -3074,7 +3074,7 @@ describe("cli", () => {
         makeConversation({
           id: "c2323232-2323-2323-2323-232323232323",
           sourceId: "c2323232-2323-2323-2323-232323232323",
-          state: "discovered",
+          state: "unsaved",
           projectName: "zeta",
           createdAt: "2026-02-06T10:00:00.000Z",
         }),
@@ -3083,7 +3083,7 @@ describe("cli", () => {
         makeConversation({
           id: "c2424242-2424-2424-2424-242424242424",
           sourceId: "c2424242-2424-2424-2424-242424242424",
-          state: "discovered",
+          state: "unsaved",
           projectName: "api",
           createdAt: "2026-02-03T10:00:00.000Z",
         }),
@@ -3092,7 +3092,7 @@ describe("cli", () => {
         makeConversation({
           id: "c2525252-2525-2525-2525-252525252525",
           sourceId: "c2525252-2525-2525-2525-252525252525",
-          state: "discovered",
+          state: "unsaved",
           projectName: "api",
           createdAt: "2026-02-05T10:00:00.000Z",
         }),
@@ -3105,8 +3105,8 @@ describe("cli", () => {
       expect(apiIndex).toBeGreaterThan(-1);
       expect(zetaIndex).toBeGreaterThan(-1);
       expect(zetaIndex).toBeLessThan(apiIndex);
-      expect(stdout).toContain("zeta  1 discovered  2026-02-06");
-      expect(stdout).toContain("api   2 discovered  2026-02-05");
+      expect(stdout).toContain("zeta  1 unsaved  2026-02-06");
+      expect(stdout).toContain("api   2 unsaved  2026-02-05");
     });
 
     it("treats a saved conversation whose raw copy is ahead of the saved checkpoint as ready to save", async () => {
@@ -3738,7 +3738,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: now,
     discoveredAt: now,
     modifiedAt: now,
-    state: "discovered",
+    state: "unsaved",
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,

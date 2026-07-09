@@ -63,7 +63,7 @@ export function buildDrainCommand(): Command {
     .option("--raw", "Emit the exact underlying source file")
     .option("--force", "Overwrite an existing output file or directory entry")
     .option("--refresh", "Refresh local discovery before resolving the export set")
-    .option("-s, --state <state>", "Exact state filter: discovered or saved")
+    .option("-s, --state <state>", "Exact state filter: unsaved or saved")
     .option("-p, --project <name>", "Exact project metadata filter")
     .option("-a, --author <name>", "Exact author metadata filter")
     .option("-t, --tag <tag>", "Exact tag metadata filter")
@@ -85,19 +85,19 @@ async function runDrainCommand(selectors: string[], options: DrainOptions): Prom
     renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
-  const { conversations, skippedDiscovered } = await resolveDrainConversations(
+  const { conversations, skippedUnsaved } = await resolveDrainConversations(
     selectors,
     options,
     config,
     format,
   );
   if (conversations.length === 0) {
-    if (format === "pair" && skippedDiscovered > 0) {
+    if (format === "pair" && skippedUnsaved > 0) {
       throw new ClogError(
-        `No saved conversations to export as pairs. ${skippedDiscovered} matching conversation${
-          skippedDiscovered === 1 ? " is" : "s are"
+        `No saved conversations to export as pairs. ${skippedUnsaved} matching conversation${
+          skippedUnsaved === 1 ? " is" : "s are"
         } unsaved; save ${
-          skippedDiscovered === 1 ? "it" : "them"
+          skippedUnsaved === 1 ? "it" : "them"
         } first with 'clog save', then retry.`,
       );
     }
@@ -120,7 +120,7 @@ async function runDrainCommand(selectors: string[], options: DrainOptions): Prom
       raw: options.raw === true,
       force: options.force === true,
       targetDir: options.toDir,
-      skippedDiscovered,
+      skippedUnsaved,
     });
     return;
   }
@@ -174,7 +174,7 @@ function validateDrainOptions(
 
   if (options.state != null && !isConversationState(options.state)) {
     throw new UsageError(
-      `--state must be "discovered" or "saved", got "${options.state}".`,
+      `--state must be "unsaved" or "saved", got "${options.state}".`,
     );
   }
 
@@ -189,7 +189,7 @@ function validateDrainOptions(
 
 interface ResolvedDrainConversations {
   conversations: ConversationMeta[];
-  skippedDiscovered: number;
+  skippedUnsaved: number;
 }
 
 async function resolveDrainConversations(
@@ -221,15 +221,15 @@ async function resolveDrainConversations(
       })
     : null;
 
-  // Pair export targets saved rows. Discovered rows reached by a broad
+  // Pair export targets saved rows. Unsaved rows reached by a broad
   // selection (a project selector or a filter) are dropped here; an explicitly
-  // named discovered ID is left in so it surfaces as a per-conversation failure.
-  const droppedDiscovered = new Set<string>();
+  // named unsaved ID is left in so it surfaces as a per-conversation failure.
+  const droppedUnsaved = new Set<string>();
   const projectSelectionFilter =
     format === "pair"
       ? (conversation: ConversationMeta): boolean => {
           if (conversation.state !== "saved") {
-            droppedDiscovered.add(conversation.id);
+            droppedUnsaved.add(conversation.id);
             return false;
           }
           return true;
@@ -255,7 +255,7 @@ async function resolveDrainConversations(
     if (format === "pair") {
       for (const conversation of conversations) {
         if (conversation.state !== "saved") {
-          droppedDiscovered.add(conversation.id);
+          droppedUnsaved.add(conversation.id);
         }
       }
       conversations = conversations.filter(
@@ -266,11 +266,11 @@ async function resolveDrainConversations(
 
   const deduped = dedupeAndSortConversations(conversations);
   const keptIds = new Set(deduped.map((conversation) => conversation.id));
-  const skippedDiscovered = [...droppedDiscovered].filter(
+  const skippedUnsaved = [...droppedUnsaved].filter(
     (id) => !keptIds.has(id),
   ).length;
 
-  return { conversations: deduped, skippedDiscovered };
+  return { conversations: deduped, skippedUnsaved };
 }
 
 async function drainToStdout(
@@ -357,7 +357,7 @@ async function drainToDirectory(
     raw: boolean;
     force: boolean;
     targetDir: string;
-    skippedDiscovered: number;
+    skippedUnsaved: number;
   },
 ): Promise<void> {
   try {
@@ -410,7 +410,7 @@ async function drainToDirectory(
     }
   }
 
-  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedDiscovered);
+  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedUnsaved);
 }
 
 async function drainPairsToDirectory(
@@ -419,7 +419,7 @@ async function drainPairsToDirectory(
     config: Config;
     force: boolean;
     targetDir: string;
-    skippedDiscovered: number;
+    skippedUnsaved: number;
   },
 ): Promise<void> {
   let succeeded = 0;
@@ -435,7 +435,7 @@ async function drainPairsToDirectory(
     }
   }
 
-  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedDiscovered);
+  reportDirectoryDrainSummary(succeeded, failed, options.targetDir, options.skippedUnsaved);
 }
 
 function reportDirectoryDrainFailure(
@@ -453,7 +453,7 @@ function reportDirectoryDrainSummary(
   succeeded: number,
   failed: number,
   targetDir: string,
-  skippedDiscovered = 0,
+  skippedUnsaved = 0,
 ): void {
   const summaryTarget = targetDir.endsWith(path.sep)
     ? targetDir
@@ -462,8 +462,8 @@ function reportDirectoryDrainSummary(
   if (failed > 0) {
     noteParts.push(`${failed} failed`);
   }
-  if (skippedDiscovered > 0) {
-    noteParts.push(`${skippedDiscovered} unsaved skipped`);
+  if (skippedUnsaved > 0) {
+    noteParts.push(`${skippedUnsaved} unsaved skipped`);
   }
   const note = noteParts.length > 0 ? ` (${noteParts.join(", ")})` : "";
   process.stderr.write(
@@ -642,7 +642,7 @@ async function readRawPayload(conversation: ConversationMeta): Promise<Buffer> {
       "code" in error &&
       (error as NodeJS.ErrnoException).code === "ENOENT"
     ) {
-      if (conversation.state === "discovered") {
+      if (conversation.state === "unsaved") {
         throw new ClogError(
           `Source file is missing for ${conversation.id}. Run "clog status" to refresh discovery.`,
         );
@@ -813,5 +813,5 @@ function hasFilterOptions(options: DrainOptions): boolean {
 }
 
 function isConversationState(value: string): value is ConversationState {
-  return value === "discovered" || value === "saved";
+  return value === "unsaved" || value === "saved";
 }

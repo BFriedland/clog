@@ -399,7 +399,7 @@ describe("clog fill", () => {
     await insertConversation(conversation({
       id,
       sourceId: id,
-      state: "discovered",
+      state: "unsaved",
       filePath: null,
       sourcePath: path.join(tempDir, "source", `${id}.jsonl`),
       sourceMtime: "2026-02-19T09:20:00.000Z",
@@ -520,13 +520,13 @@ describe("clog fill", () => {
       title: "Incoming",
     });
 
-    expect(singleAction({ pair, mode: "file", owner: conversation({ state: "discovered" }) })).toMatchObject({
+    expect(singleAction({ pair, mode: "file", owner: conversation({ state: "unsaved" }) })).toMatchObject({
       kind: "skip",
-      reason: "local_discovered_precedence",
+      reason: "local_unsaved_precedence",
       failure: false,
     });
-    expect(singleAction({ pair, mode: "own", owner: conversation({ state: "discovered" }) })).toMatchObject({
-      kind: "restore_discovered",
+    expect(singleAction({ pair, mode: "own", owner: conversation({ state: "unsaved" }) })).toMatchObject({
+      kind: "restore_unsaved",
     });
     expect(singleAction({ pair, mode: "file", owner: conversation({ state: "saved" }) })).toMatchObject({
       kind: "skip",

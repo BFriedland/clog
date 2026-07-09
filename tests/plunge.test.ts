@@ -357,7 +357,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: now,
     discoveredAt: now,
     modifiedAt: now,
-    state: "discovered",
+    state: "unsaved",
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,

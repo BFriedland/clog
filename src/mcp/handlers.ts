@@ -118,7 +118,7 @@ export async function handleGet(input: unknown) {
   const config = await loadConfig();
   const conversation = await resolveConversationByInput(parsed.id);
 
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     throw new Error("clog_get only works on saved conversations.");
   }
 
@@ -250,7 +250,7 @@ export async function handleUpdate(input: unknown) {
   const parsed = updateInputSchema.parse(input);
   const conversation = await resolveConversationByInput(parsed.id);
 
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     throw new Error("clog_update only works on saved conversations.");
   }
 

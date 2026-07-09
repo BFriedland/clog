@@ -15,7 +15,7 @@ import {
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
-type StatusLabel = "discovered" | "modified" | "source";
+type StatusLabel = "unsaved" | "modified" | "source";
 type StatusTone = "ready" | "attention";
 
 interface StatusEntry {
@@ -26,7 +26,7 @@ interface StatusEntry {
 
 export function buildStatusCommand(): Command {
   return new Command("status")
-    .description("Show discovered conversations and saved conversations needing attention")
+    .description("Show unsaved conversations and saved conversations needing attention")
     .option("--source", "show conversation rows with the source column after the short ID")
     .option("-c, --conversations", "show one row per conversation")
     .option("--undiscoverable", "list conversations skipped due to missing project path")
@@ -46,7 +46,7 @@ export function buildStatusCommand(): Command {
         }),
       );
       const saved = await listConversations({ states: ["saved"], origin: "local" });
-      const discovered = await listConversations({ states: ["discovered"], origin: "local" });
+      const unsaved = await listConversations({ states: ["unsaved"], origin: "local" });
       const readySaved: ConversationMeta[] = [];
       const sourceAheadSaved: ConversationMeta[] = [];
       const cleanSaved: ConversationMeta[] = [];
@@ -96,13 +96,13 @@ export function buildStatusCommand(): Command {
         });
       }
 
-      if (discovered.length > 0) {
+      if (unsaved.length > 0) {
         sections.push(() => {
           process.stdout.write("Unsaved conversations:\n");
           process.stdout.write(
             `${dimText('  (use "clog save <id>" or "clog save <project>" to save)')}\n`,
           );
-          renderStatusEntries(toStatusEntries(discovered, "discovered", "attention"), {
+          renderStatusEntries(toStatusEntries(unsaved, "unsaved", "attention"), {
             includeSource: options.source === true,
             showConversations,
           });
@@ -347,7 +347,7 @@ function formatProjectCounts(entries: StatusEntry[]): string {
     counts.set(entry.label, (counts.get(entry.label) ?? 0) + 1);
   }
 
-  return (["discovered", "source", "modified"] satisfies StatusLabel[])
+  return (["unsaved", "source", "modified"] satisfies StatusLabel[])
     .filter((label) => (counts.get(label) ?? 0) > 0)
     .map((label) => formatProjectCount(label, counts.get(label) ?? 0))
     .join(", ");

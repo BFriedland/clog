@@ -366,6 +366,72 @@ describe("db", () => {
     expect(loaded?.originRef).toBe("git@example.com:repo.git");
   });
 
+  it("renames the legacy 'discovered' state to 'unsaved' on migration", async () => {
+    await withDb((db) => {
+      db.exec(`
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (7);
+        CREATE TABLE conversations (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          title TEXT NOT NULL,
+          summary TEXT DEFAULT '',
+          summary_kind TEXT NOT NULL DEFAULT 'none'
+            CHECK(summary_kind IN ('none','imported','generated','curated')),
+          summary_extraction TEXT,
+          author TEXT NOT NULL,
+          project_name TEXT,
+          project_path TEXT,
+          tags_json TEXT DEFAULT '[]',
+          slug TEXT,
+          created_at TEXT NOT NULL,
+          discovered_at TEXT NOT NULL,
+          modified_at TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'discovered'
+            CHECK(state IN ('discovered','saved')),
+          saved_at TEXT,
+          saved_message_count INTEGER,
+          save_version INTEGER DEFAULT 0,
+          source_path TEXT NOT NULL,
+          file_path TEXT,
+          source_mtime TEXT,
+          indexed_at TEXT,
+          origin_kind TEXT NOT NULL DEFAULT 'local'
+            CHECK(origin_kind IN ('local','git','file')),
+          origin_ref TEXT,
+          UNIQUE(source, source_id)
+        );
+      `);
+      db.run(
+        `INSERT INTO conversations (id, source_id, source, title, author,
+          created_at, discovered_at, modified_at, state, save_version, source_path,
+          origin_kind, origin_ref)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "f4444444-1234-1234-1234-123456789012",
+          "f4444444-1234-1234-1234-123456789012",
+          "claude-code",
+          "Legacy discovered row",
+          "alice",
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "discovered",
+          0,
+          "/tmp/legacy.jsonl",
+          "local",
+          null,
+        ],
+      );
+    }, { applyMigrations: false });
+
+    await withDb(() => undefined);
+
+    const loaded = await getConversationById("f4444444-1234-1234-1234-123456789012");
+    expect(loaded?.state).toBe("unsaved");
+  });
+
   it("enforces origin_kind and origin_ref constraints", async () => {
     await withDb((db) => {
       expect(() => {
@@ -421,7 +487,7 @@ describe("db", () => {
   // ============================================================
 
   it("lists conversations across multiple states at once", async () => {
-    await insertConversation(makeConversation({ state: "discovered" }));
+    await insertConversation(makeConversation({ state: "unsaved" }));
     await insertConversation(
       makeConversation({
         id: "a2345678-1234-1234-1234-123456789012",
@@ -592,7 +658,7 @@ describe("db", () => {
       makeConversation({
         id: "d2222222-1234-1234-1234-123456789012",
         sourceId: "d2222222-1234-1234-1234-123456789012",
-        state: "discovered",
+        state: "unsaved",
         indexedAt: null,
       }),
     );
@@ -615,7 +681,7 @@ describe("db", () => {
       makeConversation({
         id: "d3333333-1234-1234-1234-123456789012",
         sourceId: "d3333333-1234-1234-1234-123456789012",
-        state: "discovered",
+        state: "unsaved",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
@@ -657,7 +723,7 @@ function baseConversation() {
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "discovered" as const,
+    state: "unsaved" as const,
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,

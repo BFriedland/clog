@@ -99,7 +99,7 @@ export function assertNoneRemote(
 }
 
 export function resolveContentPath(conversation: ConversationMeta): string {
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     return conversation.sourcePath;
   }
 
@@ -720,7 +720,7 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
   path: string;
   shouldRefreshRawCopy: boolean;
 }> {
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     if (!(await pathExists(conversation.sourcePath))) {
       throw new SourceFileMissingError(conversation.id);
     }
@@ -783,7 +783,7 @@ function wrapMissingContentError(
     return error instanceof Error ? error : new Error(String(error));
   }
 
-  if (conversation.state === "discovered") {
+  if (conversation.state === "unsaved") {
     return new SourceFileMissingError(conversation.id);
   }
 
