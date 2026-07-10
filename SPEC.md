@@ -1454,7 +1454,7 @@ Like other DB-touching paths, `clog plunge` acquires the DB lock for the duratio
 
 `clog drain` exports conversations out of clog as portable files or stdout
 payloads. It is the inverse of curation: `clog save` brings conversations into
-clog's curated corpus; `drain` lets them flow back out.
+clog's curated knowledge base; `drain` lets them flow back out.
 
 `clog drain` is read-only. It never modifies the database, raw files,
 source files, or remote checkout contents.
@@ -1524,7 +1524,7 @@ flags.
 This preserves the two intended command shapes:
 
 - query-like export (`clog drain --state unsaved`,
-  `clog drain --author alice`) operates on the current clog corpus
+  `clog drain --author alice`) operates on the current clog conversation library
 - refreshed query-like export (`clog drain --state unsaved --refresh`)
   first updates local unsaved conversations, then exports from that updated
   state
@@ -3829,7 +3829,7 @@ tests/
     └── fixtures.ts          # Small helpers for writing programmatic JSONL fixtures
 ```
 
-Tests use a flat structure rather than unit/integration subdirectories. Fixtures are generated programmatically rather than checked-in as static JSONL files. This keeps fixtures self-documenting and avoids maintaining separate fixture corpuses as source formats change.
+Tests use a flat structure rather than unit/integration subdirectories. Fixtures are generated programmatically rather than checked-in as static JSONL files. This keeps fixtures self-documenting and avoids maintaining separate collections of fixtures as source formats change.
 
 ### 13.3 Test Environment Sandboxing
 
