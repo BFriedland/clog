@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { getConversationById, listConversations } from "../src/db/index.js";
 import * as dbModule from "../src/db/index.js";
@@ -364,6 +365,41 @@ describe("scan", () => {
     await expect(getConversationById(id)).resolves.toBeNull();
   });
 
+  it("treats a Claude file with first cwd beyond the metadata line bound as undiscoverable", async () => {
+    const claudeRoot = path.join(tempDir, "claude");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["codex-cli"].enabled = false;
+
+    const id = "efef5555-5555-5555-5555-555555555555";
+    const filePath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        message: { role: "user", content: "Project known too late" },
+      },
+      ...metadataPadding(SCAN_METADATA_MAX_LINES - 1),
+      {
+        type: "user",
+        cwd: "/Users/alice/project",
+        message: { role: "user", content: "Late cwd" },
+      },
+    ]);
+
+    const result = await scanLocalSources(config);
+
+    expect(result.counts.discovered).toBe(0);
+    expect(result.counts.undiscoverable).toBe(1);
+    expect(result.undiscoverable).toEqual([
+      {
+        source: "claude-code",
+        path: filePath,
+      },
+    ]);
+    await expect(getConversationById(id)).resolves.toBeNull();
+  });
+
   it("fails closed on a Codex file whose cwd metadata is missing (SPEC §5.5)", async () => {
     const codexRoot = path.join(tempDir, ".codex");
     const config = getDefaultConfig("alice");
@@ -409,6 +445,58 @@ describe("scan", () => {
           "01",
           `rollout-2026-02-01T10-00-00-${id}.jsonl`,
         ),
+      },
+    ]);
+    await expect(getConversationById(id)).resolves.toBeNull();
+  });
+
+  it("treats a Codex file with only late cwd beyond the metadata line bound as undiscoverable", async () => {
+    const codexRoot = path.join(tempDir, ".codex");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = false;
+    config.sources["codex-cli"].paths = [codexRoot];
+
+    const id = "fefe6666-6666-6666-6666-666666666666";
+    const filePath = path.join(
+      codexRoot,
+      "sessions",
+      "2026",
+      "02",
+      "01",
+      `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+    );
+    await writeJsonl(filePath, [
+      {
+        type: "session_meta",
+        payload: {
+          id,
+          timestamp: "2026-02-01T09:59:59.000Z",
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Project known too late",
+        },
+      },
+      ...metadataPadding(SCAN_METADATA_MAX_LINES - 2),
+      {
+        type: "session_meta",
+        payload: {
+          cwd: "/Users/alice/project",
+        },
+      },
+    ]);
+
+    const result = await scanLocalSources(config);
+
+    expect(result.counts.discovered).toBe(0);
+    expect(result.counts.undiscoverable).toBe(1);
+    expect(result.undiscoverable).toEqual([
+      {
+        source: "codex-cli",
+        path: filePath,
       },
     ]);
     await expect(getConversationById(id)).resolves.toBeNull();
@@ -679,6 +767,13 @@ describe("scan", () => {
     await expect(getConversationById(goodId)).resolves.not.toBeNull();
   });
 });
+
+function metadataPadding(count: number): unknown[] {
+  return Array.from({ length: count }, (_entry, index) => ({
+    type: "progress",
+    message: `padding ${index}`,
+  }));
+}
 
 function buildScanResultWithWarnings(warnings: ClogWarning[]): ScanResult {
   return {

@@ -9,7 +9,12 @@ import type { Config } from "../config/schema.js";
 import type { Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
-import type { DiscoverOptions, DiscoveredConversation, SourceAdapter } from "./adapter.js";
+import {
+  SCAN_METADATA_MAX_LINES,
+  type DiscoverOptions,
+  type DiscoveredConversation,
+  type SourceAdapter,
+} from "./adapter.js";
 
 interface ClaudeJsonLine {
   type?: string;
@@ -172,76 +177,83 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       createdAt: fileStat.mtime.toISOString(),
     };
 
+    const input = createReadStream(filePath, { encoding: "utf8" });
     const rl = readline.createInterface({
-      input: createReadStream(filePath, "utf8"),
+      input,
       crlfDelay: Infinity,
     });
+    let lineNumber = 0;
 
     try {
       for await (const rawLine of rl) {
+        lineNumber += 1;
         const trimmed = rawLine.trim();
-        if (!trimmed) {
-          continue;
-        }
 
-        let line: ClaudeJsonLine;
+        if (trimmed) {
+          let line: ClaudeJsonLine;
 
-        try {
-          line = JSON.parse(trimmed) as ClaudeJsonLine;
-        } catch {
-          onWarning?.({
-            code: "malformed_jsonl",
-            message: "Skipping malformed Claude Code conversation file.",
-            source: this.name,
-            path: filePath,
-            guidance: "Fix the JSONL or remove the malformed file.",
-          });
-          return null;
-        }
+          try {
+            line = JSON.parse(trimmed) as ClaudeJsonLine;
+          } catch {
+            onWarning?.({
+              code: "malformed_jsonl",
+              message: "Skipping malformed Claude Code conversation file.",
+              source: this.name,
+              path: filePath,
+              guidance: "Fix the JSONL or remove the malformed file.",
+            });
+            return null;
+          }
 
-        if (metadata.createdAt === fileStat.mtime.toISOString()) {
-          const timestamp = normalizeTimestamp(line.timestamp);
-          if (timestamp) {
-            metadata.createdAt = timestamp;
+          if (metadata.createdAt === fileStat.mtime.toISOString()) {
+            const timestamp = normalizeTimestamp(line.timestamp);
+            if (timestamp) {
+              metadata.createdAt = timestamp;
+            }
+          }
+
+          if (!metadata.projectPath && typeof line.cwd === "string" && line.cwd.trim()) {
+            metadata.projectPath = line.cwd;
+            metadata.projectName = path.basename(line.cwd);
+          }
+
+          if (!metadata.slug && typeof line.slug === "string" && line.slug.trim()) {
+            metadata.slug = line.slug;
+          }
+
+          const projectedTitle =
+            line.type === "user" && typeof line.message?.content === "string"
+              ? normalizeClaudeVisibleUserText(line.message.content)
+              : null;
+
+          if (metadata.title === "(untitled)" && projectedTitle) {
+            metadata.title = truncateTitle(projectedTitle);
+          }
+
+          if (
+            line.type === "summary" &&
+            typeof (line as { summary?: unknown }).summary === "string"
+          ) {
+            metadata.summary = (line as { summary: string }).summary;
+          }
+
+          if (
+            metadata.title !== "(untitled)" &&
+            metadata.summary !== "" &&
+            metadata.slug !== null &&
+            metadata.projectPath !== null
+          ) {
+            break;
           }
         }
 
-        if (!metadata.projectPath && typeof line.cwd === "string" && line.cwd.trim()) {
-          metadata.projectPath = line.cwd;
-          metadata.projectName = path.basename(line.cwd);
-        }
-
-        if (!metadata.slug && typeof line.slug === "string" && line.slug.trim()) {
-          metadata.slug = line.slug;
-        }
-
-        const projectedTitle =
-          line.type === "user" && typeof line.message?.content === "string"
-            ? normalizeClaudeVisibleUserText(line.message.content)
-            : null;
-
-        if (metadata.title === "(untitled)" && projectedTitle) {
-          metadata.title = truncateTitle(projectedTitle);
-        }
-
-        if (
-          line.type === "summary" &&
-          typeof (line as { summary?: unknown }).summary === "string"
-        ) {
-          metadata.summary = (line as { summary: string }).summary;
-        }
-
-        if (
-          metadata.title !== "(untitled)" &&
-          metadata.summary !== "" &&
-          metadata.slug !== null &&
-          metadata.projectPath !== null
-        ) {
+        if (lineNumber >= SCAN_METADATA_MAX_LINES) {
           break;
         }
       }
     } finally {
       rl.close();
+      input.destroy();
     }
 
     return {

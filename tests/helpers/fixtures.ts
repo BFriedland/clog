@@ -9,3 +9,11 @@ export async function writeJsonl(filePath: string, lines: unknown[]): Promise<vo
     "utf8",
   );
 }
+
+export async function writeRawJsonlLines(
+  filePath: string,
+  lines: string[],
+): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+}

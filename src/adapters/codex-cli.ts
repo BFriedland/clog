@@ -1,5 +1,7 @@
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import readline from "node:readline";
 
 import { glob } from "glob";
 
@@ -7,7 +9,12 @@ import type { Config } from "../config/schema.js";
 import type { Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
-import type { DiscoverOptions, DiscoveredConversation, SourceAdapter } from "./adapter.js";
+import {
+  SCAN_METADATA_MAX_LINES,
+  type DiscoverOptions,
+  type DiscoveredConversation,
+  type SourceAdapter,
+} from "./adapter.js";
 
 interface CodexLine {
   type?: string;
@@ -33,6 +40,23 @@ interface ExecCommandEndInfo {
   exitCode: number | null;
   status: string | null;
   outputPresent: boolean;
+}
+
+interface CodexDiscoveryState {
+  embeddedSourceId: string | null;
+  firstTopLevelTimestamp: string | null;
+  finalTitle: string | null;
+  pendingTitle: PendingCodexTitle | null;
+  sessionMetaCwd: string | null;
+  sessionMetaTimestamp: string | null;
+  turnContextCwd: string | null;
+}
+
+interface PendingCodexTitle {
+  text: string;
+  normalized: string;
+  timestamp: string | null;
+  adjacent: boolean;
 }
 
 const UUID_SUFFIX_REGEX =
@@ -282,81 +306,61 @@ export class CodexCliAdapter implements SourceAdapter {
     filePath: string,
     onWarning?: (warning: ClogWarning) => void,
   ): Promise<DiscoveredConversation | null> {
-    const lines = await readCodexLines(filePath).catch(() => null);
-
-    if (!lines) {
-      onWarning?.({
-        code: "malformed_jsonl",
-        message: "Skipping malformed Codex CLI session file.",
-        source: this.name,
-        path: filePath,
-        guidance: "Fix the JSONL or remove the malformed file.",
-      });
+    const fileStat = await fs.stat(filePath).catch(() => null);
+    if (!fileStat) {
+      emitMalformedCodexWarning(this.name, filePath, onWarning);
       return null;
     }
 
-    const fileStat = await fs.stat(filePath);
     const filenameSourceId = extractCodexSourceIdFromFilename(filePath);
+    const state = createCodexDiscoveryState();
+    const input = createReadStream(filePath, { encoding: "utf8" });
+    const rl = readline.createInterface({
+      input,
+      crlfDelay: Infinity,
+    });
+    let lineNumber = 0;
 
-    let embeddedSourceId: string | null = null;
-    let createdAt: string | null = null;
-    let firstTopLevelTimestamp: string | null = null;
-    let projectPath: string | null = null;
-    let titleFromEvent: string | null = null;
-    let titleFromCanonical: string | null = null;
+    try {
+      for await (const rawLine of rl) {
+        lineNumber += 1;
+        const trimmed = rawLine.trim();
 
-    for (const line of lines) {
-      if (!firstTopLevelTimestamp) {
-        firstTopLevelTimestamp = normalizeTimestamp(line.timestamp);
-      }
+        if (trimmed) {
+          let line: CodexLine;
 
-      if (line.type === "session_meta") {
-        const id = stringValue(line.payload?.id);
-        if (id) {
-          if (isUuidLike(id)) {
-            embeddedSourceId = id;
-          } else {
-            onWarning?.({
-              code: "missing_source_id",
-              message: "Codex session_meta payload.id is not a valid UUID.",
-              source: this.name,
-              path: filePath,
-            });
+          try {
+            line = JSON.parse(trimmed) as CodexLine;
+          } catch {
+            emitMalformedCodexWarning(this.name, filePath, onWarning);
+            return null;
+          }
+
+          collectCodexDiscoveryMetadata(state, line, {
+            filePath,
+            onWarning,
+            source: this.name,
+          });
+
+          if (isCodexDiscoveryMetadataComplete(state)) {
+            break;
           }
         }
 
-        if (!projectPath) {
-          projectPath = stringValue(line.payload?.cwd);
-        }
-
-        if (!createdAt) {
-          createdAt = stringValue(line.payload?.timestamp);
+        if (lineNumber >= SCAN_METADATA_MAX_LINES) {
+          break;
         }
       }
-
-      if (line.type === "turn_context" && !projectPath) {
-        projectPath = stringValue(line.payload?.cwd);
-      }
-
-      if (!titleFromCanonical && line.type === "response_item" && stringValue(line.payload?.type) === "message") {
-        if (stringValue(line.payload?.role) === "user") {
-          const text = extractCodexMessageText(line.payload?.content, "input_text");
-          if (text && !isWrapperOnlyCodexText(text)) {
-            titleFromCanonical = text;
-          }
-        }
-      }
-
-      if (!titleFromEvent && line.type === "event_msg" && stringValue(line.payload?.type) === "user_message") {
-        const text = stringValue(line.payload?.message);
-        if (text) {
-          titleFromEvent = text;
-        }
-      }
+    } catch {
+      emitMalformedCodexWarning(this.name, filePath, onWarning);
+      return null;
+    } finally {
+      rl.close();
+      input.destroy();
     }
 
     const sourceId = resolveCodexSourceId({
-      embeddedSourceId,
+      embeddedSourceId: state.embeddedSourceId,
       filenameSourceId,
       onWarning,
       filePath,
@@ -367,7 +371,10 @@ export class CodexCliAdapter implements SourceAdapter {
       return null;
     }
 
-    const title = truncateTitle(titleFromEvent ?? titleFromCanonical ?? "(untitled)");
+    const projectPath = state.sessionMetaCwd ?? state.turnContextCwd;
+    const title = truncateTitle(
+      state.finalTitle ?? state.pendingTitle?.text ?? "(untitled)",
+    );
 
     return {
       sourceId,
@@ -378,10 +385,161 @@ export class CodexCliAdapter implements SourceAdapter {
         projectName: projectPath ? path.basename(projectPath) : null,
         projectPath,
         slug: null,
-        createdAt: createdAt ?? firstTopLevelTimestamp ?? fileStat.mtime.toISOString(),
+        createdAt:
+          state.sessionMetaTimestamp ??
+          state.firstTopLevelTimestamp ??
+          fileStat.mtime.toISOString(),
       },
     };
   }
+}
+
+function createCodexDiscoveryState(): CodexDiscoveryState {
+  return {
+    embeddedSourceId: null,
+    firstTopLevelTimestamp: null,
+    finalTitle: null,
+    pendingTitle: null,
+    sessionMetaCwd: null,
+    sessionMetaTimestamp: null,
+    turnContextCwd: null,
+  };
+}
+
+function collectCodexDiscoveryMetadata(
+  state: CodexDiscoveryState,
+  line: CodexLine,
+  args: {
+    filePath: string;
+    onWarning?: (warning: ClogWarning) => void;
+    source: string;
+  },
+): void {
+  state.firstTopLevelTimestamp ??= normalizeTimestamp(line.timestamp);
+
+  if (line.type === "session_meta") {
+    const id = stringValue(line.payload?.id);
+    if (id) {
+      if (isUuidLike(id)) {
+        state.embeddedSourceId ??= id;
+      } else {
+        args.onWarning?.({
+          code: "missing_source_id",
+          message: "Codex session_meta payload.id is not a valid UUID.",
+          source: args.source,
+          path: args.filePath,
+        });
+      }
+    }
+
+    state.sessionMetaCwd ??= stringValue(line.payload?.cwd);
+    state.sessionMetaTimestamp ??= stringValue(line.payload?.timestamp);
+  }
+
+  if (line.type === "turn_context") {
+    state.turnContextCwd ??= stringValue(line.payload?.cwd);
+  }
+
+  collectCodexDiscoveryTitle(state, line);
+}
+
+function collectCodexDiscoveryTitle(state: CodexDiscoveryState, line: CodexLine): void {
+  if (state.finalTitle) {
+    return;
+  }
+
+  const payloadType = stringValue(line.payload?.type);
+
+  if (!state.pendingTitle) {
+    if (line.type === "response_item" && payloadType === "message") {
+      if (stringValue(line.payload?.role) === "user") {
+        const text = extractCodexMessageText(line.payload?.content, "input_text");
+        if (text && !isWrapperOnlyCodexText(text)) {
+          state.pendingTitle = {
+            text,
+            normalized: normalizeCodexText(text),
+            timestamp: normalizeTimestamp(line.timestamp),
+            adjacent: true,
+          };
+        }
+      }
+      return;
+    }
+
+    if (line.type === "event_msg" && payloadType === "user_message") {
+      const text = stringValue(line.payload?.message);
+      if (text) {
+        state.finalTitle = text;
+      }
+    }
+    return;
+  }
+
+  if (line.type === "event_msg" && payloadType === "user_message") {
+    const text = stringValue(line.payload?.message);
+    if (text && normalizeCodexText(text) === state.pendingTitle.normalized) {
+      const eventTimestamp = normalizeTimestamp(line.timestamp);
+      const sameTimestamp =
+        state.pendingTitle.timestamp != null &&
+        eventTimestamp != null &&
+        state.pendingTitle.timestamp === eventTimestamp;
+      if (sameTimestamp || state.pendingTitle.adjacent) {
+        state.finalTitle = text;
+        state.pendingTitle = null;
+        return;
+      }
+    }
+  }
+
+  if (isIgnoredForDiscoveryTitleAdjacency(line)) {
+    return;
+  }
+
+  const lineTimestamp = normalizeTimestamp(line.timestamp);
+  if (
+    state.pendingTitle.timestamp != null &&
+    lineTimestamp != null &&
+    state.pendingTitle.timestamp === lineTimestamp
+  ) {
+    state.pendingTitle.adjacent = false;
+    return;
+  }
+
+  state.finalTitle = state.pendingTitle.text;
+  state.pendingTitle = null;
+}
+
+function isIgnoredForDiscoveryTitleAdjacency(line: CodexLine): boolean {
+  const payloadType = stringValue(line.payload?.type);
+
+  if (line.type === "event_msg" && payloadType === "agent_message") {
+    return true;
+  }
+
+  return isIgnoredForAdjacency(line);
+}
+
+function isCodexDiscoveryMetadataComplete(state: CodexDiscoveryState): boolean {
+  return Boolean(
+    state.embeddedSourceId &&
+      state.sessionMetaCwd &&
+      state.sessionMetaTimestamp &&
+      state.finalTitle,
+  );
+}
+
+function emitMalformedCodexWarning(
+  source: string,
+  filePath: string,
+  onWarning?: (warning: ClogWarning) => void,
+): void {
+  onWarning?.({
+    code: "malformed_jsonl",
+    message: "Skipping malformed Codex CLI session file.",
+    source,
+    path: filePath,
+    guidance: "Fix the JSONL or remove the malformed file.",
+  });
 }
 
 function resolveCodexSourceId(args: {

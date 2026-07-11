@@ -2,6 +2,8 @@ import type { Config } from "../config/schema.js";
 import type { Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 
+export const SCAN_METADATA_MAX_LINES = 100;
+
 export interface DiscoveredConversation {
   sourceId: string;
   sourcePath: string;

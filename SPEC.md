@@ -532,7 +532,7 @@ getEnabledAdapters(config: Config): SourceAdapter[]
 
 **Two-phase parsing design:**
 
-1. **Discovery (lightweight):** Scans JSONL files, extracts only metadata (title, summary, project name/path, dates, slug). Does NOT parse all messages or load full content into memory. This keeps discovery fast even with large files — it can stop reading after finding the first valid `cwd`, first human message, summary line, and other required metadata.
+1. **Discovery (lightweight):** Scans JSONL files, extracts only metadata (title, summary, project name/path, dates, slug), and reads at most the shared `SCAN_METADATA_MAX_LINES` head of each local source file. It does not parse all messages or load full content into memory. This keeps discovery fast even with large files: the adapter stops when its metadata completion condition is satisfied or when the line bound is reached.
 2. **On-demand (full parse):** When `clog show`, `clog diff`, MCP `clog_get`, save, or indexing needs full content, `parseMessages()` reads and parses the entire JSONL file. This is where source-specific deduplication, correlation, and message normalization happen.
 
 ### 4.2 Claude Code Adapter
@@ -675,24 +675,26 @@ type ContentBlock =
 }
 ```
 
-Not all conversations have a summary line — only longer ones that Claude Code auto-summarizes. When present, use this as the conversation's default `summary` field and set `summaryKind = "imported"` on newly unsaved conversations created by local discovery. A conversation file may contain at most one summary line (found at the end of the file or near the end).
+Not all conversations have a summary line — only longer ones that Claude Code auto-summarizes. When a summary line appears within the scan-time discovery line bound, use this as the conversation's default `summary` field and set `summaryKind = "imported"` on newly unsaved conversations created by local discovery. A conversation file may contain at most one summary line, and that line may be found at the end of the file or near the end. Local source discovery does not read that far when the summary line is beyond `SCAN_METADATA_MAX_LINES`, so a late summary line is absent during scan-time metadata extraction.
 
 #### 4.2.6 Adapter Discovery Behavior
 
-During discovery (lightweight metadata extraction), the adapter will:
+During discovery (lightweight metadata extraction), the adapter reads only the bounded file head defined by `SCAN_METADATA_MAX_LINES` and will:
 
 1. Glob `~/.claude/projects/*/*.jsonl` for main conversations (direct children of project dirs)
 2. Ignore `~/.claude/projects/*/*/subagents/` files for discovery. They are auxiliary sidechain logs, not separate discoverable conversations.
 3. Set `projectPath` from the first `cwd` field found in the main conversation JSONL. Claude records may contain multiple `cwd` values over the life of a conversation as the agent moves into subdirectories; for project identity, the first `cwd` is authoritative because it best represents where Claude Code was started. Later `cwd` values must not overwrite `projectPath` during discovery.
-4. Scan each JSONL file for metadata only:
+4. Scan each JSONL file's bounded head for metadata only:
    a. Find the first projected canonical user message represented by a `type: "user"` line where `message.content` is a string, after skipping any string that is wrapper-only under the hidden-wrapper rule in §4.2.7 → use as title (truncated to 100 chars without adding a display ellipsis)
    b. Find the `type: "summary"` line if present → use as summary
    c. Extract the first valid `cwd` found → use as `projectPath`
    d. Set `projectName` to the basename of `projectPath` when `projectPath` is available; otherwise leave `projectName = null`
    e. Extract the first `timestamp` found → use as `createdAt`
    f. Extract the `slug` field from any line that has it
-   g. Stop scanning early once all metadata is found — no need to parse the full file
+   g. Stop scanning early once all Claude Code discovery metadata is found; otherwise stop when the discovery line bound is reached
 5. Use the filename (without `.jsonl`) as both the `sourceId` and the conversation `id` — this is a UUID (e.g., `"c7044ea5-c019-44d6-a77a-500036740f9a"`)
+
+For scan-time discovery, a Claude Code `summary`, `slug`, or `cwd` that appears only after `SCAN_METADATA_MAX_LINES` is treated as absent. A missing in-bound `cwd` leaves `projectPath` unknown, and the local discovery pipeline reports the conversation as undiscoverable rather than inserting it into the database.
 
 In Phase 1, the parent Claude conversation is the only first-class clog conversation unit. Task subagent files do not get separate DB rows, separate save units, or separate remote artifacts. Parent discovery and parsing rely on the parent JSONL file only; any parent-visible evidence of delegated work must come from canonical parent-file transcript records that survive the adapter's filtering rules.
 
@@ -776,16 +778,18 @@ During discovery, the adapter will:
 2. Treat one candidate `rollout-*.jsonl` file as one conversation; skip non-rollout JSONL files without warning
 3. Use `session_meta.payload.id` as `sourceId` only when it is UUID-shaped
 4. Derive a fallback `sourceId` from the filename only when the filename matches the Codex rollout pattern and ends with a UUID-shaped session ID: `rollout-<timestamp>-<sessionId>.jsonl`. Parse this by matching the UUID suffix before `.jsonl`, not by naively splitting on `-`.
-5. If the embedded ID is missing or malformed and the filename-derived ID is valid, use the filename-derived ID. If the embedded ID was present but malformed, emit a warning.
-6. If both the embedded ID and filename-derived ID are valid but differ, use the embedded ID and emit a warning
+5. If no valid embedded ID appears within the discovery line bound and the filename-derived ID is valid, use the filename-derived ID. If an embedded ID was present within the bound but malformed, emit a warning.
+6. If both the embedded ID and filename-derived ID are valid within the discovery line bound but differ, use the embedded ID and emit a warning
 7. If neither source provides a valid UUID-shaped ID, report the file as malformed and skip it
-8. Use `session_meta.payload.cwd` as `projectPath`; otherwise fall back to the first valid `turn_context.payload.cwd` encountered in source-file order; set `projectName` to the basename of `projectPath` when available
+8. Use `session_meta.payload.cwd` as `projectPath`; otherwise, after the discovery line bound is reached without an in-bound `session_meta.payload.cwd`, fall back to the first valid `turn_context.payload.cwd` encountered within the bound; set `projectName` to the basename of `projectPath` when available
 9. Use the earliest human prompt in source-file order as the title source, truncated to 100 characters without adding a display ellipsis. When that prompt is represented by both a canonical `response_item.message(role="user")` record and an `event_msg.user_message` duplicate, prefer the `event_msg.user_message` text from `payload.message` as the cleaner rendering of that same prompt. If the earliest human prompt has no usable `event_msg.user_message`, fall back to the canonical user message text after skipping wrapper-only messages. If no usable human prompt exists, use `"(untitled)"`
 10. Use an empty string for `summary`
 11. Use `null` for `slug`
-12. Use `session_meta.payload.timestamp` as `createdAt`; otherwise fall back to the first valid top-level timestamp encountered in source-file order, then file mtime
+12. Use `session_meta.payload.timestamp` as `createdAt`; otherwise, after the discovery line bound is reached without an in-bound `session_meta.payload.timestamp`, fall back to the first valid top-level timestamp encountered within the bound, then file mtime
 
-Codex discovery should scan until it has found the needed metadata or reached end-of-file. It must not assume `session_meta` is always the first line, even if that is the common observed shape.
+Codex discovery scans until the Codex metadata completion condition is satisfied or `SCAN_METADATA_MAX_LINES` is reached. It must not assume `session_meta` is always the first line, even if that is the common observed shape. A filename-derived source ID, top-level timestamp, or `turn_context.payload.cwd` is a fallback candidate during the bounded scan; it becomes final only after the matching primary `session_meta.payload.*` value has been found within the bound, or after the discovery line bound is reached without finding that primary value.
+
+For Codex title extraction during discovery, a canonical user prompt remains pending until the nearby duplicate window closes. A later `event_msg.user_message` replaces the canonical title candidate only when it has the same normalized text and either the same top-level timestamp or adjacency after ignored metadata and non-transcript records. The pending title window closes when discovery sees the first later relevant transcript record that does not share the canonical prompt's top-level timestamp. If no duplicate appears before the window closes or before the discovery line bound is reached, the canonical prompt becomes the final title candidate.
 
 The empty Codex `summary`, `summaryKind = "none"`, and `null` Codex `slug` values are intentional in Phase 1. Unlike Claude Code, which may provide native `summary` lines and `slug` fields in its source format, the observed Codex source format does not expose an equivalent trusted native summary or slug field for discovery, and clog does not synthesize one.
 
@@ -1162,19 +1166,21 @@ There is no explicit `discover` command. Scanning for new and updated conversati
 
 Scanning iterates every enabled source adapter. Counts may remain source-agnostic in normal output, but diagnostic scan output must name the source for each conversation found or skipped by local discovery.
 
+Local source discovery reads only the bounded metadata head of each enabled source file. The `source_mtime` column is row metadata used after adapter discovery to avoid unnecessary database rewrites and to support dirty/status behavior; it is not a cache key that skips adapter metadata reads.
+
 Scanning is idempotent. Each scan will:
 
 - Find new conversations not yet in the database → insert as `unsaved`
 - When inserting a new local unsaved conversation, set `author = config.author`. Later scans must not rewrite `author`; use `clog edit --author` or `clog rename-author` for explicit changes.
-- Skip conversations whose source file hasn't changed (matched by `source + sourceId`, checked via `source_mtime`)
+- Avoid rewriting existing rows whose discovered `sourcePath` and post-discovery `source_mtime` match the stored row for the same `source + sourceId`
 - If a local source candidate has the same `(source, sourceId)` as a `git` or `file` row, leave the imported row unchanged and do not insert a duplicate local row. The imported row remains authoritative for that identity until the user removes it.
-- **Detect updated source files** for local conversations in any state. When a source file's mtime has changed since last scan:
+- **Detect updated source files** for local conversations in any state. When the post-discovery `source_mtime` comparison shows that a source file's mtime has changed since the last scan:
   - For `unsaved` conversations: re-extract metadata (title and summary may change as the conversation grows). If the re-extracted summary is non-blank, set `summaryKind = "imported"`; otherwise set `summaryKind = "none"`. `summaryExtraction` remains `null`.
   - For `saved` conversations: preserve the stored metadata row and preserve the saved raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath`, `source_mtime`, and the dirty-marker fields explicitly called for by this spec; it must not rewrite stored metadata such as `title`, `summary`, `summaryKind`, `summaryExtraction`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time so status can report that newer source content is available, but do not copy source content into `~/.clog/raw/`. The user may run `clog save <id>` to refresh and save the newer source content.
 - **Detect moved source files.** When a known local conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `unsaved` conversations, also update `projectPath` and `projectName`. For `saved` conversations, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
 - **Prune stale entries per source.** After discovery completes, remove `unsaved`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Saved conversations are never pruned because they have their own copies in `~/.clog/raw/`. The scan reports a `pruned` count alongside other filter counts.
 
-**Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting. This includes `clog status`, `clog list`, `clog save --all`, selector-bearing `clog save`, and any other command path that refreshes local unsaved conversations before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. The command exit code remains 0 unless the requested operation itself fails.
+**Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting when a malformed JSONL record is encountered while the adapter is still extracting discovery metadata. This includes `clog status`, `clog list`, `clog save --all`, selector-bearing `clog save`, and any other command path that refreshes local unsaved conversations before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. Malformed transcript records after metadata discovery stops are handled by full content-reading commands such as `clog show` and `clog save` when those commands read the full source file. The command exit code remains 0 unless the requested operation itself fails.
 
 Source discovery, pair validation, file import, and git reconciliation warnings use a structured internal shape:
 
@@ -1225,7 +1231,7 @@ This structured warning contract applies to source discovery, conversation file-
 
 **No file copying during scan.** Raw JSONL files are not copied to `~/.clog/raw/` during scanning. Before a conversation is curated, clog reads metadata from the source location directly (read-only). Content is copied only by explicit save actions. This avoids doubling disk usage for conversations the developer never intends to curate.
 
-**Performance:** Scan results are cached in the database. Subsequent scans skip unchanged files (matched by `source + sourceId`, checked via `source_mtime`), keeping scanning fast even with hundreds of conversations. The adapter's early-stop strategy (read only the first valid `cwd`, first user message, summary line, and other required metadata, then skip the rest) keeps initial scans fast too. If scanning latency becomes an issue at thousands of conversations, this is an optimization target — but the mtime-based caching should handle typical scale well.
+**Performance:** Local discovery keeps scanning proportional to the number of enabled source files by reading only the bounded metadata head of each file. The database stores `source_mtime` after discovery so unchanged rows are not rewritten, but `source_mtime` does not skip adapter metadata reads. If scanning latency becomes an issue at thousands of conversations, the next optimization should preserve the bounded-read contract and avoid turning `clog status` or `clog list` into full transcript integrity checks.
 
 **Filtering personal conversations:** Developers use personal laptops and will have conversations unrelated to the company. Scanning respects two explicit filter layers plus a fail-closed undiscoverable rule:
 
@@ -3855,12 +3861,14 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Adapter tests** (`adapter.test.ts`):
 
-- Claude discovery parsing: correct metadata extraction (title, summary, projectName, projectPath, slug, dates) without reading the full file
+- Claude discovery parsing: correct metadata extraction (title, summary, projectName, projectPath, slug, dates) from the bounded metadata head without reading the full file
+- Claude bounded-discovery behavior: malformed JSONL after the discovery line bound is ignored during scan-time discovery, while malformed JSONL encountered before metadata discovery stops warns and skips the file
 - Claude full parsing: correct message normalization, deduplication by `message.id`, parser-derived ordering
 - Claude discovery uses the first `cwd` for `projectPath` and derives `projectName` from that path; later `cwd` changes do not overwrite project identity
 - Graceful handling of empty / no-message JSONL files
 - Codex path normalization: configured Codex home scans `<home>/sessions/**/*.jsonl`; configured sessions directory scans `<sessionsDir>/**/*.jsonl`; missing derived sessions directory warns and skips
-- Codex discovery parsing: `session_meta` ID, filename fallback, title precedence, cwd/projectPath fallback, derived projectName, empty summary, null slug
+- Codex discovery parsing: `session_meta` ID, filename fallback, title precedence, fallback finality, cwd/projectPath fallback, derived projectName, empty summary, null slug
+- Codex bounded-discovery behavior: discovery stops when primary metadata and title are complete, malformed JSONL after discovery stops is ignored during scan-time discovery, and malformed JSONL encountered while metadata discovery is still in progress warns and skips the file
 - Codex full parsing: canonical user/assistant messages, user-message deduplication, tool correlation by `call_id`, `exec_command_end` fallback, telemetry omission, parser-derived ordering
 - Malformed Codex files: missing session ID plus invalid filename, filename/content ID mismatch warning, missing projectPath / cwd fails closed with `path_filter_without_project` warning (`project path missing: these conversation files have no cwd metadata`) regardless of configured path filters
 
@@ -3927,14 +3935,14 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Scan tests** (`scan.test.ts`):
 
 - 2-layer path/privacy filter pipeline (`clogignore` → config) plus undiscoverable handling
-- mtime-based skip for unchanged files
+- `source_mtime` comparison avoids database rewrites for unchanged rows after adapter discovery
 - New conversation discovery
 - Stale entry pruning when source files disappear
 - Source path updates when files move between directories
 - Discovery across all enabled built-in adapters
 - Per-source pruning isolation
-- Fail-closed path filtering when projectPath is unavailable
-- Aggregated malformed-file warnings
+- Fail-closed path filtering when projectPath is unavailable within the discovery line bound
+- Aggregated malformed-file warnings for malformed JSONL encountered during metadata discovery
 
 **Workflow tests** (`workflow.test.ts`):
 

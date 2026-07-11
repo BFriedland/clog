@@ -4,11 +4,12 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { CodexCliAdapter } from "../src/adapters/codex-cli.js";
 import { getDefaultConfig } from "../src/config/index.js";
 import type { ClogWarning } from "../src/models/warnings.js";
-import { writeJsonl } from "./helpers/fixtures.js";
+import { writeJsonl, writeRawJsonlLines } from "./helpers/fixtures.js";
 
 describe("adapters", () => {
   let tempDir: string;
@@ -68,6 +69,83 @@ describe("adapters", () => {
       slug: "breezy-coalescing-pony",
       createdAt: "2026-02-01T10:00:00.000Z",
     });
+  });
+
+  it("Claude discovery stops at the metadata line bound when summary and slug are absent", async () => {
+    const filePath = path.join(
+      tempDir,
+      "claude",
+      "-Users-alice-api-service",
+      "c7044ea5-c019-44d6-a77a-500036740f9d.jsonl",
+    );
+
+    await writeRawJsonlLines(filePath, [
+      jsonLine({
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/api-service",
+        message: {
+          role: "user",
+          content: "Debug auth token refresh logic",
+        },
+      }),
+      ...validJsonlPadding(SCAN_METADATA_MAX_LINES - 1),
+      "{not: valid json",
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "claude")];
+    const adapter = new ClaudeCodeAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(warnings).toEqual([]);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.metadata).toMatchObject({
+      title: "Debug auth token refresh logic",
+      summary: "",
+      projectName: "api-service",
+      projectPath: "/Users/alice/api-service",
+      slug: null,
+      createdAt: "2026-02-01T10:00:00.000Z",
+    });
+  });
+
+  it("Claude discovery warns and skips when malformed JSONL appears before metadata discovery stops", async () => {
+    const filePath = path.join(
+      tempDir,
+      "claude",
+      "-Users-alice-api-service",
+      "c7044ea5-c019-44d6-a77a-500036740f9e.jsonl",
+    );
+
+    await writeRawJsonlLines(filePath, [
+      jsonLine({
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/api-service",
+        message: {
+          role: "user",
+          content: "Debug auth token refresh logic",
+        },
+      }),
+      "{not: valid json",
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "claude")];
+    const adapter = new ClaudeCodeAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(discovered).toEqual([]);
+    expect(warnings.map((warning) => warning.code)).toEqual(["malformed_jsonl"]);
   });
 
   it("Claude discovery skips hidden local-command wrapper text when deriving titles", async () => {
@@ -359,6 +437,279 @@ describe("adapters", () => {
       slug: null,
       createdAt: "2026-02-01T09:59:59.000Z",
     });
+  });
+
+  it("Codex discovery ignores malformed JSONL after metadata is complete", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-750e8400-e29b-41d4-a716-446655440000.jsonl",
+    );
+
+    await writeRawJsonlLines(filePath, [
+      jsonLine({
+        type: "session_meta",
+        payload: {
+          id: "750e8400-e29b-41d4-a716-446655440000",
+          timestamp: "2026-02-01T09:59:59.000Z",
+          cwd: "/Users/alice/api-service",
+        },
+      }),
+      jsonLine({
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Debug the auth race condition",
+        },
+      }),
+      "{not: valid json",
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(warnings).toEqual([]);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.metadata.title).toBe("Debug the auth race condition");
+  });
+
+  it("Codex discovery finalizes fallback metadata at the line bound and ignores later malformed JSONL", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const id = "850e8400-e29b-41d4-a716-446655440000";
+    const filePath = path.join(
+      sessionsDir,
+      `rollout-2026-02-01T10-00-00-${id}.jsonl`,
+    );
+
+    await writeRawJsonlLines(filePath, [
+      jsonLine({
+        type: "turn_context",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          cwd: "/Users/alice/api-service",
+        },
+      }),
+      jsonLine({
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Summarize the deployment plan",
+        },
+      }),
+      ...validJsonlPadding(SCAN_METADATA_MAX_LINES - 2),
+      "{not: valid json",
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(warnings).toEqual([]);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.sourceId).toBe(id);
+    expect(discovered[0]?.metadata.projectPath).toBe("/Users/alice/api-service");
+    expect(discovered[0]?.metadata.createdAt).toBe("2026-02-01T10:00:00.000Z");
+    expect(discovered[0]?.metadata.title).toBe("Summarize the deployment plan");
+  });
+
+  it("Codex discovery warns and skips when malformed JSONL appears before metadata is complete", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-950e8400-e29b-41d4-a716-446655440000.jsonl",
+    );
+
+    await writeRawJsonlLines(filePath, [
+      jsonLine({
+        type: "session_meta",
+        payload: {
+          id: "950e8400-e29b-41d4-a716-446655440000",
+          timestamp: "2026-02-01T09:59:59.000Z",
+        },
+      }),
+      "{not: valid json",
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(discovered).toEqual([]);
+    expect(warnings.map((warning) => warning.code)).toEqual(["malformed_jsonl"]);
+  });
+
+  it("Codex discovery uses a nearby duplicate user_message as the title after ignored events", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-a50e8400-e29b-41d4-a716-446655440000.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "session_meta",
+        payload: {
+          id: "a50e8400-e29b-41d4-a716-446655440000",
+          timestamp: "2026-02-01T09:59:59.000Z",
+          cwd: "/Users/alice/api-service",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Normalize\r\nthis title" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-02-01T10:00:01.000Z",
+        payload: {
+          type: "agent_message",
+          message: "Working...",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-02-01T10:00:02.000Z",
+        payload: {
+          type: "user_message",
+          message: "Normalize\nthis title",
+        },
+      },
+    ]);
+
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(adapter.discover());
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.metadata.title).toBe("Normalize\nthis title");
+  });
+
+  it("Codex discovery keeps the earliest canonical prompt when a later event message is unrelated", async () => {
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      "rollout-2026-02-01T10-00-00-b50e8400-e29b-41d4-a716-446655440000.jsonl",
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "session_meta",
+        payload: {
+          id: "b50e8400-e29b-41d4-a716-446655440000",
+          timestamp: "2026-02-01T09:59:59.000Z",
+          cwd: "/Users/alice/api-service",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "First prompt" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-02-01T10:00:01.000Z",
+        payload: {
+          type: "user_message",
+          message: "Second prompt",
+        },
+      },
+    ]);
+
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(adapter.discover());
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.metadata.title).toBe("First prompt");
+  });
+
+  it("Codex discovery lets in-bound session_meta override filename, timestamp, and turn_context fallbacks", async () => {
+    const filenameId = "c50e8400-e29b-41d4-a716-446655440000";
+    const embeddedId = "d50e8400-e29b-41d4-a716-446655440000";
+    const sessionsDir = path.join(tempDir, ".codex", "sessions", "2026", "02", "01");
+    const filePath = path.join(
+      sessionsDir,
+      `rollout-2026-02-01T10-00-00-${filenameId}.jsonl`,
+    );
+
+    await writeJsonl(filePath, [
+      {
+        type: "turn_context",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          cwd: "/Users/alice/fallback-project",
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Use primary metadata",
+        },
+      },
+      {
+        type: "session_meta",
+        payload: {
+          id: embeddedId,
+          timestamp: "2026-02-01T09:59:59.000Z",
+          cwd: "/Users/alice/primary-project",
+        },
+      },
+    ]);
+
+    const warnings: ClogWarning[] = [];
+    const config = getDefaultConfig("alice");
+    config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+    const adapter = new CodexCliAdapter(config);
+
+    const discovered = await collect(
+      adapter.discover({ onWarning: (warning) => warnings.push(warning) }),
+    );
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.sourceId).toBe(embeddedId);
+    expect(discovered[0]?.metadata).toMatchObject({
+      title: "Use primary metadata",
+      projectName: "primary-project",
+      projectPath: "/Users/alice/primary-project",
+      createdAt: "2026-02-01T09:59:59.000Z",
+    });
+    expect(warnings).toMatchObject([
+      {
+        code: "source_id_mismatch",
+        source: "codex-cli",
+        path: filePath,
+      },
+    ]);
   });
 
   it("Codex parsing correlates tool calls and suppresses duplicate fallback user messages", async () => {
@@ -889,6 +1240,16 @@ describe("adapters", () => {
     expect(warnings).toEqual([]);
   });
 });
+
+function jsonLine(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function validJsonlPadding(count: number): string[] {
+  return Array.from({ length: count }, (_entry, index) =>
+    jsonLine({ type: "progress", message: `padding ${index}` }),
+  );
+}
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
