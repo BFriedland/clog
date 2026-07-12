@@ -1,12 +1,15 @@
 import fs from "node:fs/promises";
 
+import { isSourceParseSupported } from "../adapters/registry.js";
 import {
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
 import { writePair } from "../interchange/pairs.js";
 import type { ConversationMeta } from "../models/conversation.js";
-import { getRawConversationPath, BUILTIN_SOURCES } from "../utils/paths.js";
+import type { ClogWarning } from "../models/warnings.js";
+import { getRawConversationPath } from "../utils/paths.js";
+import { validateSourceKey } from "../utils/source-keys.js";
 import {
   conversationToRemoteMeta,
   serializeRemoteMeta,
@@ -30,6 +33,7 @@ export interface ChangeRecord {
 
 export interface ExportStats {
   changes: ChangeRecord[];
+  warnings: ClogWarning[];
 }
 
 export async function collectSameAuthorSavedIdentities(
@@ -48,15 +52,16 @@ export async function exportAuthorToCheckout(
   author: string,
   preReconcileSameAuthorIds: Set<string>,
 ): Promise<ExportStats> {
-  const stats: ExportStats = { changes: [] };
+  const stats: ExportStats = { changes: [], warnings: [] };
 
-  const ownSaved = await withDb((db) =>
+  const ownSavedRows = await withDb((db) =>
     listConversationsInDb(db, {
       states: ["saved"],
       author,
       origin: "local",
     }),
   );
+  const ownSaved = selectExportableConversations(ownSavedRows, stats.warnings);
 
   const expectedBySource = new Map<string, Map<string, ConversationMeta>>();
   for (const conversation of ownSaved) {
@@ -117,7 +122,7 @@ export async function exportAuthorToCheckout(
   const sourceDirs = await listSourceDirs(authorDir);
 
   for (const source of sourceDirs) {
-    if (!isSupportedSource(source)) {
+    if (!isSourceParseSupported(source)) {
       continue;
     }
 
@@ -236,8 +241,40 @@ function collectPairIds(files: string[]): Set<string> {
   return ids;
 }
 
-function isSupportedSource(source: string): boolean {
-  return (BUILTIN_SOURCES as readonly string[]).includes(source);
+function selectExportableConversations(
+  conversations: ConversationMeta[],
+  warnings: ClogWarning[],
+): ConversationMeta[] {
+  const exportable: ConversationMeta[] = [];
+  const warnedUnsupportedSources = new Set<string>();
+
+  for (const conversation of conversations) {
+    if (isSourceParseSupported(conversation.source)) {
+      exportable.push(conversation);
+      continue;
+    }
+
+    const sourceValidation = validateSourceKey(conversation.source);
+    if (sourceValidation.ok) {
+      if (!warnedUnsupportedSources.has(conversation.source)) {
+        warnedUnsupportedSources.add(conversation.source);
+        warnings.push({
+          code: "unsupported_source",
+          message: `Skipping local saved conversations from unsupported source "${conversation.source}" during sync push - this clog build cannot export that source.`,
+          source: conversation.source,
+        });
+      }
+      continue;
+    }
+
+    warnings.push({
+      code: "pair_invalid_metadata",
+      message: `Skipping local saved conversation ${conversation.id.slice(0, 8)} during sync push - stored source key "${conversation.source}" is invalid.`,
+      conversation: { id: conversation.id, source: conversation.source },
+    });
+  }
+
+  return exportable;
 }
 
 export interface CommitMessageArgs {

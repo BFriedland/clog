@@ -180,6 +180,7 @@ export async function runSyncPush(): Promise<void> {
 
   // Export phase: write local state to checkout.
   const exportStats = await exportAuthorToCheckout(config.author, preReconcileSameAuthorIds);
+  renderWarnings(exportStats.warnings);
 
   // Commit and push.
   await gitAddAll(getRemoteRoot());
@@ -190,7 +191,7 @@ export async function runSyncPush(): Promise<void> {
     const head = await gitRevParseHead(getRemoteRoot());
     await updateLastSyncHead(head);
     process.stdout.write(
-      "Nothing to push — all saved conversations are already synced.\n",
+      "Nothing to push — all supported saved conversations are already synced.\n",
     );
     return;
   }

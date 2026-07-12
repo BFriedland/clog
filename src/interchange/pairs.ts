@@ -3,13 +3,13 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { getAdapter } from "../adapters/registry.js";
+import { getAdapter, isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
 import type { ConversationMeta, Message, SummaryExtraction } from "../models/conversation.js";
 import { summaryExtractionSchema, summaryKindSchema } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
-import { BUILTIN_SOURCES } from "../utils/paths.js";
+import { validateSourceKey } from "../utils/source-keys.js";
 
 const META_SUFFIX = ".meta.json";
 const JSONL_SUFFIX = ".jsonl";
@@ -27,6 +27,21 @@ const isoTimestamp = z
     { message: "must be an ISO 8601 timestamp" },
   );
 
+const sourceKeySchema = z.string().superRefine((value, ctx) => {
+  const validation = validateSourceKey(value);
+  if (validation.ok) {
+    return;
+  }
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      validation.reason === "reserved_path_name"
+        ? "must not be a reserved path name"
+        : "must match source-key syntax",
+  });
+});
+
 const pairMetadataInputSchema = z.object({
   id: z.string().min(1),
   title: z.string(),
@@ -38,7 +53,7 @@ const pairMetadataInputSchema = z.object({
   projectName: z.string().nullable(),
   savedAt: isoTimestamp,
   modifiedAt: isoTimestamp,
-  source: z.enum(BUILTIN_SOURCES),
+  source: sourceKeySchema,
   createdAt: isoTimestamp,
   slug: z.string().nullable(),
 });
@@ -255,6 +270,19 @@ export async function validatePair(
         message: `Skipping conversation pair - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
         pair: pairWarning,
         path: pair.metaPath,
+      },
+    };
+  }
+
+  if (!isSourceParseSupported(meta.source)) {
+    return {
+      kind: "invalid",
+      warning: {
+        code: "unsupported_source",
+        message: `Skipping conversation pair ${pair.normalizedRelativePath} - source "${meta.source}" is not supported by this clog build.`,
+        pair: { author: meta.author, source: meta.source, id: meta.id },
+        path: pair.metaPath,
+        source: meta.source,
       },
     };
   }

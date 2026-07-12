@@ -441,6 +441,26 @@ describe("sync pull reconciliation", () => {
     expect(await getConversationById(id)).toBeNull();
   });
 
+  it("collapses invalid source directory warnings to one warning per directory", async () => {
+    const source = "Bad Source";
+    await writeRemotePair("alice", source, "a6666666-5555-5555-5555-666666666666", {
+      title: "First invalid source",
+      messageCount: 1,
+    });
+    await writeRemotePair("alice", source, "a6666666-5656-5656-5656-666666666666", {
+      title: "Second invalid source",
+      messageCount: 1,
+    });
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    const warnings = stats.warnings.filter((w) => w.code === "pair_layout_mismatch");
+    expect(stats.inserted).toBe(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain(`"alice/${source}"`);
+    expect(warnings[0]?.message).toContain("not a valid source key");
+  });
+
   it("preserves an existing row when a pair is relocated to the wrong author directory", async () => {
     const id = "a6767676-6767-6767-6767-676767676767";
     await writeRemotePair("alice", "claude-code", id, {
@@ -484,6 +504,90 @@ describe("sync pull reconciliation", () => {
     expect(stats.warnings.some((w) => w.code === "pair_layout_mismatch")).toBe(false);
     const row = await getConversationById(id);
     expect(row?.title).toBe("Original source");
+  });
+
+  it("protects an existing unknown-source row when a complete unknown-source pair is present", async () => {
+    const id = "a6767676-6969-6969-6969-676767676767";
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation(remoteConversation({
+      id,
+      source: "future.agent",
+      title: "Future source row",
+      timestamp,
+    }));
+    await writeRemotePair("alice", "future.agent", id, {
+      title: "Future source pair",
+      messageCount: 2,
+    });
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    expect(stats.inserted).toBe(0);
+    expect(stats.updated).toBe(0);
+    expect(stats.deleted).toBe(0);
+    expect(stats.warnings.filter((w) => w.code === "unsupported_source")).toHaveLength(1);
+    const row = await getConversationById(id);
+    expect(row?.title).toBe("Future source row");
+  });
+
+  it("protects a JSONL-only unknown-source path identity", async () => {
+    const id = "a6767676-7070-7070-7070-676767676767";
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation(remoteConversation({
+      id,
+      source: "future.agent",
+      title: "JSONL-only future row",
+      timestamp,
+    }));
+
+    const sourceDir = path.join(getRemoteRoot(), "alice", "future.agent");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, `${id}.jsonl`), "not parsed for unknown sources\n", "utf8");
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    expect(stats.deleted).toBe(0);
+    expect(stats.warnings.filter((w) => w.code === "unsupported_source")).toHaveLength(1);
+    expect(await getConversationById(id)).not.toBeNull();
+  });
+
+  it("protects readable metadata identities from schema-invalid unknown-source metadata", async () => {
+    const pathId = "a6767676-7171-7171-7171-676767676767";
+    const metaId = "a6767676-7272-7272-7272-676767676767";
+    const timestamp = "2026-02-01T10:00:00.000Z";
+
+    await insertConversation(remoteConversation({
+      id: pathId,
+      source: "future.agent",
+      title: "Unknown path identity",
+      timestamp,
+    }));
+    await insertConversation(remoteConversation({
+      id: metaId,
+      source: "other.future",
+      title: "Unknown metadata identity",
+      timestamp,
+    }));
+
+    const sourceDir = path.join(getRemoteRoot(), "alice", "future.agent");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, `${pathId}.meta.json`),
+      `${JSON.stringify({
+        id: metaId,
+        source: "other.future",
+        title: "Missing required metadata fields",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(sourceDir, `${pathId}.jsonl`), "not parsed for unknown sources\n", "utf8");
+
+    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+
+    expect(stats.deleted).toBe(0);
+    expect(stats.warnings.filter((w) => w.code === "unsupported_source")).toHaveLength(1);
+    expect(await getConversationById(pathId)).not.toBeNull();
+    expect(await getConversationById(metaId)).not.toBeNull();
   });
 
   it("protects an existing row when a pair is present directly under an author directory", async () => {

@@ -21,6 +21,7 @@ import {
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
+import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { applyMigrations } from "./schema.js";
 import { unsafeUpdateLocalConversationInDb } from "./unsafe-conversations.js";
 
@@ -191,19 +192,22 @@ export async function browseValues(
 export async function resolveConversationId(
   input: string,
 ): Promise<ResolvedConversationId> {
-  const parsed = parseResolvableId(input);
+  const parsed = parseSourceQualifiedId(input);
+  if (!parsed.ok) {
+    throw new ClogError(`Invalid source-qualified ID "${input}".`);
+  }
 
-  if (parsed.prefix.length < 4) {
+  if (parsed.value.prefix.length < 4) {
     throw new ClogError("Conversation IDs must use at least 4 characters.");
   }
 
   return withDb((db) => {
     const filters = ["id LIKE ?"];
-    const params: unknown[] = [`${parsed.prefix}%`];
+    const params: unknown[] = [`${parsed.value.prefix}%`];
 
-    if (parsed.source) {
+    if (parsed.value.source) {
       filters.push("source = ?");
-      params.push(parsed.source);
+      params.push(parsed.value.source);
     }
 
     const result = db.exec(
@@ -594,23 +598,6 @@ export async function clearSavedIndexedAt(): Promise<void> {
   await withDb((db) => {
     db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'saved'");
   });
-}
-
-function parseResolvableId(input: string): { prefix: string; source: string | null } {
-  const atIndex = input.lastIndexOf("@");
-
-  if (atIndex === -1) {
-    return { prefix: input, source: null };
-  }
-
-  const prefix = input.slice(0, atIndex);
-  const source = input.slice(atIndex + 1);
-
-  if (!prefix || !source) {
-    throw new ClogError(`Invalid source-qualified ID "${input}".`);
-  }
-
-  return { prefix, source };
 }
 
 function buildAmbiguousIdMessage(

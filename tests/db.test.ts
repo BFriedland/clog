@@ -171,6 +171,21 @@ describe("db", () => {
     });
   });
 
+  it("resolves source-qualified ids with open source-key syntax", async () => {
+    await insertConversation(
+      makeConversation({
+        id: "a1240000-1234-1234-1234-123456789012",
+        sourceId: "a1240000-1234-1234-1234-123456789012",
+        source: "future.agent",
+      }),
+    );
+
+    await expect(resolveConversationId("a124@future.agent")).resolves.toEqual({
+      id: "a1240000-1234-1234-1234-123456789012",
+      source: "future.agent",
+    });
+  });
+
   it("browses saved authors and tags", async () => {
     await insertConversation(
       makeConversation({
@@ -571,12 +586,15 @@ describe("db", () => {
   it("resolveConversationId reports 'No conversation matches' when nothing matches", async () => {
     await insertConversation(makeConversation());
     await expect(resolveConversationId("9999")).rejects.toThrow(/No conversation matches/);
+    await expect(resolveConversationId("zzzz@claude-code")).rejects.toThrow(/No conversation matches/);
   });
 
   it("resolveConversationId rejects invalid source-qualified formats like 'prefix@' and '@source'", async () => {
     await insertConversation(makeConversation());
     await expect(resolveConversationId("abcd@")).rejects.toThrow(/Invalid source-qualified/);
     await expect(resolveConversationId("@claude-code")).rejects.toThrow(/Invalid source-qualified/);
+    await expect(resolveConversationId("abcd@CLAUDE-CODE")).rejects.toThrow(/Invalid source-qualified/);
+    await expect(resolveConversationId("abcd@extra@claude-code")).rejects.toThrow(/Invalid source-qualified/);
   });
 
   it("resolveConversationId reports no-match when the source is unknown", async () => {

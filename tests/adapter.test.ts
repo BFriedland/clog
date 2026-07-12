@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { CodexCliAdapter } from "../src/adapters/codex-cli.js";
+import { getAdapter } from "../src/adapters/registry.js";
 import { getDefaultConfig } from "../src/config/index.js";
 import type { ClogWarning } from "../src/models/warnings.js";
 import { writeJsonl, writeRawJsonlLines } from "./helpers/fixtures.js";
@@ -20,6 +21,12 @@ describe("adapters", () => {
 
   afterEach(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("rejects unsupported source keys that collide with object prototype properties", () => {
+    expect(() => getAdapter("constructor", getDefaultConfig("alice"))).toThrow(
+      'Unsupported source "constructor"',
+    );
   });
 
   it("Claude discovery extracts metadata from the first cwd and summary line", async () => {

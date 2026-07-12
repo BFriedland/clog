@@ -112,14 +112,14 @@ describe("sync meta", () => {
     expect(yearOnly.ok).toBe(false);
   });
 
-  it("rejects meta with an unsupported source key", () => {
+  it("accepts meta with a syntactically valid unknown source key", () => {
     const baseline = conversationToRemoteMeta(makeConversation());
     const result = parseRemoteMeta(
-      JSON.stringify({ ...baseline, source: "not-a-real-source" }),
+      JSON.stringify({ ...baseline, source: "not-a-real.source" }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toMatch(/source/);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.meta.source).toBe("not-a-real.source");
     }
   });
 

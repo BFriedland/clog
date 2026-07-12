@@ -280,6 +280,87 @@ describe("exportAuthorToCheckout", () => {
     await expect(fs.stat(stub)).resolves.toBeTruthy();
   });
 
+  it("does not retract complete pairs under unknown source directories", async () => {
+    const source = "future.agent";
+    const id = "a8888888-1111-1111-1111-111111111111";
+    const sourceDir = path.join(getRemoteRoot(), "alice", source);
+    const metaPath = path.join(sourceDir, `${id}.meta.json`);
+    const jsonlPath = path.join(sourceDir, `${id}.jsonl`);
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      metaPath,
+      `${JSON.stringify({
+        id,
+        title: "Future source pair",
+        summary: "",
+        summaryKind: "none",
+        summaryExtraction: null,
+        tags: [],
+        author: "alice",
+        projectName: "repo",
+        savedAt: timestamp,
+        modifiedAt: timestamp,
+        source,
+        createdAt: timestamp,
+        slug: null,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(jsonlPath, "not parsed for unknown sources\n", "utf8");
+
+    const stats = await exportAuthorToCheckout("alice", new Set());
+
+    expect(stats.changes.find((c) => c.kind === "retracted")).toBeUndefined();
+    await expect(fs.stat(metaPath)).resolves.toBeTruthy();
+    await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
+  });
+
+  it("skips local saved rows from unsupported sources during export", async () => {
+    const id = "a8888888-8888-8888-8888-888888888888";
+    const timestamp = "2026-02-01T10:00:00.000Z";
+    await insertConversation({
+      id,
+      sourceId: id,
+      source: "future.agent",
+      title: "Future source",
+      summary: "",
+      summaryKind: "none",
+      summaryExtraction: null,
+      author: "alice",
+      projectName: "repo",
+      projectPath: null,
+      tags: [],
+      slug: null,
+      createdAt: timestamp,
+      discoveredAt: timestamp,
+      modifiedAt: timestamp,
+      state: "saved",
+      savedAt: timestamp,
+      savedMessageCount: 1,
+      saveVersion: 1,
+      sourcePath: path.join(tempDir, "missing-future-source.jsonl"),
+      filePath: path.join(tempDir, "missing-future-source.jsonl"),
+      sourceMtime: null,
+      indexedAt: null,
+      originKind: "local",
+      originRef: null,
+    });
+
+    const stats = await exportAuthorToCheckout("alice", new Set());
+
+    expect(stats.changes).toEqual([]);
+    expect(stats.warnings).toMatchObject([
+      {
+        code: "unsupported_source",
+        source: "future.agent",
+      },
+    ]);
+    await expect(
+      fs.stat(path.join(getRemoteRoot(), "alice", "future.agent", `${id}.meta.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reports 'added' (not 'updated') when only one file of a pair previously existed", async () => {
     const conversation = await insertLocalSaved({
       id: "a9999999-9999-9999-9999-999999999999",

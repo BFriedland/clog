@@ -204,6 +204,63 @@ describe("conversation pair interchange", () => {
       expect(result.meta.summaryExtraction).toBeNull();
     }
   });
+
+  it("accepts syntactically valid unknown source keys in pair metadata", () => {
+    const id = "b1111111-1111-1111-1111-111111111111";
+    const result = parsePairMetadata(
+      serializePairMetadata({
+        ...makePairMetadata(id),
+        source: "future.agent",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.meta.source).toBe("future.agent");
+    }
+  });
+
+  it("rejects invalid source-key syntax in pair metadata", () => {
+    const id = "b1212121-1212-1212-1212-121212121212";
+    const result = parsePairMetadata(
+      JSON.stringify({
+        ...makePairMetadata(id),
+        source: "Future.Agent",
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/source/);
+      expect(result.reason).toMatch(/source-key syntax/);
+    }
+  });
+
+  it("reports unsupported_source for complete pairs from valid unknown sources", async () => {
+    const id = "b1313131-1313-1313-1313-131313131313";
+    await writePair({
+      jsonlPath: path.join(tempDir, `${id}.jsonl`),
+      metaPath: path.join(tempDir, `${id}.meta.json`),
+      jsonl: "not parsed for unknown sources\n",
+      meta: {
+        ...makePairMetadata(id),
+        source: "future.agent",
+      },
+    });
+
+    const [pair] = await scanPairs(tempDir);
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation.kind).toBe("invalid");
+    if (validation.kind === "invalid") {
+      expect(validation.warning.code).toBe("unsupported_source");
+      expect(validation.warning.pair).toEqual({
+        author: "alice",
+        source: "future.agent",
+        id,
+      });
+    }
+  });
 });
 
 async function writeCompletePair(pairDir: string, id: string): Promise<void> {

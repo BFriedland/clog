@@ -360,7 +360,7 @@ Full conversation IDs are UUIDs from the source system (e.g., `c7044ea5-c019-44d
 
 - **Display:** All commands that show IDs use the first 8 characters by default (e.g., `c7044ea5`).
 - **Input:** Any command that accepts an ID resolves short prefixes by querying the database with a `LIKE 'prefix%'` match. If the prefix is ambiguous (matches multiple conversations), the command errors with a message showing copy-pasteable disambiguation candidates.
-- **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea5@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, unknown sources, and prefixes shorter than the minimum are invalid. Source-qualified input restricts resolution to the named source.
+- **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea5@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, extra `@` characters in the prefix, source qualifiers with invalid source-key syntax, and prefixes shorter than the minimum are invalid. A syntactically valid source qualifier does not need to be parse-supported by this clog build; it restricts resolution to database rows whose stored source key exactly matches the qualifier.
 - **Minimum prefix length:** 4 characters. Shorter prefixes are rejected as ID resolutions. In selector-bearing commands a bare token under 4 characters can still resolve as a project name (see §5.1.1), but the cross-space ambiguity check still applies: if the same short token also matches any conversation ID prefix, the command errors with the cross-space ambiguity message rather than silently choosing the project.
 
 Ambiguous unqualified prefixes should name the conflicting sources:
@@ -517,7 +517,22 @@ Phase 1 has two built-in sources:
 
 For Codex CLI, `~/.codex/` is resolved via the user home directory on every platform (`$HOME/.codex/` on macOS/Linux, `%USERPROFILE%\.codex\` on Windows).
 
-Source support and local discovery are separate concepts. Both sources are supported by the product; `sources.<name>.enabled` controls whether local discovery runs for that source on this machine.
+Source keys are interchange identifiers and path segments, not display names.
+They are lowercase ASCII strings matching
+`^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,78}[a-z0-9])$`. Source keys must not use
+Windows device names as their full basename or before a dot, case-insensitively:
+`con`, `prn`, `aux`, `nul`, `com1` through `com9`, and `lpt1` through `lpt9`.
+Source-key identity comparison is byte-for-byte after syntax validation; clog
+does not case-fold, normalize Unicode, or apply aliases.
+
+Source-key syntax and parser support are separate concepts. A syntactically
+valid source key can appear in pair metadata or a git checkout even when the
+current clog build has no adapter for that source. The adapter registry decides
+whether a source is parse-supported by this build.
+
+Source support and local discovery are separate concepts. Both built-in sources
+are supported by the product; `sources.<name>.enabled` controls whether local
+discovery runs for that source on this machine.
 
 Each adapter's `watchPaths()` returns the configured source paths for that source, or its built-in default paths when config does not override them.
 
@@ -525,6 +540,7 @@ All discovery and parsing must go through a source-aware adapter registry or equ
 
 ```typescript
 getAdapter(source: string, config: Config): SourceAdapter
+isSourceParseSupported(source: string): boolean
 getEnabledAdapters(config: Config): SourceAdapter[]
 ```
 
@@ -1223,7 +1239,14 @@ interface ClogWarning {
 
 CLI output may group warnings by `code` to avoid pages of repeated text. MCP surfaces the same warnings in a top-level `warnings` array on tools that perform scanning or git reconciliation; warnings are never injected into transcript text.
 
-Source discovery keeps source-specific codes such as `malformed_jsonl`, `missing_source_id`, `source_id_mismatch`, `path_filter_without_project`, `unsupported_source`, and `missing_source_file`. Conversation file-pair validation and reconciliation use the `pair_*` codes above. A filename stem versus `meta.id` mismatch is `pair_id_mismatch` and the message names both values. A valid pair in the wrong git author or source directory is `pair_layout_mismatch`, not invalid metadata.
+Source discovery keeps source-specific codes such as `malformed_jsonl`,
+`missing_source_id`, `source_id_mismatch`, `path_filter_without_project`, and
+`missing_source_file`. Conversation file-pair validation and reconciliation use
+the `pair_*` codes above for malformed or layout-bad pairs, and
+`unsupported_source` when pair metadata names a syntactically valid source key
+that this clog build cannot parse. A filename stem versus `meta.id` mismatch is
+`pair_id_mismatch` and the message names both values. A valid pair in the wrong
+git author or source directory is `pair_layout_mismatch`, not invalid metadata.
 
 This structured warning contract applies to source discovery, conversation file-pair validation, file import, and git reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
 
@@ -1383,7 +1406,7 @@ The command currently checks:
 
 1. SQLite `integrity_check`
 2. schema version
-3. recognized local `source` values
+3. syntactically valid stored `source` values
 4. built-in-source `id == source_id`
 5. valid row `state`
 6. parseable `tags_json`
@@ -1401,7 +1424,7 @@ The command currently checks:
 
 Notes:
 
-- If a row uses an unrecognized `source`, `plunge` reports that and does not emit additional adapter-dependent findings for that row.
+- If a row uses a syntactically invalid `source`, `plunge` reports that as database corruption. A row whose `source` is syntactically valid but not parse-supported by this clog build is not corrupt for that reason alone; adapter-dependent checks skip it.
 - Checkpoint drift where the current parsed message count is below `saved_message_count` is informational, not corruption. This can happen when parser projection evolves without raw-file damage. The recovery path is to inspect the conversation and resave it so the stored checkpoint reflects the current parser output.
 
 Human-readable output is grouped in stable subsystem order:
@@ -1730,7 +1753,8 @@ Pair export is valid only with `--to-dir`. It exports saved rows of any
 provenance kind when their resolved content path is readable. The JSONL file is
 copied byte-for-byte from the same path used by `clog show` and `clog path`; it
 is not parsed and reserialized. Pair metadata uses the shared interchange schema
-from §11.2. It includes save-time metadata such as `summaryKind` and
+from §11.2 and validates the stored `source` value by source-key syntax rather
+than by adapter membership. It includes save-time metadata such as `summaryKind` and
 `summaryExtraction`, and it omits local database fields such as `originKind`,
 `originRef`, `projectPath`, `discoveredAt`, `indexedAt`, managed content paths,
 and parser checkpoints. The output layout is:
@@ -1829,6 +1853,12 @@ more than one member, emitting `pair_duplicate_identity` and choosing no
 traversal-order winner. One valid pair plus one invalid pair for the same
 identity is not a duplicate. Under `--own`, a duplicate group is rejected before
 the author guard runs.
+
+A pair whose source key is syntactically valid but not parse-supported by this
+clog build is a failure-class candidate for `clog fill`. Default fill does not
+import it as a `file` row, and `clog fill --own` does not restore it as a
+`local` row, because fill cannot parse the JSONL or compute `savedMessageCount`.
+`--allow-partial` may skip that candidate and continue with other valid pairs.
 
 Fill's reject-all here deliberately differs from git reconciliation's first-wins
 (§11.8): git's checkout is author-partitioned, so "first" is a meaningful, stable
@@ -2194,7 +2224,7 @@ The MCP server allows coding agents (Claude Code, Codex, etc.) to query the conv
 
 Phase 1 provides browsing, retrieval, and curation. Semantic search is added in Phase 2 (§10).
 
-MCP tools that accept a conversation ID use the same resolver grammar as CLI commands (§3.3): full UUID, 4+ character prefix, or source-qualified `prefix@source` / `uuid@source`. Source-qualified IDs restrict resolution to the named source; ambiguous unqualified prefixes return copy-pasteable `id@source` candidates.
+MCP tools that accept a conversation ID use the same resolver grammar as CLI commands (§3.3): full UUID, 4+ character prefix, or source-qualified `prefix@source` / `uuid@source`. Source-qualified IDs validate the source qualifier with the source-key syntax contract and restrict resolution to exact stored source-key matches; ambiguous unqualified prefixes return copy-pasteable `id@source` candidates.
 
 ```typescript
 // List saved conversations with optional filters
@@ -3014,13 +3044,14 @@ validation can report `pair_incomplete`. Results are ordered by the normalized
 relative path text using raw character order, so output does not depend on
 filesystem or locale ordering.
 
-Pair validity requires both files to be present, metadata to be valid JSON with
-required fields and ISO timestamps, `meta.source` to be a supported source key,
-both filename stems to equal `meta.id`, and the JSONL to parse through the
-adapter selected by `meta.source`. Pair validation does not perform
-source-native embedded-ID cross-validation; source adapters still apply their
-own discovery-time native-ID checks, such as Codex `session_meta.payload.id`
-validation.
+Pair metadata validity requires the metadata file to be valid JSON with
+required fields and ISO timestamps and `meta.source` to be a syntactically valid
+source key. A pair is importable only when both files are present, both filename
+stems equal `meta.id`, `meta.source` is parse-supported by this clog build, and
+the JSONL parses through the adapter selected by `meta.source`. Pair validation
+does not perform source-native embedded-ID cross-validation; source adapters
+still apply their own discovery-time native-ID checks, such as Codex
+`session_meta.payload.id` validation.
 
 Pair writing uses the shared safe writer: `.jsonl` is written first, then
 `.meta.json`, each through an atomic temp-file-and-rename write. A complete
@@ -3029,10 +3060,17 @@ metadata file therefore implies its content file is present.
 The git remote path tuple is `(author, source, id)`. The source directory and filename are part of the remote storage contract:
 
 - `<author>` is the author directory for the person who saved the conversation
-- `<source>` must be a supported source key such as `claude-code` or `codex-cli`
+- `<source>` must be a syntactically valid source key such as `claude-code` or `codex-cli`
 - `<id>` is the source-native conversation ID and must match `meta.id`
 - `meta.source` must match the `<source>` directory
 - the `.jsonl` and `.meta.json` paths for a conversation must share the same `(author, source, id)` tuple
+
+A syntactically valid source directory whose source key is not parse-supported
+by this clog build is an unknown-source directory. Git reconciliation scans it
+far enough to warn once, skip import, and protect credible identities from
+deletion. A source directory with invalid source-key syntax is checkout layout
+damage, not an unknown source, and is reported once per author/source
+directory.
 
 Git layout invariants are git-specific. In the sync repo, `meta.source` must
 match the `<source>` directory and `meta.author` must match the `<author>`
@@ -3065,7 +3103,17 @@ Import identity is `(source, id)`, not `id` alone.
 }
 ```
 
-On git pull and file fill, clog reads `.meta.json` files for metadata and parses each paired JSONL once for validation. Import uses the metadata for DB fields, and the JSONL must parse successfully through the source adapter so clog can treat the imported conversation as a readable saved artifact. Imported conversations derive their local `savedMessageCount` from the parsed `Message[]` length at import/update time; this checkpoint is not stored in pair metadata. Git reconciliation derives the row fields below; `clog fill` uses the same pair metadata and validation but derives row fields according to §5.7.4.
+On git pull and file fill, clog reads `.meta.json` files for metadata and parses
+each paired JSONL once when the source is parse-supported by this clog build.
+Import uses the metadata for DB fields, and the JSONL must parse successfully
+through the source adapter so clog can treat the imported conversation as a
+readable saved artifact. A pair whose `source` is syntactically valid but not
+parse-supported is skipped with `unsupported_source`; it is not imported as a
+git or file row. Imported conversations derive their local `savedMessageCount`
+from the parsed `Message[]` length at import/update time; this checkpoint is not
+stored in pair metadata. Git reconciliation derives the row fields below; `clog
+fill` uses the same pair metadata and validation but derives row fields
+according to §5.7.4.
 
 **meta.json field reference:**
 
@@ -3081,7 +3129,7 @@ On git pull and file fill, clog reads `.meta.json` files for metadata and parses
 | `projectName` | string or null | User-facing project name the conversation is associated with. Pair metadata does not include local project paths |
 | `savedAt` | string | ISO timestamp of the time the conversation was saved to clog |
 | `modifiedAt` | string | ISO timestamp of the last metadata edit or content-change marker |
-| `source` | string | Source adapter (e.g., `"claude-code"`) |
+| `source` | string | Source key (e.g., `"claude-code"`) |
 | `createdAt` | string | Earliest message timestamp — when the conversation started |
 | `slug` | string or null | Session slug from the source (if available) |
 
@@ -3089,10 +3137,13 @@ Pair metadata is valid only when:
 
 - the metadata file is valid JSON
 - all required fields are present with the expected types
-- the paired JSONL parses successfully through the adapter selected by `source`
 - `savedAt`, `modifiedAt`, and `createdAt` are ISO timestamp strings
-- `source` is a supported source key
+- `source` is a syntactically valid source key
 - `id` matches the filename stem in both the `.meta.json` and `.jsonl` path
+
+Pair import additionally requires `source` to be parse-supported by the current
+clog build and the paired JSONL to parse successfully through the adapter
+selected by `source`.
 
 Git reconciliation adds layout validation: `source` must match the source
 directory in the path, and `author` must match the author directory. A valid
@@ -3408,11 +3459,12 @@ This complements the import-side guards in §11.8 (`clogignore` import gating an
 
 **Export phase** (write local state to checkout):
 
-4. For each local saved conversation (`origin_kind = 'local' AND state = 'saved'`) where `author = config.author`:
+4. For each local saved conversation (`origin_kind = 'local' AND state = 'saved'`) where `author = config.author` and `source` is parse-supported by this clog build:
    - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName`, `summaryKind`, and `summaryExtraction`, but not local-only `projectPath`, `originKind`, `originRef`, managed paths, or parser checkpoints
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
    - Use the shared pair writer, which writes JSONL first and metadata last
-5. For each complete conversation pair under a supported `<config.author>/<source>/` directory in checkout that doesn't correspond to a local saved conversation or any same-author saved identity in the pre-reconcile snapshot: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory.
+   A local saved row whose source key is syntactically valid but not parse-supported is skipped with a bounded `unsupported_source` warning because this build cannot publish a parseable pair for that source.
+5. For each complete conversation pair under a parse-supported `<config.author>/<source>` directory in checkout that doesn't correspond to a local saved conversation or any same-author saved identity in the pre-reconcile snapshot: delete the `.jsonl` and `.meta.json`. Track these as retractions for the output summary. Retraction scanning is limited to `config.author`'s directory; `sync push` must never delete files under another author directory or under source directories that are not parse-supported by this build.
 
 The export/retraction phase should use the lightest necessary touch:
 
@@ -3425,7 +3477,7 @@ The export/retraction phase should use the lightest necessary touch:
 **Commit and push phase:**
 
 5. `git add -A`
-6. If no changes: `"Nothing to push — all saved conversations are already synced."` Stop.
+6. If no changes: `"Nothing to push — all supported saved conversations are already synced."` Stop.
 7. `git commit` with auto-generated message (see §11.14).
 8. `git push`. If rejected: stop, inform user: `"Push was rejected — likely a simultaneous push from a teammate. Run 'clog sync push' again to retry."`
 9. Update `config.remote.lastSyncHead` with new HEAD.
@@ -3476,10 +3528,14 @@ If vector cleanup fails after the database transaction commits, reconciliation
 remains successful and prints a warning naming the affected short ID.
 
 The scanner walks the checkout by author directory, source directory, and
-conversation ID in code-point lexicographic order. Supported source directories
-are reconciled; unsupported source directories emit `unsupported_source` and are
-not modified. The scanner still protects credible supported identities found
-under unsupported directories when readable metadata exposes them.
+conversation ID in code-point lexicographic order. Parse-supported source
+directories are reconciled. Syntactically valid source directories whose source
+keys are not parse-supported emit one `unsupported_source` warning per
+`<author>/<source>` directory; any conversation pairs found there are skipped,
+and credible path and metadata identities still protect in-scope git rows from
+deletion. Source directories with invalid source-key syntax emit one
+`pair_layout_mismatch` warning per `<author>/<source>` directory; any
+conversation pairs found there are skipped and not imported.
 
 Reconciliation is scoped to the configured git remote only:
 
@@ -3512,6 +3568,7 @@ The authoritative reconciliation policy:
 | Complete valid pair, out-of-scope owner | Any | Skip; the existing owner takes precedence |
 | Complete valid duplicate pairs in one checkout | Any | First valid pair wins by deterministic author/source/id order; later copies are skipped with a duplicate notice |
 | Pair matches the import subset of `clogignore` | Any | Skip import/update and treat the pair as present for deletion planning |
+| Syntactically valid unknown-source pair present | Any | Warn with `unsupported_source`, skip import/update, and protect credible identities from deletion |
 | Complete pair absent | Yes | Delete the in-scope git row |
 | Incomplete, invalid, or layout-mismatched pair present | Any | Warn, skip, leave DB rows unchanged, and protect credible identities from deletion |
 
@@ -3708,7 +3765,7 @@ clog: 2 authors — 50 added, 4 updated, 1 retracted
 
 Multi-author commits never list individual conversations, only per-author summaries. There is no cap on the number of per-author lines.
 
-**No changes:** If `git add -A` produces no changes, skip the commit entirely. Report: "Nothing to push — all saved conversations are already synced."
+**No changes:** If `git add -A` produces no changes, skip the commit entirely. Report: "Nothing to push — all supported saved conversations are already synced."
 
 The first line is always a readable summary for `git log --oneline`. The `+`/`~`/`-` prefixes echo diff conventions.
 

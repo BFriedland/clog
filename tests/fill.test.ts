@@ -179,6 +179,67 @@ describe("clog fill", () => {
     await expect(fs.stat(getImportConversationPath("claude-code", goodId))).resolves.toBeTruthy();
   });
 
+  it("treats unsupported-source pairs as failure-class candidates", async () => {
+    const goodId = "f1111111-1111-1111-1111-111111111111";
+    const unknownId = "f2222222-2222-2222-2222-222222222222";
+    await writePairFixture(pairDir, goodId, { author: "bob" }, 1);
+    await writePairFixture(pairDir, unknownId, { author: "bob", source: "future.agent" }, 1);
+
+    const dryRun = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--dry-run",
+    ]);
+
+    expect(dryRun.error).toBeNull();
+    expect(dryRun.exitCode).toBe(1);
+    expect(dryRun.stderr).toContain('source "future.agent" is not supported');
+    expect(dryRun.stderr).toContain("no conversations would be imported");
+    expect(await getConversationById(goodId)).toBeNull();
+    expect(await getConversationById(unknownId)).toBeNull();
+
+    const fullImport = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(fullImport.error).toBeNull();
+    expect(fullImport.exitCode).toBe(1);
+    expect(fullImport.stderr).toContain("fill found errors in the input directory");
+    expect(fullImport.stderr).toContain("no conversations were imported");
+    expect(await getConversationById(goodId)).toBeNull();
+    expect(await getConversationById(unknownId)).toBeNull();
+
+    const partialImport = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--allow-partial",
+    ]);
+
+    expect(partialImport.error).toBeNull();
+    expect(partialImport.exitCode).toBe(1);
+    expect(partialImport.stderr).toContain("Processed 2 conversation pairs");
+    expect(partialImport.stderr).toContain("(1 new; 1 skipped)");
+    expect(await getConversationById(goodId)).not.toBeNull();
+    expect(await getConversationById(unknownId)).toBeNull();
+
+    const ownDir = path.join(tempDir, "own-unknown-source-pairs");
+    const ownUnknownId = "f3333333-3333-3333-3333-333333333333";
+    await writePairFixture(ownDir, ownUnknownId, {
+      author: "alice",
+      source: "future.agent",
+    }, 1);
+
+    const ownImport = await runBuiltCommandCapturingError(buildFillCommand, [
+      ownDir,
+      "--own",
+      "--allow-partial",
+    ]);
+
+    expect(ownImport.error).toBeNull();
+    expect(ownImport.exitCode).toBe(1);
+    expect(ownImport.stderr).toContain('source "future.agent" is not supported');
+    expect(await getConversationById(ownUnknownId)).toBeNull();
+    await expect(
+      fs.stat(getRawConversationPath("future.agent", ownUnknownId)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects duplicate input identities without choosing a winner", async () => {
     const id = "a7777777-7777-7777-7777-777777777777";
     await writePairFixture(path.join(pairDir, "alice"), id, { author: "alice", title: "Alice" }, 1);

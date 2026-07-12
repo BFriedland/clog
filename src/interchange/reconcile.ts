@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { nowIso } from "../utils/time.js";
-import { BUILTIN_SOURCES } from "../utils/paths.js";
+import { isValidSourceKey } from "../utils/source-keys.js";
 import {
   readPairMetadata,
   scanPairs,
@@ -107,6 +108,21 @@ export async function scanGitCheckoutPairs(
 
   for (const scannedPair of pairs) {
     const pathInfo = getGitPathInfo(scannedPair);
+    const sourceDirectoryWarning = validateGitSourceDirectory(scannedPair, pathInfo);
+    if (sourceDirectoryWarning) {
+      results.push({
+        kind: "invalid",
+        scannedPair,
+        warning: sourceDirectoryWarning,
+        reportWarning: shouldReportInvalidPairWarning(pathInfo),
+        protectedIdentities: await getProtectedIdentities(
+          scannedPair,
+          sourceDirectoryWarning,
+          pathInfo,
+        ),
+      });
+      continue;
+    }
 
     if (scannedPair.metaExists && scannedPair.jsonlExists) {
       const parsedMeta = await readPairMetadata(scannedPair.metaPath);
@@ -401,7 +417,7 @@ async function scanGitPairTree(rootDir: string): Promise<{
   pairs: ScannedPair[];
   warnings: ClogWarning[];
 }> {
-  const warnings = await collectUnsupportedSourceWarnings(rootDir);
+  const warnings = await collectSourceDirectoryWarnings(rootDir);
   const pairs = await scanPairs(rootDir, {
     shouldDescend: ({ relativeDir, entryName }) => {
       const parts = relativeDir.split("/").filter(Boolean);
@@ -416,7 +432,7 @@ async function scanGitPairTree(rootDir: string): Promise<{
   return { pairs, warnings };
 }
 
-async function collectUnsupportedSourceWarnings(
+async function collectSourceDirectoryWarnings(
   rootDir: string,
 ): Promise<ClogWarning[]> {
   let authorEntries: Array<{ name: string; isDirectory: () => boolean }>;
@@ -450,19 +466,46 @@ async function collectUnsupportedSourceWarnings(
       .sort(compareCodePoints);
 
     for (const source of sourceNames) {
-      if (!isSupportedSource(source)) {
+      if (!isValidSourceKey(source)) {
         warnings.push({
-          code: "unsupported_source",
-          message: `Unsupported source directory "${author}/${source}" in remote checkout - skipping.`,
+          code: "pair_layout_mismatch",
+          message: `Invalid source directory "${author}/${source}" in remote checkout - the directory name is not a valid source key, so any conversation pairs found there were skipped.`,
           source,
         });
         continue;
       }
 
+      if (!isSourceParseSupported(source)) {
+        warnings.push({
+          code: "unsupported_source",
+          message: `Unsupported source directory "${author}/${source}" in remote checkout - any conversation pairs found there were skipped; matching rows are protected from deletion.`,
+          source,
+        });
+      }
     }
   }
 
   return warnings;
+}
+
+function validateGitSourceDirectory(
+  pair: ScannedPair,
+  pathInfo: GitPathInfo,
+): ClogWarning | null {
+  if (!pathInfo.author || !pathInfo.source || pathInfo.directoryDepth < 2) {
+    return null;
+  }
+
+  if (isValidSourceKey(pathInfo.source)) {
+    return null;
+  }
+
+  return {
+    code: "pair_layout_mismatch",
+    message: `Skipping remote conversation ${pair.stem} - source directory "${pathInfo.source}" is not a valid source key.`,
+    pair: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
+    paths: [pair.metaPath, pair.jsonlPath],
+  };
 }
 
 function validateGitLayoutMetadata(
@@ -511,17 +554,17 @@ async function getProtectedIdentities(
 ): Promise<SourceIdentity[]> {
   const identities: SourceIdentity[] = [];
 
-  if (pathInfo.source && isSupportedSource(pathInfo.source)) {
+  if (pathInfo.source && isValidSourceKey(pathInfo.source)) {
     identities.push({ source: pathInfo.source, id: pathInfo.id });
   }
 
-  if (warning.pair && isSupportedSource(warning.pair.source)) {
+  if (warning.pair && isValidSourceKey(warning.pair.source)) {
     identities.push({ source: warning.pair.source, id: warning.pair.id });
   }
 
   if (scannedPair.metaExists) {
     const identity = await readMetadataIdentity(scannedPair.metaPath);
-    if (identity && isSupportedSource(identity.source)) {
+    if (identity && isValidSourceKey(identity.source)) {
       identities.push(identity);
     }
   }
@@ -575,7 +618,7 @@ function addPathPairToWarning(
 }
 
 function shouldReportInvalidPairWarning(pathInfo: GitPathInfo): boolean {
-  return !(pathInfo.author && pathInfo.source && !isSupportedSource(pathInfo.source));
+  return !isUnknownSourceDirectory(pathInfo) && !isInvalidSourceDirectory(pathInfo);
 }
 
 function protectAll(
@@ -666,8 +709,22 @@ function identityKey(source: string, id: string): string {
   return `${source}\u0000${id}`;
 }
 
-function isSupportedSource(source: string): boolean {
-  return (BUILTIN_SOURCES as readonly string[]).includes(source);
+function isUnknownSourceDirectory(pathInfo: GitPathInfo): boolean {
+  return (
+    pathInfo.author != null &&
+    pathInfo.source != null &&
+    isValidSourceKey(pathInfo.source) &&
+    !isSourceParseSupported(pathInfo.source)
+  );
+}
+
+function isInvalidSourceDirectory(pathInfo: GitPathInfo): boolean {
+  return (
+    pathInfo.author != null &&
+    pathInfo.source != null &&
+    pathInfo.directoryDepth >= 2 &&
+    !isValidSourceKey(pathInfo.source)
+  );
 }
 
 function compareCodePoints(left: string, right: string): number {

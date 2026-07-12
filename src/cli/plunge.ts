@@ -20,6 +20,7 @@ import {
 } from "../utils/paths.js";
 import { pathExists } from "../utils/fs.js";
 import { nowIso } from "../utils/time.js";
+import { validateSourceKey, type SourceKeyValidationError } from "../utils/source-keys.js";
 import { formatForSingleLine } from "./common.js";
 import { isRecognizedClogIgnoreRule } from "./clogignore.js";
 
@@ -382,13 +383,14 @@ async function inspectDatabase(
 
   const rows = getConversationRows(db);
   const localRows = rows.filter(isLocalConversation);
-  for (const row of localRows) {
-    if (!BUILTIN_SOURCE_SET.has(row.source)) {
+  for (const row of rows) {
+    const sourceValidation = validateSourceKey(row.source);
+    if (!sourceValidation.ok) {
       findings.push(conversationFinding(row, {
         check: 3,
         subsystem: "database",
         severity: "corruption",
-        message: `Local row uses unrecognized source "${row.source}".`,
+        message: `Row uses invalid source key "${row.source}" (${formatSourceKeyValidationReason(sourceValidation.reason)}).`,
         recovery: "Investigate this row manually.",
         sortKey: row.id,
       }));
@@ -799,6 +801,12 @@ function conversationFinding(
     conversationProject: row.project_name,
     conversationOrigin: formatConversationOrigin(row),
   };
+}
+
+function formatSourceKeyValidationReason(reason: SourceKeyValidationError): string {
+  return reason === "reserved_path_name"
+    ? "reserved path name"
+    : "invalid syntax";
 }
 
 function tableExists(db: Database, tableName: string): boolean {

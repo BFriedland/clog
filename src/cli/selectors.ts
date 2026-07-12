@@ -1,5 +1,6 @@
 import type { ConversationMeta } from "../models/conversation.js";
 import { ClogError, UsageError } from "../utils/errors.js";
+import { isValidSourceKey, parseSourceQualifiedId } from "../utils/source-keys.js";
 
 export interface SelectorResolutionOptions {
   commandName: string;
@@ -126,18 +127,20 @@ function findConversationIdMatches(
   token: string,
 ): ConversationMeta[] {
   const trimmed = token.trim();
-  const [rawPrefix, rawSource] = trimmed.split("@", 2);
-  const prefix = rawPrefix.toLowerCase();
-  const source = rawSource?.toLowerCase();
+  const parsed = parseSourceQualifiedId(trimmed);
 
-  if (rawSource !== undefined) {
+  if (!parsed.ok) {
+    throw new UsageError(
+      `Invalid source-qualified conversation ID "${token}". Use "<prefix>@<source>".`,
+    );
+  }
+
+  const prefix = parsed.value.prefix.toLowerCase();
+  const source = parsed.value.source;
+
+  if (source !== null) {
     // Explicit `prefix@source` syntax commits the token to the ID space, so
     // length / shape problems are reported instead of falling through.
-    if (source?.length === 0) {
-      throw new UsageError(
-        `Invalid source-qualified conversation ID "${token}". Use "<prefix>@<source>".`,
-      );
-    }
     if (prefix.length < 4) {
       throw new UsageError(
         `Conversation IDs must use at least 4 characters, got "${token}".`,
@@ -146,7 +149,7 @@ function findConversationIdMatches(
   }
 
   return candidates.filter((conversation) => {
-    if (source && conversation.source.toLowerCase() !== source) {
+    if (source !== null && conversation.source !== source) {
       return false;
     }
 
@@ -176,5 +179,13 @@ function buildAmbiguousConversationIdMessage(
 }
 
 function looksLikeConversationSelector(token: string): boolean {
-  return /^[a-f0-9-]{4,}(?:@[A-Za-z0-9_-]+)?$/i.test(token.trim());
+  const parsed = parseSourceQualifiedId(token.trim());
+  if (!parsed.ok) {
+    return false;
+  }
+
+  return (
+    /^[a-f0-9-]{4,}$/i.test(parsed.value.prefix) &&
+    (parsed.value.source == null || isValidSourceKey(parsed.value.source))
+  );
 }

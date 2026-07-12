@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { Command } from "commander";
 
+import { isSourceParseSupported } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
 import { isGitConversation, isNonLocalConversation, listConversations } from "../db/index.js";
 import { conversationToPairMetadata, pairMetadataSchema, writePair } from "../interchange/pairs.js";
@@ -510,7 +511,9 @@ async function writeConversationPair(
   }
 
   const meta = pairMetadataSchema.parse(conversationToPairMetadata(conversation));
-  await parseConversationMessages(options.config, conversation);
+  if (isSourceParseSupported(conversation.source)) {
+    await parseConversationMessages(options.config, conversation);
+  }
   const rawContent = await readRawPayload(conversation);
 
   await writePair({

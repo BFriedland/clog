@@ -111,6 +111,53 @@ describe("plunge", () => {
     expect(findCheck(report, 7)?.message).toContain("raw file is missing");
   });
 
+  it("does not report a syntactically valid unknown source as corruption", async () => {
+    await seedConfig();
+    const id = "10101010-1010-1010-1010-101010101010";
+    await insertConversation(
+      makeConversation({
+        id,
+        sourceId: id,
+        source: "future.agent",
+        state: "saved",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        savedMessageCount: 1,
+        saveVersion: 1,
+        filePath: path.join(tempDir, "missing-future-source.jsonl"),
+        sourcePath: path.join(tempDir, "missing-future-source.jsonl"),
+      }),
+    );
+
+    const report = await generatePlungeReport();
+
+    expect(report.findings.find((finding) => finding.conversation?.id === id)).toBeUndefined();
+  });
+
+  it("reports syntactically invalid stored source keys as corruption", async () => {
+    await seedConfig();
+    const id = "10101010-2020-2020-2020-101010101010";
+    await insertConversation(
+      makeConversation({
+        id,
+        sourceId: id,
+        source: "Future.Agent",
+      }),
+    );
+
+    const report = await generatePlungeReport();
+
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          check: 3,
+          severity: "corruption",
+          conversation: { id, source: "Future.Agent" },
+          message: expect.stringContaining("invalid source key"),
+        }),
+      ]),
+    );
+  });
+
   it("reports an unexpected raw file path on a local saved row", async () => {
     await seedConfig();
     const wrongPath = path.join(tempDir, "wrong.jsonl");

@@ -1082,6 +1082,51 @@ describe("cli", () => {
       }
     });
 
+    it("exports pair metadata for a saved unknown-source row without parsing content", async () => {
+      const id = "db9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
+      const rawPath = path.join(tempDir, "future-agent.jsonl");
+      await fs.writeFile(rawPath, "not parsed by this clog build\n", "utf8");
+
+      await insertConversation(
+        makeConversation({
+          id,
+          sourceId: id,
+          source: "future.agent",
+          state: "saved",
+          sourcePath: rawPath,
+          filePath: rawPath,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Unknown source pair export",
+          tags: ["pair-unknown-source"],
+        }),
+      );
+
+      const outDir = path.join(tempDir, "pair-unknown-source");
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        `${id.slice(0, 8)}@future.agent`,
+        "--format",
+        "pair",
+        "--to-dir",
+        outDir,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(result.exitCode).toBeUndefined();
+      await expect(
+        fs.readFile(path.join(outDir, "future.agent", `${id}.jsonl`), "utf8"),
+      ).resolves.toBe("not parsed by this clog build\n");
+
+      const meta = JSON.parse(
+        await fs.readFile(path.join(outDir, "future.agent", `${id}.meta.json`), "utf8"),
+      ) as Record<string, unknown>;
+      expect(meta).toMatchObject({
+        id,
+        source: "future.agent",
+        title: "Unknown source pair export",
+      });
+    });
+
     it("fails pair export before writing when content or metadata would not validate", async () => {
       const invalidContentId = "dbabbabb-abab-abab-abab-dbabbabbabab";
       const invalidMetaId = "dbaccacc-acac-acac-acac-dbaccaccacac";
