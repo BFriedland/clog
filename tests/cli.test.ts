@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -136,7 +137,7 @@ import { scanPairs, validatePair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { SearchDepsError, SearchSetupIncompleteError } from "../src/search/errors.js";
 import { getRemoteRoot } from "../src/sync/paths.js";
-import { ClogError } from "../src/utils/errors.js";
+import { ClogError, UsageError } from "../src/utils/errors.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogIgnorePath, getRawConversationPath } from "../src/utils/paths.js";
 import { insertConversation } from "./helpers/db.js";
@@ -2682,11 +2683,16 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildShowCommand, [convId]);
-      expect(stdout).toContain("ID:");
-      expect(stdout).toContain("Source:  claude-code");
-      expect(stdout).toContain("Title:   Hello header");
-      expect(stdout).toContain("Project: webapp");
-      expect(stdout).toContain("[USER]");
+      expect(stripVTControlCharacters(stdout)).toBe(
+        "ID:      73737373\n" +
+          "Source:  claude-code\n" +
+          "Title:   Hello header\n" +
+          "Project: webapp\n" +
+          "State:   saved\n" +
+          "\n" +
+          "[USER] Greetings\n\n" +
+          "[ASSISTANT] Response\n",
+      );
     });
 
     it("show rejects a non-positive --head value with a clear error", async () => {
@@ -2695,6 +2701,229 @@ describe("cli", () => {
         runBuiltCommand(buildShowCommand, [conv.id, "--head", "0"]),
       ).rejects.toThrow(/positive integer/);
     });
+
+    it("show JSON, Markdown, and raw output match the existing drain renderings", async () => {
+      const convId = "75757575-7575-7575-7575-757575757575";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(rawPath, "Renderer parity");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "saved",
+          filePath: rawPath,
+          savedAt: "2026-02-01T10:05:00.000Z",
+          saveVersion: 1,
+          title: "Renderer parity",
+        }),
+      );
+
+      const drainJson = await runBuiltCommand(buildDrainCommand, [convId]);
+      const showJson = await runBuiltCommand(buildShowCommand, [convId, "--json"]);
+      expect(showJson.stdout).toBe(drainJson.stdout);
+
+      const drainMarkdown = await runBuiltCommand(buildDrainCommand, [
+        convId,
+        "--format",
+        "md",
+      ]);
+      const showMarkdown = await runBuiltCommand(buildShowCommand, [convId, "--md"]);
+      expect(showMarkdown.stdout).toBe(drainMarkdown.stdout);
+
+      const drainRaw = await runBuiltCommandBytes(buildDrainCommand, [convId, "--raw"]);
+      const showRaw = await runBuiltCommandBytes(buildShowCommand, [convId, "--raw"]);
+      expect(showRaw).toEqual(drainRaw);
+    });
+
+    it("show formats unsaved conversations from their source transcript", async () => {
+      const convId = "76767676-7676-7676-7676-767676767676";
+      const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
+      await writeMinimalClaudeJsonl(sourcePath, "Unsaved rendering");
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          sourcePath,
+          title: "Unsaved rendering",
+        }),
+      );
+
+      const { stdout: json } = await runBuiltCommand(buildShowCommand, [convId, "--json"]);
+      expect(JSON.parse(json)).toMatchObject({
+        id: convId,
+        state: "unsaved",
+        savedAt: null,
+      });
+
+      const { stdout: markdown } = await runBuiltCommand(buildShowCommand, [convId, "--md"]);
+      expect(markdown).toContain('state: "unsaved"');
+      expect(markdown).not.toMatch(/^saved:/m);
+
+      expect(await runBuiltCommandBytes(buildShowCommand, [convId, "--raw"])).toEqual(
+        await fs.readFile(sourcePath),
+      );
+    });
+
+    it("show applies message windows to JSON and Markdown output", async () => {
+      const conv = await seedSavedConversationWithRawMessages(
+        "77777777-7777-7777-7777-777777777777",
+        5,
+        5,
+      );
+
+      const { stdout: json } = await runBuiltCommand(buildShowCommand, [
+        conv.id,
+        "--json",
+        "--head",
+        "2",
+      ]);
+      const exported = JSON.parse(json) as { messages: Array<{ content: string }> };
+      const { stdout: fullJson } = await runBuiltCommand(buildShowCommand, [
+        conv.id,
+        "--json",
+      ]);
+      const fullExport = JSON.parse(fullJson) as { messages: Array<{ content: string }> };
+      const { messages: _windowedMessages, ...windowedMetadata } = exported;
+      const { messages: _fullMessages, ...fullMetadata } = fullExport;
+      expect(windowedMetadata).toEqual(fullMetadata);
+      expect(exported.messages.map((message) => message.content)).toEqual([
+        "Message 1",
+        "Message 2",
+      ]);
+
+      const { stdout: markdown } = await runBuiltCommand(buildShowCommand, [
+        conv.id,
+        "--md",
+        "--tail",
+        "2",
+      ]);
+      expect(markdown).toContain("messages: 2");
+      expect(markdown).toContain("Message 4");
+      expect(markdown).toContain("Message 5");
+      expect(markdown).not.toContain("Message 1");
+    });
+
+    it.each([
+      { args: ["--head", "1", "--first", "3"], expected: ["Message 1", "Message 2", "Message 3"] },
+      { args: ["--first", "3", "--head", "1"], expected: ["Message 1"] },
+      { args: ["--head", "1", "--head", "2"], expected: ["Message 1", "Message 2"] },
+      { args: ["--tail", "1", "--last", "2"], expected: ["Message 4", "Message 5"] },
+      { args: ["--last", "2", "--tail", "1"], expected: ["Message 5"] },
+    ])("show uses the last supplied value for repeated window aliases: $args", async ({
+      args,
+      expected,
+    }) => {
+      const conv = await seedSavedConversationWithRawMessages(
+        "78787878-7878-7878-7878-787878787878",
+        5,
+        5,
+      );
+      const { stdout } = await runBuiltCommand(buildShowCommand, [
+        conv.id,
+        "--json",
+        ...args,
+      ]);
+      const exported = JSON.parse(stdout) as { messages: Array<{ content: string }> };
+      expect(exported.messages.map((message) => message.content)).toEqual(expected);
+    });
+
+    it.each([
+      ["--json", "--md"],
+      ["--json", "--raw"],
+      ["--md", "--raw"],
+    ])("show rejects incompatible render formats %s and %s", async (left, right) => {
+      await expect(
+        runBuiltCommand(buildShowCommand, ["missing-id", left, right]),
+      ).rejects.toBeInstanceOf(UsageError);
+    });
+
+    it.each([
+      ["--head", "1", "--tail", "1"],
+      ["--first", "1", "--last", "1"],
+      ["--raw", "--head", "1"],
+      ["--raw", "--last", "1"],
+      ["--path", "--json"],
+      ["--path", "--md"],
+      ["--path", "--raw"],
+      ["--path", "--first", "1"],
+    ])("show rejects incompatible path, raw, and window options: %s", async (...args) => {
+      const result = await runBuiltCommandCapturingError(buildShowCommand, [
+        "missing-id",
+        ...args,
+      ]);
+      expect(result.error).toBeInstanceOf(UsageError);
+      expect((result.error as UsageError).exitCode).toBe(2);
+    });
+
+    it.each(["--head", "--tail", "--first", "--last"])(
+      "show requires a positive integer for %s",
+      async (option) => {
+        for (const invalid of ["0", "-1", "1.0", "1.5", "1e2", "0x10", "+2", "abc"]) {
+          const result = await runBuiltCommandCapturingError(buildShowCommand, [
+            "missing-id",
+            option,
+            invalid,
+          ]);
+          expect(result.error).toBeInstanceOf(UsageError);
+          expect((result.error as UsageError).exitCode).toBe(2);
+        }
+      },
+    );
+
+    it.each(["--head", "--tail", "--first", "--last"])(
+      "show treats a missing %s value as a usage error",
+      async (option) => {
+        const result = await runBuiltCommandCapturingError(buildShowCommand, [
+          "missing-id",
+          option,
+        ]);
+        expect(result.error).toBeInstanceOf(UsageError);
+        expect((result.error as UsageError).exitCode).toBe(2);
+        expect((result.error as UsageError).message).toMatch(/argument missing/i);
+      },
+    );
+
+    it("show raw preserves non-text bytes exactly", async () => {
+      const convId = "79797979-7979-7979-7979-797979797979";
+      const rawPath = getRawConversationPath("claude-code", convId);
+      const raw = Buffer.from([0x00, 0xff, 0x0a, 0x80, 0x41]);
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.writeFile(rawPath, raw);
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          state: "saved",
+          filePath: rawPath,
+        }),
+      );
+
+      expect(await runBuiltCommandBytes(buildShowCommand, [convId, "--raw"])).toEqual(raw);
+    });
+
+    it.each(["--json", "--md", "--raw"])(
+      "show reports missing saved content for %s",
+      async (format) => {
+        const conv = await seedConversation(
+          "7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a",
+          {
+            state: "saved",
+            filePath: path.join(tempDir, "missing-show-content.jsonl"),
+            savedAt: "2026-02-01T10:00:00.000Z",
+            saveVersion: 1,
+          },
+        );
+
+        const result = await runBuiltCommandCapturingError(buildShowCommand, [
+          conv.id,
+          format,
+        ]);
+        expect(result.stdout).toBe("");
+        expect(String((result.error as Error)?.message ?? "")).toMatch(
+          /Curated raw file is missing/i,
+        );
+      },
+    );
   });
 
   // ========================================
@@ -3740,6 +3969,32 @@ async function runBuiltCommand(
     throw result.error;
   }
   return { stdout: result.stdout, stderr: result.stderr };
+}
+
+async function runBuiltCommandBytes(
+  builder: () => Command,
+  args: string[],
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  const stdoutSpy = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation(((chunk: string | Uint8Array): boolean => {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+  const stderrSpy = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation((() => true) as typeof process.stderr.write);
+
+  try {
+    const cmd = builder();
+    cmd.exitOverride();
+    await cmd.parseAsync(args, { from: "user" });
+    return Buffer.concat(chunks);
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  }
 }
 
 async function runBuiltCommandCapturingError(

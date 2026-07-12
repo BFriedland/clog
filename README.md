@@ -71,11 +71,19 @@ Many clog commands work with either a project name or a conversation ID. Convers
 |---------|-------------|
 | `clog save [selector...]` | Save unsaved conversations by ID/project, or resave saved conversations with pending changes (`--all`) |
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
-| `clog show <id>` | Display conversation metadata and parsed messages (`--path`, `--head N`, `--tail N`, `--first N`, `--last N`) |
+| `clog show <id>` | Display one conversation as a terminal view, JSON (`--json`), Markdown (`--md`), raw content bytes (`--raw`), or its content path (`--path`); parsed formats support `--head N`/`--first N` and `--tail N`/`--last N` |
 | `clog path <id>` | Print the content path for a conversation |
 | `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`; `--format pair --to-dir` writes portable conversation file pairs) |
 | `clog fill <dir>` | Import portable conversation file pairs as read-only conversations |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
+
+`clog show <id> --json` prints one structured conversation object for scripts,
+while `clog show <id> --md` prints a document-ready transcript. The
+`clog show <id> --raw` command emits the exact bytes from the same resolved
+content path reported by `--path`; redirect any format with `>` to save it. The
+three render-format flags are mutually exclusive. Message windows apply to the
+terminal, JSON, and Markdown views, but cannot be combined with `--raw` or
+`--path`.
 
 ### Agent Sessions
 

@@ -174,6 +174,7 @@ clog/
 │   │   ├── diff.ts          # Show new messages since last save
 │   │   ├── status.ts        # Show current state
 │   │   ├── show.ts          # Display conversation content
+│   │   ├── conversation-renderers.ts # Shared JSON, Markdown, and raw rendering for show and drain
 │   │   ├── path.ts          # Print raw file path
 │   │   ├── drain.ts         # Export conversations as JSON, markdown, raw source, or pair files
 │   │   ├── fill.ts          # Import portable conversation file-pair exports
@@ -1340,6 +1341,42 @@ A conversation is counted as lacking a structured summary when `summaryKind != "
 `clog show <id>` displays conversation metadata followed by parsed messages. Saved conversations read from the clog-managed raw copy. Unsaved conversations can be shown from the source file when the source file is still available.
 
 `clog show <id> --path` is path-output shorthand on the `show` command and is equivalent to `clog path <id>`.
+
+`clog show <id>` supports four output modes:
+
+- With no render-format flag, the command prints the terminal-oriented metadata
+  and message view described below.
+- `--json` prints one structured conversation object, never an array. The object
+  contains `id`, `source`, `title`, `summary`, `summaryKind`, `extraction`,
+  `author`, `projectName`, `tags`, `slug`, `createdAt`, `savedAt`, `state`, and
+  parsed `messages`, matching the single-conversation JSON rendering supported by
+  `clog drain` in v1. The JSON shape is best-effort rather than a stable v1
+  compatibility contract.
+- `--md` prints the conversation as Markdown with metadata frontmatter and one
+  section per parsed message. The frontmatter omits `saved` when `savedAt` is
+  null.
+- `--raw` writes the exact bytes from the conversation's resolved content path
+  without parsing them. For a saved conversation, this is the stored content
+  copy identified by `filePath`, even when the original source transcript has
+  subsequently changed.
+
+`--json`, `--md`, and `--raw` are mutually exclusive. All output is written to
+stdout; `clog show` does not provide an output-file flag.
+
+The message-window options `--head N` and `--first N` name the same head window,
+and `--tail N` and `--last N` name the same tail window. Repeating one logical
+window uses its last supplied value, including when the two alias spellings are
+mixed. Each effective value must be a positive integer. A head window and tail
+window cannot be combined.
+
+Message windowing applies to the default view, JSON, and Markdown. JSON changes
+only the `messages` array; all conversation metadata remains unchanged. The
+Markdown frontmatter `messages` value counts the messages included in the
+rendered document after windowing. Because raw output is byte-oriented,
+`--raw` cannot be combined with a message window. `--path` cannot be combined
+with a render-format flag or message window. Invalid values and incompatible
+option combinations are usage errors with exit code 2; failures reading or
+parsing content are operational errors with exit code 1.
 
 The metadata header includes the canonical source key for every conversation:
 

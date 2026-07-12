@@ -1,20 +1,49 @@
-import { Command } from "commander";
+import { Command, type ErrorOptions } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { applyHeadTail, formatForSingleLine, parseConversationMessages, renderMessages, resolveConversationOrFail, resolveContentPath } from "./common.js";
-import { ClogError } from "../utils/errors.js";
+import { UsageError } from "../utils/errors.js";
+import {
+  buildConversationExport,
+  readConversationRaw,
+  renderConversationMarkdown,
+  serializeConversationJson,
+} from "./conversation-renderers.js";
+
+interface ShowOptions {
+  path?: boolean;
+  json?: boolean;
+  md?: boolean;
+  raw?: boolean;
+  head?: string;
+  tail?: string;
+}
+
+type ShowFormat = "default" | "json" | "md" | "raw";
+
+class ShowCommand extends Command {
+  override error(message: string, errorOptions?: ErrorOptions): never {
+    if (errorOptions?.code === "commander.optionMissingArgument") {
+      throw new UsageError(message.replace(/^error:\s*/, ""));
+    }
+
+    return super.error(message, errorOptions);
+  }
+}
 
 export function buildShowCommand(): Command {
-  return new Command("show")
+  return new ShowCommand("show")
     .description("Display a conversation's content and metadata")
     .argument("<id>")
-    .option("--path")
-    .option("--head <n>")
-    .option("--tail <n>")
-    .option("--first <n>")
-    .option("--last <n>")
-    .action(async (id: string, options) => {
+    .option("--path", "Print the resolved conversation content path")
+    .option("--json", "Render the conversation as structured JSON")
+    .option("--md", "Render the conversation as Markdown")
+    .option("--raw", "Emit the exact resolved conversation content bytes")
+    .option("--first, --head <n>", "Render the first N parsed messages")
+    .option("--last, --tail <n>", "Render the last N parsed messages")
+    .action(async (id: string, options: ShowOptions) => {
+      const { format, head, tail } = validateShowOptions(options);
       const conversation = await resolveConversationOrFail(id);
 
       if (options.path) {
@@ -22,11 +51,26 @@ export function buildShowCommand(): Command {
         return;
       }
 
+      if (format === "raw") {
+        process.stdout.write(await readConversationRaw(conversation));
+        return;
+      }
+
       const config = await loadConfig();
       const messages = await parseConversationMessages(config, conversation);
-      const head = parseCount(options.head ?? options.first);
-      const tail = parseCount(options.tail ?? options.last);
       const limited = applyHeadTail(messages, { head, tail });
+
+      if (format === "json") {
+        process.stdout.write(
+          serializeConversationJson(buildConversationExport(conversation, limited)),
+        );
+        return;
+      }
+
+      if (format === "md") {
+        process.stdout.write(renderConversationMarkdown(conversation, limited));
+        return;
+      }
 
       process.stdout.write(
         `ID:      ${conversation.id.slice(0, 8)}\nSource:  ${conversation.source}\nTitle:   ${formatForSingleLine(conversation.title)}\nProject: ${conversation.projectName ?? "-"}\nState:   ${conversation.state}\n`,
@@ -35,6 +79,46 @@ export function buildShowCommand(): Command {
       process.stdout.write("\n");
       process.stdout.write(`${renderMessages(limited, { colorUserMessages: true })}\n`);
     });
+}
+
+function validateShowOptions(options: ShowOptions): {
+  format: ShowFormat;
+  head?: number;
+  tail?: number;
+} {
+  const requestedFormats: ShowFormat[] = [];
+  if (options.json) requestedFormats.push("json");
+  if (options.md) requestedFormats.push("md");
+  if (options.raw) requestedFormats.push("raw");
+
+  if (requestedFormats.length > 1) {
+    throw new UsageError("--json, --md, and --raw are mutually exclusive.");
+  }
+
+  const format = requestedFormats[0] ?? "default";
+  const head = parseCount(options.head);
+  const tail = parseCount(options.tail);
+
+  if (head != null && tail != null) {
+    throw new UsageError(
+      "Cannot combine --head/--first with --tail/--last.",
+    );
+  }
+
+  const hasMessageWindow = head != null || tail != null;
+  if (options.path && (format !== "default" || hasMessageWindow)) {
+    throw new UsageError(
+      "--path cannot be combined with render formats or message-window options.",
+    );
+  }
+
+  if (format === "raw" && hasMessageWindow) {
+    throw new UsageError(
+      "--raw cannot be combined with message-window options.",
+    );
+  }
+
+  return { format, head, tail };
 }
 
 function renderSummaryBlock(conversation: ConversationMeta): string {
@@ -70,8 +154,8 @@ function parseCount(value?: string): number | undefined {
   }
 
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new ClogError("Message count must be a positive integer.");
+  if (!/^\d+$/.test(value) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new UsageError("Message count must be a positive integer.");
   }
 
   return parsed;
