@@ -30,6 +30,7 @@ interface FillOptions {
   own?: boolean;
   dryRun?: boolean;
   allowPartial?: boolean;
+  showAllErrors?: boolean;
 }
 
 interface FillStats {
@@ -39,6 +40,13 @@ interface FillStats {
   skippedCount: number;
 }
 
+type FillSkipAction = Extract<FillAction, { kind: "skip" }>;
+
+interface UnsupportedSourceGroup {
+  source: string;
+  actions: FillSkipAction[];
+}
+
 export function buildFillCommand(): Command {
   return new Command("fill")
     .description("Import conversation pair files")
@@ -46,6 +54,7 @@ export function buildFillCommand(): Command {
     .option("--own", "Restore pairs authored by the configured user as editable local rows")
     .option("--dry-run", "Plan the import without writing managed files or database rows")
     .option("--allow-partial", "Skip failure-class candidates and import valid candidates")
+    .option("--show-all-errors", "Show every pair-level fill error instead of summarizing")
     .action(async (dir: string, options: FillOptions) => {
       await runFillCommand(dir, options);
     });
@@ -87,6 +96,7 @@ export async function runFillCommand(
   const importTime = nowIso();
   const dryRun = options.dryRun === true;
   const allowPartial = options.allowPartial === true;
+  const showAllErrors = options.showAllErrors === true;
 
   const execution = await withDb(async (db) => {
     let plan = planFill({
@@ -131,9 +141,9 @@ export async function runFillCommand(
     };
   });
 
-  renderFillMessages(execution.plan);
+  renderFillMessages(execution.plan, { allowPartial, showAllErrors });
   if (execution.abortedBeforeWrites) {
-    process.stderr.write(`${formatFillAbortMessage(execution.plan, dryRun)}\n`);
+    process.stderr.write(`${formatFillAbortMessage(execution.plan, dryRun, showAllErrors)}\n`);
     if (execution.plan.hasFailures) {
       process.exitCode = 1;
     }
@@ -158,16 +168,45 @@ export async function runFillCommand(
   }
 }
 
-function formatFillAbortMessage(plan: FillPlan, dryRun: boolean): string {
+function formatFillAbortMessage(
+  plan: FillPlan,
+  dryRun: boolean,
+  showAllErrors: boolean,
+): string {
+  const shouldMentionShowAll = shouldSuggestShowAllErrors(plan, showAllErrors);
   if (plan.hasAuthorGuardFailure) {
-    return dryRun
-      ? "Dry run: fill --own found pairs by another author; no conversations would be imported. Fix the pairs above or run clog fill without --own to import them as read-only rows."
-      : "error: fill --own found pairs by another author; no conversations were imported. Fix the pairs above or run clog fill without --own to import them as read-only rows.";
+    const base = dryRun
+      ? "Dry run: fill --own found pairs by another author; no conversations would be imported."
+      : "error: fill --own found pairs by another author; no conversations were imported.";
+    const detailGuidance = shouldMentionShowAll
+      ? "Re-run with --show-all-errors to see each pair error"
+      : "Fix the pair errors";
+    return `${base} ${detailGuidance}, or run clog fill without --own to import them as read-only rows.`;
   }
 
-  return dryRun
-    ? "Dry run: fill found errors in the input directory; no conversations would be imported. Fix the errors above, or use --allow-partial to import the valid pairs."
-    : "error: fill found errors in the input directory; no conversations were imported. Fix the errors above, or use --allow-partial to import the valid pairs.";
+  const base = dryRun
+    ? "Dry run: fill found errors in the input directory; no conversations would be imported."
+    : "error: fill found errors in the input directory; no conversations were imported.";
+
+  if (shouldMentionShowAll) {
+    return `${base} Re-run with --show-all-errors to see each pair error, or use --allow-partial to import the valid pairs.`;
+  }
+
+  const collapsedPairErrorCount = countBlockedPairs(getCollapsedPairErrorActions(plan));
+  const unsupportedSourceCount = getUnsupportedSourceGroups(plan).length;
+  const hasUnsupportedSources = unsupportedSourceCount > 0;
+  const adapterGuidance =
+    unsupportedSourceCount === 1
+      ? "use a clog build with an adapter for the unsupported source"
+      : "use a clog build with adapters for the unsupported sources";
+  if (hasUnsupportedSources && collapsedPairErrorCount === 0) {
+    return `${base} ${capitalize(adapterGuidance)}, or use --allow-partial to import the valid pairs.`;
+  }
+  if (hasUnsupportedSources) {
+    return `${base} Fix the input directory, ${adapterGuidance}, or use --allow-partial to import the valid pairs.`;
+  }
+
+  return `${base} Fix the input directory, or use --allow-partial to import the valid pairs.`;
 }
 
 async function assertReadableDirectory(inputDir: string): Promise<string> {
@@ -270,23 +309,37 @@ function summarizeAbortedPlan(plan: FillPlan): FillStats {
   };
 }
 
-function renderFillMessages(plan: FillPlan): void {
-  for (const warning of plan.warnings) {
-    process.stderr.write(`warning: ${warning.message}${formatWarningDetails(warning)}\n`);
+function renderFillMessages(
+  plan: FillPlan,
+  options: { allowPartial: boolean; showAllErrors: boolean },
+): void {
+  const collapsedPairErrorActions = getCollapsedPairErrorActions(plan);
+  const collapsedPairErrorCount = countBlockedPairs(collapsedPairErrorActions);
+
+  if (options.showAllErrors || collapsedPairErrorCount === 1) {
+    for (const action of collapsedPairErrorActions) {
+      process.stderr.write(`error: ${formatPairErrorDetail(action)}\n`);
+    }
+  } else if (collapsedPairErrorCount > 1) {
+    process.stderr.write(
+      `error: ${collapsedPairErrorCount} input pairs could not be imported. Re-run with --show-all-errors to list each pair.\n`,
+    );
   }
+
+  renderUnsupportedSourceGroups(
+    getUnsupportedSourceGroups(plan),
+    options.allowPartial,
+    options.showAllErrors,
+  );
 
   for (const action of plan.actions) {
     if (action.kind !== "skip") {
       continue;
     }
-    if (
-      action.reason === "ignored" ||
-      action.reason === "invalid_pair" ||
-      action.reason === "duplicate_identity"
-    ) {
+    if (action.reason === "ignored" || action.failure) {
       continue;
     }
-    process.stderr.write(`${action.failure ? "error" : "notice"}: ${action.message}\n`);
+    process.stderr.write(`notice: ${action.message}\n`);
   }
 
   if (plan.ignoredCount > 0) {
@@ -294,6 +347,109 @@ function renderFillMessages(plan: FillPlan): void {
       `notice: ${plan.ignoredCount} conversation pair${plan.ignoredCount === 1 ? "" : "s"} skipped by clogignore.\n`,
     );
   }
+}
+
+function getCollapsedPairErrorActions(plan: FillPlan): FillSkipAction[] {
+  return plan.actions.filter(
+    (action): action is FillSkipAction =>
+      action.kind === "skip" &&
+      action.failure &&
+      !isUnsupportedSourceAction(action),
+  );
+}
+
+function getUnsupportedSourceGroups(plan: FillPlan): UnsupportedSourceGroup[] {
+  const groups = new Map<string, UnsupportedSourceGroup>();
+
+  for (const action of plan.actions) {
+    if (action.kind !== "skip" || !isUnsupportedSourceAction(action)) {
+      continue;
+    }
+
+    const source = getUnsupportedSource(action);
+    const existing = groups.get(source);
+    if (existing) {
+      existing.actions.push(action);
+    } else {
+      groups.set(source, { source, actions: [action] });
+    }
+  }
+
+  return [...groups.values()];
+}
+
+function renderUnsupportedSourceGroups(
+  groups: UnsupportedSourceGroup[],
+  allowPartial: boolean,
+  showAllErrors: boolean,
+): void {
+  for (const group of groups) {
+    const count = countBlockedPairs(group.actions);
+    const guidance = allowPartial
+      ? `Use a clog build with an adapter for that source to import ${count === 1 ? "that pair" : "those pairs"}.`
+      : "Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.";
+    process.stderr.write(
+      `error: ${count} ${count === 1 ? "pair uses" : "pairs use"} source "${group.source}", which this clog build cannot read. ${guidance}\n`,
+    );
+
+    if (!showAllErrors) {
+      continue;
+    }
+
+    for (const action of group.actions) {
+      process.stderr.write(`    ${formatUnsupportedSourcePairPath(action)}\n`);
+    }
+  }
+}
+
+function isUnsupportedSourceAction(action: FillSkipAction): boolean {
+  return (
+    action.reason === "invalid_pair" &&
+    action.warning?.code === "unsupported_source"
+  );
+}
+
+function getUnsupportedSource(action: FillSkipAction): string {
+  return (
+    action.warning?.source ??
+    action.warning?.pair?.source ??
+    "unknown"
+  );
+}
+
+function countBlockedPairs(actions: FillSkipAction[]): number {
+  return actions.reduce((count, action) => count + (action.count ?? 1), 0);
+}
+
+function formatPairErrorDetail(action: FillSkipAction): string {
+  if (action.warning) {
+    return `${action.warning.message}${formatWarningDetails(action.warning)}`;
+  }
+
+  return action.message;
+}
+
+function formatUnsupportedSourcePairPath(action: FillSkipAction): string {
+  return (
+    action.scannedPair?.normalizedRelativePath ??
+    action.warning?.pair?.id ??
+    action.warning?.path ??
+    action.message
+  );
+}
+
+function shouldSuggestShowAllErrors(
+  plan: FillPlan,
+  showAllErrors: boolean,
+): boolean {
+  return (
+    !showAllErrors &&
+    countBlockedPairs(getCollapsedPairErrorActions(plan)) > 1
+  );
+}
+
+function capitalize(text: string): string {
+  return `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;
 }
 
 function renderFillSummary(args: {

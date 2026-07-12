@@ -59,6 +59,7 @@ export type FillAction =
       pair?: ValidatedPair;
       owner?: ConversationMeta;
       warning?: ClogWarning;
+      scannedPair?: ScannedPair;
       count?: number;
     };
 
@@ -114,6 +115,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
         message: candidate.warning.message,
         failure: true,
         warning: candidate.warning,
+        scannedPair: candidate.scannedPair,
       });
       continue;
     }

@@ -924,7 +924,7 @@ clog drain [filters]       Export a filtered set to stdout
 clog drain <selector> --to <path>  Export one conversation to a file
 clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a directory
 clog drain <selectors...> --format pair --to-dir <dir>  Export saved conversations as portable conversation file pairs
-clog fill <dir> [--own]    Import portable conversation file pairs
+clog fill <dir> [flags]    Import portable conversation file pairs
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
@@ -1836,8 +1836,18 @@ clog fill ./export
 clog fill ./export --own
 clog fill ./export --dry-run
 clog fill ./export --allow-partial
+clog fill ./export --show-all-errors
 clog fill ./export --own --allow-partial
 ```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--own` | Restore pairs authored by `config.author` as editable local rows. |
+| `--dry-run` | Plan the import and render the same outcome messages without writing rows or managed files. |
+| `--allow-partial` | Skip failure-class candidates and import valid candidates. |
+| `--show-all-errors` | Show every collapsed pair-level fill error instead of the normal bounded summary. |
 
 Default fill imports read-only rows with `origin_kind = 'file'` and
 `origin_ref = NULL`. `clog fill --own` restores conversation file pairs authored
@@ -1859,6 +1869,21 @@ clog build is a failure-class candidate for `clog fill`. Default fill does not
 import it as a `file` row, and `clog fill --own` does not restore it as a
 `local` row, because fill cannot parse the JSONL or compute `savedMessageCount`.
 `--allow-partial` may skip that candidate and continue with other valid pairs.
+Normal stderr output prints one bounded summary line per unsupported source key:
+
+```text
+error: 8 pairs use source "future-agent", which this clog build cannot read. Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.
+```
+
+Unsupported-source pairs are not counted in the generic collapsed pair-error
+summary. When `--show-all-errors` is present, the unsupported-source summary
+remains grouped by source key and lists each affected conversation pair by its
+normalized path relative to the fill input directory.
+The required remedy is adapter support for the pair's `source` value; the
+needed adapter may come from a newer upstream clog release or from the same
+custom clog build that produced the exported pair files. When `--allow-partial`
+is already present, fill says to use a clog build with an adapter for that source
+instead of telling the user to re-run with `--allow-partial`.
 
 Fill's reject-all here deliberately differs from git reconciliation's first-wins
 (§11.8): git's checkout is author-partitioned, so "first" is a meaningful, stable
@@ -1894,11 +1919,35 @@ detection, the `--own` author guard, and collision planning. Without
 `--allow-partial`, any failure-class candidate aborts the command before writing
 database rows or managed files. With `--allow-partial`, fill skips those
 candidates, writes valid candidates, and exits `1`. Failure-class candidates
-are malformed pairs, duplicate input identities, unsupported `file`/`git` to
-`local` promotions, and collisions with existing `git` rows. The `--own` author
-guard remains fail-closed even with `--allow-partial`: every remaining
-candidate's metadata author must equal `config.author`, or fill reports all
-offending pairs and writes nothing.
+are malformed pairs, duplicate input identities, unsupported-source pairs,
+unsupported `file`/`git` to `local` promotions, and collisions with existing
+`git` rows. The `--own` author guard remains fail-closed even with
+`--allow-partial`: every remaining candidate's metadata author must equal
+`config.author`, or fill reports all offending pairs and writes nothing.
+
+Normal stderr output bounds pair-level failure details. If exactly one
+non-unsupported-source pair is blocked, fill prints that detailed line with an
+`error:` prefix. If more than one non-unsupported-source pair is blocked, fill
+prints one summary line instead of every detailed pair error:
+
+```text
+error: 12 input pairs could not be imported. Re-run with --show-all-errors to list each pair.
+```
+
+The collapsed count is measured in blocked pairs, not distinct diagnostics. A
+duplicate identity group with three copies contributes three blocked pairs,
+though `--show-all-errors` still renders that duplicate identity as one grouped
+diagnostic line listing every copy's paths. The `--show-all-errors` flag expands
+the collapsed non-unsupported-source pair errors using the same detailed message
+text. Benign skips, such as a local copy already existing, keep the `notice:`
+prefix and are not part of the collapsed failure count.
+
+When fill aborts before writing rows or managed files and pair details were
+collapsed, the abort message tells the user to re-run with `--show-all-errors`
+instead of referring to errors "above". The abort message still states that no
+conversations were imported and keeps the appropriate remedy guidance, such as
+`--allow-partial` for default fill or `clog fill <dir>` without `--own` for an
+author-guard failure.
 
 Fill resolves each candidate by `(source, id)`. Resolution is by provenance and
 deterministic order, never by timestamp, and every outcome is chosen so fill
@@ -1963,9 +2012,9 @@ transcript content changes; tag-only changes and path-only locator changes
 preserve `indexedAt` when title, summary, and parsed content are unchanged.
 
 `--dry-run` performs scanning, validation, ignore filtering, duplicate
-detection, the `--own` author guard, collision planning, and summary rendering
-without writing database rows, managed files, vectors, checkout files, source
-files, or `clogignore`.
+detection, the `--own` author guard, collision planning, collapsed error
+rendering, and summary rendering without writing database rows, managed files,
+vectors, checkout files, source files, or `clogignore`.
 
 Fill prints a one-line summary to stderr:
 
@@ -4029,6 +4078,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Fill tests** (`fill.test.ts`):
 
 - Usage and exit-code branches, including `--dry-run` and `--allow-partial`
+- Collapsed pair-level error output, including `--show-all-errors`
 - Metadata-only and JSONL-only input warnings
 - Duplicate input identities rejected with `pair_duplicate_identity`
 - Default fail-before-writes behavior for validation failures, duplicate identities, unsupported promotions, and git-row collisions

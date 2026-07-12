@@ -150,7 +150,8 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("incomplete pair");
+    expect(result.stderr).toContain(`error: Skipping conversation pair broken/${badId} - incomplete pair`);
+    expect(result.stderr).not.toContain("input pairs could not be imported");
     expect(result.stderr).toContain("fill found errors in the input directory");
     expect(result.stderr).toContain("no conversations were imported");
     expect(result.stderr).not.toContain("Filled ");
@@ -159,6 +160,45 @@ describe("clog fill", () => {
     await expect(fs.stat(getImportConversationPath("claude-code", goodId))).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("collapses multiple pair-level validation errors unless --show-all-errors is present", async () => {
+    const firstBadId = "ad222222-2222-2222-2222-222222222222";
+    const secondBadId = "ad333333-3333-3333-3333-333333333333";
+    await fs.mkdir(pairDir, { recursive: true });
+    await fs.writeFile(path.join(pairDir, `${firstBadId}.jsonl`), makeClaudeJsonl(1), "utf8");
+    await fs.mkdir(path.join(pairDir, "nested"), { recursive: true });
+    await fs.writeFile(
+      path.join(pairDir, "nested", `${secondBadId}.jsonl`),
+      makeClaudeJsonl(1),
+      "utf8",
+    );
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "error: 2 input pairs could not be imported. Re-run with --show-all-errors to list each pair.",
+    );
+    expect(result.stderr).toContain("--show-all-errors");
+    expect(result.stderr).not.toContain("incomplete pair");
+    expect(result.stderr).toContain("no conversations were imported");
+
+    const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--show-all-errors",
+    ]);
+
+    expect(expanded.error).toBeNull();
+    expect(expanded.exitCode).toBe(1);
+    expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
+    expect(expanded.stderr).toContain(
+      `error: Skipping conversation pair ${firstBadId} - incomplete pair`,
+    );
+    expect(expanded.stderr).toContain(
+      `error: Skipping conversation pair nested/${secondBadId} - incomplete pair`,
+    );
   });
 
   it("allows partial imports while still exiting 1", async () => {
@@ -192,7 +232,9 @@ describe("clog fill", () => {
 
     expect(dryRun.error).toBeNull();
     expect(dryRun.exitCode).toBe(1);
-    expect(dryRun.stderr).toContain('source "future.agent" is not supported');
+    expect(dryRun.stderr).toContain('source "future.agent", which this clog build cannot read');
+    expect(dryRun.stderr).toContain("Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.");
+    expect(dryRun.stderr).toContain("Use a clog build with an adapter for the unsupported source, or use --allow-partial to import the valid pairs.");
     expect(dryRun.stderr).toContain("no conversations would be imported");
     expect(await getConversationById(goodId)).toBeNull();
     expect(await getConversationById(unknownId)).toBeNull();
@@ -213,6 +255,8 @@ describe("clog fill", () => {
 
     expect(partialImport.error).toBeNull();
     expect(partialImport.exitCode).toBe(1);
+    expect(partialImport.stderr).toContain("Use a clog build with an adapter for that source to import that pair.");
+    expect(partialImport.stderr).not.toContain("re-run with --allow-partial to import the rest");
     expect(partialImport.stderr).toContain("Processed 2 conversation pairs");
     expect(partialImport.stderr).toContain("(1 new; 1 skipped)");
     expect(await getConversationById(goodId)).not.toBeNull();
@@ -233,17 +277,67 @@ describe("clog fill", () => {
 
     expect(ownImport.error).toBeNull();
     expect(ownImport.exitCode).toBe(1);
-    expect(ownImport.stderr).toContain('source "future.agent" is not supported');
+    expect(ownImport.stderr).toContain('source "future.agent", which this clog build cannot read');
     expect(await getConversationById(ownUnknownId)).toBeNull();
     await expect(
       fs.stat(getRawConversationPath("future.agent", ownUnknownId)),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("reports unsupported-source pairs separately from collapsed pair errors", async () => {
+    const firstUnsupportedId = "f4444444-4444-4444-4444-444444444444";
+    const secondUnsupportedId = "f5555555-5555-5555-5555-555555555555";
+    const firstInvalidId = "f6666666-6666-6666-6666-666666666666";
+    const secondInvalidId = "f7777777-7777-7777-7777-777777777777";
+
+    await writePairFixture(
+      path.join(pairDir, "carol", "future-agent"),
+      firstUnsupportedId,
+      { author: "carol", source: "future-agent" },
+      1,
+    );
+    await writePairFixture(
+      path.join(pairDir, "carol", "future-agent"),
+      secondUnsupportedId,
+      { author: "carol", source: "future-agent" },
+      1,
+    );
+    await fs.writeFile(path.join(pairDir, `${firstInvalidId}.jsonl`), makeClaudeJsonl(1), "utf8");
+    await fs.writeFile(path.join(pairDir, `${secondInvalidId}.jsonl`), makeClaudeJsonl(1), "utf8");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("error: 2 input pairs could not be imported");
+    expect(result.stderr).not.toContain("error: 4 input pairs could not be imported");
+    expect(result.stderr).toContain('error: 2 pairs use source "future-agent"');
+    expect(result.stderr).not.toContain(`    carol/future-agent/${firstUnsupportedId}`);
+    expect(result.stderr).not.toContain(`    carol/future-agent/${secondUnsupportedId}`);
+
+    const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--show-all-errors",
+    ]);
+
+    expect(expanded.error).toBeNull();
+    expect(expanded.exitCode).toBe(1);
+    expect(expanded.stderr).toContain(
+      `error: Skipping conversation pair ${firstInvalidId} - incomplete pair`,
+    );
+    expect(expanded.stderr).toContain(
+      `error: Skipping conversation pair ${secondInvalidId} - incomplete pair`,
+    );
+    expect(expanded.stderr).toContain('error: 2 pairs use source "future-agent"');
+    expect(expanded.stderr).toContain(`    carol/future-agent/${firstUnsupportedId}`);
+    expect(expanded.stderr).toContain(`    carol/future-agent/${secondUnsupportedId}`);
+  });
+
   it("rejects duplicate input identities without choosing a winner", async () => {
     const id = "a7777777-7777-7777-7777-777777777777";
     await writePairFixture(path.join(pairDir, "alice"), id, { author: "alice", title: "Alice" }, 1);
     await writePairFixture(path.join(pairDir, "bob"), id, { author: "bob", title: "Bob" }, 1);
+    await writePairFixture(path.join(pairDir, "carol"), id, { author: "carol", title: "Carol" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       pairDir,
@@ -252,8 +346,22 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("duplicate input identity");
+    expect(result.stderr).toContain("error: 3 input pairs could not be imported");
+    expect(result.stderr).not.toContain("duplicate input identity");
     expect(await getConversationById(id)).toBeNull();
+
+    const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--allow-partial",
+      "--show-all-errors",
+    ]);
+
+    expect(expanded.error).toBeNull();
+    expect(expanded.exitCode).toBe(1);
+    expect(expanded.stderr).toContain("duplicate input identity");
+    expect(expanded.stderr).toContain(path.join(pairDir, "alice", `${id}.meta.json`));
+    expect(expanded.stderr).toContain(path.join(pairDir, "bob", `${id}.meta.json`));
+    expect(expanded.stderr).toContain(path.join(pairDir, "carol", `${id}.meta.json`));
   });
 
   it("supports dry-run without writing rows or managed files", async () => {
@@ -322,6 +430,40 @@ describe("clog fill", () => {
     expect(result.stderr).not.toContain("would process");
     expect(await getConversationById(ownId)).toBeNull();
     expect(await getConversationById(foreignId)).toBeNull();
+  });
+
+  it("collapses --own author mismatch errors unless --show-all-errors is present", async () => {
+    const firstForeignId = "ac555555-5555-5555-5555-555555555555";
+    const secondForeignId = "ac666666-6666-6666-6666-666666666666";
+    await writePairFixture(pairDir, firstForeignId, { author: "bob" }, 1);
+    await writePairFixture(pairDir, secondForeignId, { author: "carol" }, 1);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--own",
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("error: 2 input pairs could not be imported");
+    expect(result.stderr).toContain("Re-run with --show-all-errors to see each pair error");
+    expect(result.stderr).not.toContain("pair author");
+
+    const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--own",
+      "--show-all-errors",
+    ]);
+
+    expect(expanded.error).toBeNull();
+    expect(expanded.exitCode).toBe(1);
+    expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
+    expect(expanded.stderr).toContain(
+      `error: Skipping ${firstForeignId.slice(0, 8)} - pair author "bob" does not match configured author "alice".`,
+    );
+    expect(expanded.stderr).toContain(
+      `error: Skipping ${secondForeignId.slice(0, 8)} - pair author "carol" does not match configured author "alice".`,
+    );
   });
 
   it("updates file rows without recopying content for metadata-only changes", async () => {
