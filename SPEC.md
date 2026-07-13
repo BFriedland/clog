@@ -1891,6 +1891,24 @@ Default fill imports read-only rows with `origin_kind = 'file'` and
 by `config.author` as editable local rows with `origin_kind = 'local'` and
 `origin_ref = NULL`. Only `git` rows carry a non-null `origin_ref`.
 
+For directory input, fill separates the absolute physical root used for pair
+scanning, validation, and managed-content copying from the path text shown to
+the user. Pair diagnostics preserve the supplied directory spelling: a leading
+`./` remains present, `.` renders descendants beneath `./`, quoted `~` remains
+unexpanded, absolute input remains absolute, and a trailing separator does not
+produce a doubled separator. Directory completion summaries retain a supplied
+trailing separator or add the host separator when it was absent.
+
+Fill constructs warnings and command errors with display paths rather than
+rewriting physical paths during final rendering. A source-input filesystem
+failure reports the operation, the display path, and a stable filesystem error
+code when one is available; it does not append a native Node.js error message
+that contains the resolved input root. Errors for clog-managed destinations may
+continue to identify those destinations because the user may need to repair
+them. The shared pair scanner and validator accept fill's diagnostic mapping as
+an optional adapter, so Git reconciliation continues to report physical checkout
+paths.
+
 Input scanning uses the shared pair scanner, so metadata-only and JSONL-only
 stems are visible and reported as `pair_incomplete`. Pair validation is the
 transport-neutral validation from §11.2. Duplicate detection runs on valid
@@ -1914,8 +1932,10 @@ error: 8 pairs use source "future-agent", which this clog build cannot read. Use
 
 Unsupported-source pairs are not counted in the generic collapsed pair-error
 summary. When `--show-all-errors` is present, the unsupported-source summary
-remains grouped by source key and lists each affected conversation pair by its
-normalized path relative to the fill input directory.
+remains grouped by source key and lists each affected conversation pair using
+the fill command's prepared display path. For directory input, that path is
+rooted at the directory spelling supplied to `clog fill` rather than being
+relative to the input directory.
 The required remedy is adapter support for the pair's `source` value; the
 needed adapter may come from a newer upstream clog release or from the same
 custom clog build that produced the exported pair files. When `--allow-partial`

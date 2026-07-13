@@ -6,7 +6,12 @@ export type FillMode = "file" | "own";
 
 export type FillCandidate =
   | { kind: "valid"; pair: ValidatedPair }
-  | { kind: "invalid"; scannedPair: ScannedPair; warning: ClogWarning };
+  | {
+      kind: "invalid";
+      scannedPair: ScannedPair;
+      warning: ClogWarning;
+      diagnosticPath?: string;
+    };
 
 export type FillSkipReason =
   | "ignored"
@@ -60,6 +65,7 @@ export type FillAction =
       owner?: ConversationMeta;
       warning?: ClogWarning;
       scannedPair?: ScannedPair;
+      diagnosticPath?: string;
       count?: number;
     };
 
@@ -86,6 +92,7 @@ export interface PlanFillArgs {
     target: { sourceId: string; projectName: string | null },
   ) => boolean;
   getManagedPath: (pair: ValidatedPair, mode: FillMode) => string;
+  formatDiagnosticPath?: (physicalPath: string) => string;
 }
 
 export function planFill(args: PlanFillArgs): FillPlan {
@@ -98,6 +105,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
     ignoreRules = [],
     matchesIgnoreRule,
     getManagedPath,
+    formatDiagnosticPath = (physicalPath) => physicalPath,
   } = args;
   const actions: FillAction[] = [];
   const warnings: ClogWarning[] = [];
@@ -116,6 +124,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
         failure: true,
         warning: candidate.warning,
         scannedPair: candidate.scannedPair,
+        diagnosticPath: candidate.diagnosticPath,
       });
       continue;
     }
@@ -157,7 +166,10 @@ export function planFill(args: PlanFillArgs): FillPlan {
         source: first.meta.source,
         id: first.meta.id,
       },
-      paths: group.flatMap((pair) => [pair.metaPath, pair.jsonlPath]),
+      paths: group.flatMap((pair) => [
+        formatDiagnosticPath(pair.metaPath),
+        formatDiagnosticPath(pair.jsonlPath),
+      ]),
     };
     hasFailures = true;
     warnings.push(warning);
@@ -287,7 +299,7 @@ function planFillCollision(args: {
     return {
       kind: "skip",
       reason: "local_unsaved_precedence",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or 'clog fill <dir> --own' to restore pair metadata.`,
+      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run this fill with --own to restore pair metadata.`,
       failure: false,
       pair,
       owner,
@@ -314,7 +326,7 @@ function planFillCollision(args: {
       reason: mode === "own" ? "unsupported_promotion" : "git_collision",
       message:
         mode === "own"
-          ? `Skipping ${pair.meta.id.slice(0, 8)} - promoting a synced read-only copy to local is not supported. Remove the imported row first, then run 'clog fill <dir> --own'.`
+          ? `Skipping ${pair.meta.id.slice(0, 8)} - promoting a synced read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.`
           : `Skipping ${pair.meta.id.slice(0, 8)} - a synced read-only copy already owns this identity.`,
       failure: true,
       pair,
@@ -326,7 +338,7 @@ function planFillCollision(args: {
     return {
       kind: "skip",
       reason: "unsupported_promotion",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - promoting a filled read-only copy to local is not supported. Remove the imported row first, then run 'clog fill <dir> --own'.`,
+      message: `Skipping ${pair.meta.id.slice(0, 8)} - promoting a filled read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.`,
       failure: true,
       pair,
       owner,

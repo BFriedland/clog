@@ -86,6 +86,13 @@ export interface ScanPairsOptions {
     entryName: string;
     entryPath: string;
   }) => boolean;
+  diagnostics?: PairDiagnosticAdapter;
+}
+
+export interface PairDiagnosticAdapter {
+  formatPath(physicalPath: string): string;
+  formatPairPath(normalizedRelativePath: string): string;
+  translateFilesystemError(operation: string, physicalPath: string, error: unknown): Error;
 }
 
 export interface ValidatedPair {
@@ -219,16 +226,22 @@ export async function scanPairs(
 export async function validatePair(
   pair: ScannedPair,
   config: Config,
+  diagnostics?: PairDiagnosticAdapter,
 ): Promise<PairValidationResult> {
+  const pairDisplayPath = diagnostics?.formatPairPath(pair.normalizedRelativePath)
+    ?? pair.normalizedRelativePath;
+  const metaDisplayPath = diagnostics?.formatPath(pair.metaPath) ?? pair.metaPath;
+  const jsonlDisplayPath = diagnostics?.formatPath(pair.jsonlPath) ?? pair.jsonlPath;
+
   if (!pair.metaExists || !pair.jsonlExists) {
     return {
       kind: "invalid",
       warning: {
         code: "pair_incomplete",
-        message: `Skipping conversation pair ${pair.normalizedRelativePath} - incomplete pair (${
+        message: `Skipping conversation pair ${pairDisplayPath} - incomplete pair (${
           !pair.metaExists ? "missing .meta.json" : "missing .jsonl"
         }).`,
-        paths: [pair.metaPath, pair.jsonlPath],
+        paths: [metaDisplayPath, jsonlDisplayPath],
       },
     };
   }
@@ -237,12 +250,18 @@ export async function validatePair(
   try {
     raw = await fs.readFile(pair.metaPath, "utf8");
   } catch (error) {
+    // With a diagnostic adapter the display path is carried on `path` and
+    // rendered separately, so the message only needs the operation and code.
+    const code = filesystemErrorCode(error);
+    const reason = diagnostics
+      ? `failed to read .meta.json${code != null ? ` (${code})` : ""}`
+      : `failed to read .meta.json: ${(error as Error).message}`;
     return {
       kind: "invalid",
       warning: {
         code: "pair_invalid_metadata",
-        message: `Skipping conversation pair ${pair.normalizedRelativePath} - failed to read .meta.json: ${(error as Error).message}`,
-        path: pair.metaPath,
+        message: `Skipping conversation pair ${pairDisplayPath} - ${reason}`,
+        path: metaDisplayPath,
       },
     };
   }
@@ -253,8 +272,8 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_invalid_metadata",
-        message: `Skipping conversation pair ${pair.normalizedRelativePath} - invalid .meta.json: ${parsed.reason}`,
-        path: pair.metaPath,
+        message: `Skipping conversation pair ${pairDisplayPath} - invalid .meta.json: ${parsed.reason}`,
+        path: metaDisplayPath,
       },
     };
   }
@@ -267,9 +286,11 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_id_mismatch",
-        message: `Skipping conversation pair - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
+        message: diagnostics
+          ? `Skipping conversation pair ${pairDisplayPath} - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`
+          : `Skipping conversation pair - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
         pair: pairWarning,
-        path: pair.metaPath,
+        path: metaDisplayPath,
       },
     };
   }
@@ -279,9 +300,9 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "unsupported_source",
-        message: `Skipping conversation pair ${pair.normalizedRelativePath} - source "${meta.source}" is not supported by this clog build.`,
+        message: `Skipping conversation pair ${pairDisplayPath} - source "${meta.source}" is not supported by this clog build.`,
         pair: { author: meta.author, source: meta.source, id: meta.id },
-        path: pair.metaPath,
+        path: metaDisplayPath,
         source: meta.source,
       },
     };
@@ -292,13 +313,21 @@ export async function validatePair(
     const adapter = getAdapter(meta.source, config);
     messages = await adapter.parseMessages(pair.jsonlPath);
   } catch (error) {
+    // A filesystem read failure carries a stable code; keep the display path on
+    // `path` rather than repeating it in the message. Content parse failures
+    // keep their native message, which never contains the input path.
+    const code = filesystemErrorCode(error);
+    const reason =
+      diagnostics && code != null
+        ? `failed to read .jsonl (${code})`
+        : `failed to parse .jsonl: ${(error as Error).message}`;
     return {
       kind: "invalid",
       warning: {
         code: "pair_invalid_content",
-        message: `Skipping conversation pair ${pair.normalizedRelativePath} - failed to parse .jsonl: ${(error as Error).message}`,
+        message: `Skipping conversation pair ${pairDisplayPath} - ${reason}`,
         pair: pairWarning,
-        path: pair.jsonlPath,
+        path: jsonlDisplayPath,
       },
     };
   }
@@ -343,6 +372,13 @@ async function scanPairDir(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return;
+    }
+    if (options.diagnostics) {
+      throw options.diagnostics.translateFilesystemError(
+        "Failed to read pair directory",
+        currentDir,
+        error,
+      );
     }
     throw error;
   }
@@ -399,6 +435,11 @@ async function scanPairDir(
 
     groups.set(normalizedRelativePath, pair);
   }
+}
+
+function filesystemErrorCode(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === "string" && code.length > 0 ? code : null;
 }
 
 function buildScannedPair(

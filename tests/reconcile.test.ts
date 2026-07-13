@@ -1,7 +1,13 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { getDefaultConfig } from "../src/config/index.js";
 import {
   planGitReconciliation,
+  scanGitCheckoutPairs,
   type GitPairScan,
   type GitValidatedPair,
 } from "../src/interchange/reconcile.js";
@@ -11,6 +17,30 @@ const REMOTE_URL = "git@github.com:myorg/clog-team.git";
 const OTHER_REMOTE = "git@github.com:myorg/other.git";
 
 describe("git reconciliation planner", () => {
+  it("keeps physical checkout paths when shared pair validation reports an incomplete pair", async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-reconcile-paths-"));
+    const id = "a0101010-1010-1010-1010-101010101010";
+    const pairDir = path.join(rootDir, "alice", "claude-code");
+    const metaPath = path.join(pairDir, `${id}.meta.json`);
+    const jsonlPath = path.join(pairDir, `${id}.jsonl`);
+
+    try {
+      await fs.mkdir(pairDir, { recursive: true });
+      await fs.writeFile(jsonlPath, "{}\n", "utf8");
+
+      const scan = await scanGitCheckoutPairs(rootDir, getDefaultConfig("alice"));
+      const result = scan.results[0];
+
+      expect(result?.kind).toBe("invalid");
+      if (result?.kind === "invalid") {
+        expect(result.warning.code).toBe("pair_incomplete");
+        expect(result.warning.paths).toEqual([metaPath, jsonlPath]);
+      }
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("deletes only git rows for the exact configured remote", () => {
     const active = conversation({
       id: "a1111111-1111-1111-1111-111111111111",

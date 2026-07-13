@@ -148,6 +148,23 @@ describe("conversation pair interchange", () => {
     }
   });
 
+  it("preserves physical metadata-read diagnostics without a diagnostic adapter", async () => {
+    const id = "f8989898-8989-8989-8989-898989898989";
+    await writeCompletePair(tempDir, id);
+    const [pair] = await scanPairs(tempDir);
+    await fs.rm(pair!.metaPath);
+
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation.kind).toBe("invalid");
+    if (validation.kind === "invalid") {
+      expect(validation.warning.code).toBe("pair_invalid_metadata");
+      expect(validation.warning.message).toContain("failed to read .meta.json:");
+      expect(validation.warning.message).toContain(pair!.metaPath);
+      expect(validation.warning.path).toBe(pair!.metaPath);
+    }
+  });
+
   it("uses pair_id_mismatch when the filename stem differs from meta.id", async () => {
     const filenameStem = "12345678-1234-1234-1234-123456789abc";
     const metaId = "abcdef12-1234-1234-1234-123456789abc";

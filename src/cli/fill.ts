@@ -1,10 +1,9 @@
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
-import path from "node:path";
 
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
+import type { Config } from "../config/schema.js";
 import { listConversationsInDb, withDb } from "../db/index.js";
 import {
   isFillWriteAction,
@@ -20,11 +19,16 @@ import { ClogError } from "../utils/errors.js";
 import {
   getImportConversationPath,
   getRawConversationPath,
-  normalizeUserPath,
 } from "../utils/paths.js";
 import { nowIso } from "../utils/time.js";
 import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "./clogignore.js";
 import { applyFillWriteAction } from "./fill-executor.js";
+import {
+  assertReadableFillDirectory,
+  createPreparedDirectoryInput,
+  protectFillInputError,
+  type PreparedFillInput,
+} from "./fill-input.js";
 
 interface FillOptions {
   own?: boolean;
@@ -64,6 +68,7 @@ export async function runFillCommand(
   inputDir: string,
   options: FillOptions = {},
 ): Promise<void> {
+  const input = createPreparedDirectoryInput(inputDir);
   const config = await loadConfig();
   const mode: FillMode = options.own ? "own" : "file";
   const author = config.author.trim();
@@ -72,15 +77,29 @@ export async function runFillCommand(
     throw new ClogError("clog fill --own requires a configured author. Run 'clog config set author <name>' first.");
   }
 
-  const rootDir = await assertReadableDirectory(inputDir);
-  const scannedPairs = await scanPairs(rootDir);
+  try {
+    await assertReadableFillDirectory(input);
+    await runPreparedFillCommand(input, options, config, mode, author);
+  } catch (error) {
+    throw protectFillInputError(input, error);
+  }
+}
+
+async function runPreparedFillCommand(
+  input: PreparedFillInput,
+  options: FillOptions,
+  config: Config,
+  mode: FillMode,
+  author: string,
+): Promise<void> {
+  const scannedPairs = await scanPairs(input.physicalRoot, { diagnostics: input });
   if (scannedPairs.length === 0) {
-    throw new ClogError(`No conversation pairs found in ${inputDir}.`);
+    throw new ClogError(`No conversation pairs found in ${input.suppliedPath}.`);
   }
 
   const candidates: FillCandidate[] = [];
   for (const scannedPair of scannedPairs) {
-    const validation = await validatePair(scannedPair, config);
+    const validation = await validatePair(scannedPair, config, input);
     if (validation.kind === "valid") {
       candidates.push(validation);
     } else {
@@ -88,6 +107,7 @@ export async function runFillCommand(
         kind: "invalid" as const,
         scannedPair,
         warning: validation.warning,
+        diagnosticPath: input.formatPairPath(scannedPair.normalizedRelativePath),
       });
     }
   }
@@ -108,6 +128,7 @@ export async function runFillCommand(
       ignoreRules,
       matchesIgnoreRule: matchesRemoteClogIgnoreRule,
       getManagedPath: getManagedPath,
+      formatDiagnosticPath: (physicalPath) => input.formatPath(physicalPath),
     });
     plan = await promoteMissingManagedCopies(plan);
 
@@ -127,7 +148,7 @@ export async function runFillCommand(
       if (!isFillWriteAction(action)) {
         continue;
       }
-      const written = await applyFillWriteAction(db, action);
+      const written = await applyFillWriteAction(db, action, input);
       if (written.indexedAt == null) {
         staleIndexCount += 1;
       }
@@ -143,7 +164,9 @@ export async function runFillCommand(
 
   renderFillMessages(execution.plan, { allowPartial, showAllErrors });
   if (execution.abortedBeforeWrites) {
-    process.stderr.write(`${formatFillAbortMessage(execution.plan, dryRun, showAllErrors)}\n`);
+    process.stderr.write(
+      `${formatFillAbortMessage(execution.plan, dryRun, showAllErrors, input)}\n`,
+    );
     if (execution.plan.hasFailures) {
       process.exitCode = 1;
     }
@@ -151,7 +174,7 @@ export async function runFillCommand(
   }
   renderFillSummary({
     stats: execution.stats,
-    inputDir,
+    input,
     dryRun,
   });
   renderFillGuidance({
@@ -161,6 +184,7 @@ export async function runFillCommand(
     dryRun,
     searchConfigured: config.search != null,
     staleIndexCount: execution.staleIndexCount,
+    input,
   });
 
   if (execution.plan.hasFailures) {
@@ -172,6 +196,7 @@ function formatFillAbortMessage(
   plan: FillPlan,
   dryRun: boolean,
   showAllErrors: boolean,
+  input: PreparedFillInput,
 ): string {
   const shouldMentionShowAll = shouldSuggestShowAllErrors(plan, showAllErrors);
   if (plan.hasAuthorGuardFailure) {
@@ -185,8 +210,8 @@ function formatFillAbortMessage(
   }
 
   const base = dryRun
-    ? "Dry run: fill found errors in the input directory; no conversations would be imported."
-    : "error: fill found errors in the input directory; no conversations were imported.";
+    ? `Dry run: fill found errors in the ${input.inputDescription}; no conversations would be imported.`
+    : `error: fill found errors in the ${input.inputDescription}; no conversations were imported.`;
 
   if (shouldMentionShowAll) {
     return `${base} Re-run with --show-all-errors to see each pair error, or use --allow-partial to import the valid pairs.`;
@@ -203,36 +228,10 @@ function formatFillAbortMessage(
     return `${base} ${capitalize(adapterGuidance)}, or use --allow-partial to import the valid pairs.`;
   }
   if (hasUnsupportedSources) {
-    return `${base} Fix the input directory, ${adapterGuidance}, or use --allow-partial to import the valid pairs.`;
+    return `${base} Fix the ${input.inputDescription}, ${adapterGuidance}, or use --allow-partial to import the valid pairs.`;
   }
 
-  return `${base} Fix the input directory, or use --allow-partial to import the valid pairs.`;
-}
-
-async function assertReadableDirectory(inputDir: string): Promise<string> {
-  const rootDir = normalizeUserPath(inputDir);
-  let stat;
-  try {
-    stat = await fs.stat(rootDir);
-  } catch (error) {
-    throw new ClogError(
-      `Fill directory is not readable: ${inputDir} (${(error as Error).message})`,
-    );
-  }
-
-  if (!stat.isDirectory()) {
-    throw new ClogError(`Fill path is not a directory: ${inputDir}`);
-  }
-
-  try {
-    await fs.access(rootDir, fsConstants.R_OK);
-  } catch (error) {
-    throw new ClogError(
-      `Fill directory is not readable: ${inputDir} (${(error as Error).message})`,
-    );
-  }
-
-  return rootDir;
+  return `${base} Fix the ${input.inputDescription}, or use --allow-partial to import the valid pairs.`;
 }
 
 function getManagedPath(pair: ValidatedPair, mode: FillMode): string {
@@ -431,6 +430,7 @@ function formatPairErrorDetail(action: FillSkipAction): string {
 
 function formatUnsupportedSourcePairPath(action: FillSkipAction): string {
   return (
+    action.diagnosticPath ??
     action.scannedPair?.normalizedRelativePath ??
     action.warning?.pair?.id ??
     action.warning?.path ??
@@ -454,10 +454,10 @@ function capitalize(text: string): string {
 
 function renderFillSummary(args: {
   stats: FillStats;
-  inputDir: string;
+  input: PreparedFillInput;
   dryRun: boolean;
 }): void {
-  const { stats, inputDir, dryRun } = args;
+  const { stats, input, dryRun } = args;
   const total =
     stats.newCount + stats.updatedCount + stats.unchangedCount + stats.skippedCount;
   const changedParts = [];
@@ -475,7 +475,7 @@ function renderFillSummary(args: {
   const verb = dryRun ? "Dry run: would process" : "Processed";
 
   process.stderr.write(
-    `${verb} ${total} conversation pair${total === 1 ? "" : "s"} from ${formatSummaryDir(inputDir)}${note}\n`,
+    `${verb} ${total} conversation pair${total === 1 ? "" : "s"} from ${input.formatSummaryPath()}${note}\n`,
   );
 }
 
@@ -486,8 +486,17 @@ function renderFillGuidance(args: {
   dryRun: boolean;
   searchConfigured: boolean;
   staleIndexCount: number;
+  input: PreparedFillInput;
 }): void {
-  const { plan, configAuthor, mode, dryRun, searchConfigured, staleIndexCount } = args;
+  const {
+    plan,
+    configAuthor,
+    mode,
+    dryRun,
+    searchConfigured,
+    staleIndexCount,
+    input,
+  } = args;
 
   if (mode === "file" && plan.hiddenForeignAuthorCount > 0) {
     const verb = dryRun ? "would be" : plan.hiddenForeignAuthorCount === 1 ? "is" : "are";
@@ -502,7 +511,7 @@ function renderFillGuidance(args: {
     plan.allValidCandidatesMatchAuthor
   ) {
     process.stderr.write(
-      "hint: All importable pairs are authored by the configured user. Use 'clog fill <dir> --own' to restore editable local rows.\n",
+      `hint: All importable pairs from ${input.suppliedPath} are authored by the configured user. Re-run this fill with --own to restore editable local rows.\n`,
     );
   }
 
@@ -521,8 +530,4 @@ function formatWarningDetails(warning: ClogWarning): string {
   ].filter(Boolean);
 
   return details.length > 0 ? ` (${details.join("; ")})` : "";
-}
-
-function formatSummaryDir(inputDir: string): string {
-  return inputDir.endsWith(path.sep) ? inputDir : `${inputDir}${path.sep}`;
 }

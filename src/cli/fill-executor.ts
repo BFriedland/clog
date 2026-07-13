@@ -15,15 +15,17 @@ import type { FillWriteAction } from "../interchange/fill.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
+import type { PreparedFillInput } from "./fill-input.js";
 
 export async function applyFillWriteAction(
   db: Database,
   action: FillWriteAction,
+  input?: PreparedFillInput,
 ): Promise<ConversationMeta> {
   const writeKind = action.kind === "insert" ? "insert" : "update";
 
   validateFillWriteTargetInDb(db, writeKind, action.conversation);
-  await ensureManagedContent(action);
+  await ensureManagedContent(action, input);
   const sourceMtime = (await fs.stat(action.managedPath)).mtime.toISOString();
   const conversation = {
     ...action.conversation,
@@ -117,12 +119,28 @@ function applyLocalFillWriteInDb(
   unsafeUpdateConversationInDb(db, localConversation);
 }
 
-async function ensureManagedContent(action: FillWriteAction): Promise<void> {
+async function ensureManagedContent(
+  action: FillWriteAction,
+  input?: PreparedFillInput,
+): Promise<void> {
   if (!action.copyContent && (await fileExists(action.managedPath))) {
     return;
   }
 
-  const content = await fs.readFile(action.pair.jsonlPath);
+  let content: Buffer;
+  try {
+    content = await fs.readFile(action.pair.jsonlPath);
+  } catch (error) {
+    if (!input) {
+      throw error;
+    }
+
+    throw input.translateFilesystemError(
+      `Failed to copy pair content to ${action.managedPath} from`,
+      action.pair.jsonlPath,
+      error,
+    );
+  }
   await writeFileAtomic(action.managedPath, content);
 }
 

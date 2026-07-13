@@ -30,8 +30,10 @@ import { captureOutputWithError } from "./helpers/output.js";
 describe("clog fill", () => {
   let tempDir: string;
   let pairDir: string;
+  let originalCwd: string;
 
   beforeEach(async () => {
+    originalCwd = process.cwd();
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-fill-"));
     process.env.CLOG_HOME = path.join(tempDir, "clog-home");
     pairDir = path.join(tempDir, "pairs");
@@ -44,9 +46,246 @@ describe("clog fill", () => {
   });
 
   afterEach(async () => {
+    process.chdir(originalCwd);
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  it("preserves a relative directory spelling in incomplete-pair diagnostics", async () => {
+    const id = "a0101010-1010-1010-1010-101010101010";
+    const inputPath = "./pairs";
+    await fs.mkdir(pairDir, { recursive: true });
+    await fs.writeFile(path.join(pairDir, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
+    process.chdir(tempDir);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      `Skipping conversation pair ${inputPath}${path.sep}${id}`,
+    );
+    expect(result.stderr).toContain(
+      `paths=${inputPath}${path.sep}${id}.meta.json, ${inputPath}${path.sep}${id}.jsonl`,
+    );
+    expect(result.stderr).not.toContain(pairDir);
+  });
+
+  it("renders descendants of a dot input beneath ./", async () => {
+    const id = "a0202020-2020-2020-2020-202020202020";
+    await fs.mkdir(pairDir, { recursive: true });
+    await fs.writeFile(path.join(pairDir, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
+    process.chdir(pairDir);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["."]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(`Skipping conversation pair .${path.sep}${id}`);
+    expect(result.stderr).not.toContain(pairDir);
+  });
+
+  it("preserves a quoted home-directory spelling in diagnostics", async () => {
+    const id = "a0303030-3030-3030-3030-303030303030";
+    const fakeHome = path.join(tempDir, "home");
+    vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+    await fs.mkdir(fakeHome, { recursive: true });
+    await fs.writeFile(path.join(fakeHome, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["~"]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(`Skipping conversation pair ~${path.sep}${id}`);
+    expect(result.stderr).not.toContain(fakeHome);
+  });
+
+  it("reports a missing relative directory without its resolved physical path", async () => {
+    process.chdir(tempDir);
+    const physicalMissingPath = path.join(tempDir, "missing");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["./missing"]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe(
+      "Fill directory is not readable: ./missing (ENOENT)",
+    );
+    expect((result.error as Error).message).not.toContain(physicalMissingPath);
+  });
+
+  it("retains filesystem details for a missing absolute directory with a trailing separator", async () => {
+    const missingPath = path.join(tempDir, "missing");
+    const inputPath = `${missingPath}${path.sep}`;
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe(
+      `Fill directory is not readable: ${inputPath} (ENOENT)`,
+    );
+  });
+
+  it("uses the supplied path when a directory contains no conversation pairs", async () => {
+    const emptyDir = path.join(tempDir, "empty");
+    await fs.mkdir(emptyDir);
+    process.chdir(tempDir);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["./empty"]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe("No conversation pairs found in ./empty.");
+    expect((result.error as Error).message).not.toContain(emptyDir);
+  });
+
+  it("uses an absolute input path in pair diagnostics", async () => {
+    const id = "a0404040-4040-4040-4040-404040404040";
+    await fs.mkdir(pairDir, { recursive: true });
+    await fs.writeFile(path.join(pairDir, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(
+      `Skipping conversation pair ${path.join(pairDir, id)}`,
+    );
+  });
+
+  it("does not double a supplied trailing separator in paths or summaries", async () => {
+    const id = "a0505050-5050-5050-5050-505050505050";
+    const incompleteId = "a0555555-5555-5555-5555-555555555555";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await fs.writeFile(
+      path.join(pairDir, `${incompleteId}.jsonl`),
+      makeClaudeJsonl(1),
+      "utf8",
+    );
+    process.chdir(tempDir);
+    const inputPath = `.${path.sep}pairs${path.sep}`;
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [
+      inputPath,
+      "--allow-partial",
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(`Skipping conversation pair ${inputPath}${incompleteId}`);
+    expect(result.stderr).toContain(`from ${inputPath}`);
+    expect(result.stderr).not.toContain(`pairs${path.sep}${path.sep}`);
+  });
+
+  it("uses display paths while reading and reporting invalid metadata", async () => {
+    const id = "a0606060-6060-6060-6060-606060606060";
+    const inputPath = "./pairs";
+    await fs.mkdir(pairDir, { recursive: true });
+    await fs.writeFile(path.join(pairDir, `${id}.meta.json`), "{invalid\n", "utf8");
+    await fs.writeFile(path.join(pairDir, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
+    process.chdir(tempDir);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(
+      `Skipping conversation pair ${inputPath}${path.sep}${id}`,
+    );
+    expect(result.stderr).toContain(`path=${inputPath}${path.sep}${id}.meta.json`);
+    expect(result.stderr).not.toContain(pairDir);
+  });
+
+  it("translates a metadata read failure without exposing the physical input path", async () => {
+    const id = "a0707070-7070-7070-7070-707070707070";
+    const inputPath = "./pairs";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    process.chdir(tempDir);
+    const physicalPairDir = path.resolve("./pairs");
+    const metaPath = path.join(physicalPairDir, `${id}.meta.json`);
+    const originalReadFile = fs.readFile.bind(fs);
+    const readFileSpy = vi.spyOn(fs, "readFile");
+    readFileSpy.mockImplementation(async (filePath, ...args) => {
+      if (String(filePath) === metaPath) {
+        throw makeFilesystemError("ENOENT", metaPath);
+      }
+
+      return originalReadFile(filePath, ...args) as ReturnType<typeof fs.readFile>;
+    });
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain("failed to read .meta.json (ENOENT)");
+    expect(result.stderr).toContain(`path=${inputPath}${path.sep}${id}.meta.json`);
+    // The display path is reported once via `path=`, not repeated in the message.
+    expect(result.stderr).not.toContain(`from ${inputPath}${path.sep}${id}.meta.json`);
+    expect(result.stderr).not.toContain(metaPath);
+    expect(readFileSpy).toHaveBeenCalledWith(metaPath, "utf8");
+  });
+
+  it("translates a pair-directory read failure without exposing the physical input path", async () => {
+    const id = "a0757575-7575-7575-7575-757575757575";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    process.chdir(tempDir);
+    const physicalPairDir = path.resolve("./pairs");
+    const originalReadDir = fs.readdir.bind(fs);
+    vi.spyOn(fs, "readdir").mockImplementation(async (directoryPath, ...args) => {
+      if (String(directoryPath) === physicalPairDir) {
+        throw makeFilesystemError("EACCES", physicalPairDir);
+      }
+
+      return originalReadDir(directoryPath, ...args) as ReturnType<typeof fs.readdir>;
+    });
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["./pairs"]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe(
+      "Failed to read pair directory ./pairs (EACCES)",
+    );
+    expect((result.error as Error).message).not.toContain(physicalPairDir);
+  });
+
+  it("translates a managed-copy source read failure without exposing its physical path", async () => {
+    const id = "a0808080-8080-8080-8080-808080808080";
+    const inputPath = "./pairs";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    process.chdir(tempDir);
+    const physicalPairDir = path.resolve("./pairs");
+    const jsonlPath = path.join(physicalPairDir, `${id}.jsonl`);
+    const managedPath = getImportConversationPath("claude-code", id);
+    const originalReadFile = fs.readFile.bind(fs);
+    let sourceReadCount = 0;
+    vi.spyOn(fs, "readFile").mockImplementation(async (filePath, ...args) => {
+      if (String(filePath) === jsonlPath) {
+        sourceReadCount += 1;
+        if (sourceReadCount === 2) {
+          throw makeFilesystemError("ENOENT", jsonlPath);
+        }
+      }
+
+      return originalReadFile(filePath, ...args) as ReturnType<typeof fs.readFile>;
+    });
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toContain(
+      `Failed to copy pair content to ${managedPath} from ${inputPath}${path.sep}${id}.jsonl (ENOENT)`,
+    );
+    expect((result.error as Error).message).not.toContain(jsonlPath);
+    expect(sourceReadCount).toBe(2);
+  });
+
+  it("uses a safe command-level error when an unexpected failure contains the physical root", async () => {
+    const id = "a0909090-9090-9090-9090-909090909090";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    process.chdir(tempDir);
+    const physicalPairDir = path.resolve("./pairs");
+    vi.spyOn(dbModule, "withDb").mockRejectedValue(
+      new Error(
+        `Unexpected failure while processing ${path.join(physicalPairDir, `${id}.jsonl`)}`,
+      ),
+    );
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, ["./pairs"]);
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe("Failed to process fill input ./pairs.");
+    expect((result.error as Error).message).not.toContain(physicalPairDir);
   });
 
   it("imports foreign pairs as read-only file rows with managed content", async () => {
@@ -101,7 +340,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain("clog fill <dir> --own");
+    expect(result.stderr).toContain("Re-run this fill with --own");
     expect(result.stderr).not.toContain("clog list --all");
 
     const row = await getConversationById(id);
@@ -150,7 +389,9 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain(`error: Skipping conversation pair broken/${badId} - incomplete pair`);
+    expect(result.stderr).toContain(
+      `error: Skipping conversation pair ${path.join(pairDir, "broken", badId)} - incomplete pair`,
+    );
     expect(result.stderr).not.toContain("input pairs could not be imported");
     expect(result.stderr).toContain("fill found errors in the input directory");
     expect(result.stderr).toContain("no conversations were imported");
@@ -194,10 +435,10 @@ describe("clog fill", () => {
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${firstBadId} - incomplete pair`,
+      `error: Skipping conversation pair ${path.join(pairDir, firstBadId)} - incomplete pair`,
     );
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair nested/${secondBadId} - incomplete pair`,
+      `error: Skipping conversation pair ${path.join(pairDir, "nested", secondBadId)} - incomplete pair`,
     );
   });
 
@@ -304,8 +545,10 @@ describe("clog fill", () => {
     );
     await fs.writeFile(path.join(pairDir, `${firstInvalidId}.jsonl`), makeClaudeJsonl(1), "utf8");
     await fs.writeFile(path.join(pairDir, `${secondInvalidId}.jsonl`), makeClaudeJsonl(1), "utf8");
+    process.chdir(tempDir);
+    const inputPath = `.${path.sep}pairs`;
 
-    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
@@ -316,21 +559,25 @@ describe("clog fill", () => {
     expect(result.stderr).not.toContain(`    carol/future-agent/${secondUnsupportedId}`);
 
     const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
-      pairDir,
+      inputPath,
       "--show-all-errors",
     ]);
 
     expect(expanded.error).toBeNull();
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${firstInvalidId} - incomplete pair`,
+      `error: Skipping conversation pair ${inputPath}${path.sep}${firstInvalidId} - incomplete pair`,
     );
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${secondInvalidId} - incomplete pair`,
+      `error: Skipping conversation pair ${inputPath}${path.sep}${secondInvalidId} - incomplete pair`,
     );
     expect(expanded.stderr).toContain('error: 2 pairs use source "future-agent"');
-    expect(expanded.stderr).toContain(`    carol/future-agent/${firstUnsupportedId}`);
-    expect(expanded.stderr).toContain(`    carol/future-agent/${secondUnsupportedId}`);
+    expect(expanded.stderr).toContain(
+      `    ${inputPath}${path.sep}carol${path.sep}future-agent${path.sep}${firstUnsupportedId}`,
+    );
+    expect(expanded.stderr).toContain(
+      `    ${inputPath}${path.sep}carol${path.sep}future-agent${path.sep}${secondUnsupportedId}`,
+    );
   });
 
   it("rejects duplicate input identities without choosing a winner", async () => {
@@ -338,9 +585,11 @@ describe("clog fill", () => {
     await writePairFixture(path.join(pairDir, "alice"), id, { author: "alice", title: "Alice" }, 1);
     await writePairFixture(path.join(pairDir, "bob"), id, { author: "bob", title: "Bob" }, 1);
     await writePairFixture(path.join(pairDir, "carol"), id, { author: "carol", title: "Carol" }, 1);
+    process.chdir(tempDir);
+    const inputPath = `.${path.sep}pairs`;
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
-      pairDir,
+      inputPath,
       "--allow-partial",
     ]);
 
@@ -351,7 +600,7 @@ describe("clog fill", () => {
     expect(await getConversationById(id)).toBeNull();
 
     const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
-      pairDir,
+      inputPath,
       "--allow-partial",
       "--show-all-errors",
     ]);
@@ -359,9 +608,10 @@ describe("clog fill", () => {
     expect(expanded.error).toBeNull();
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).toContain("duplicate input identity");
-    expect(expanded.stderr).toContain(path.join(pairDir, "alice", `${id}.meta.json`));
-    expect(expanded.stderr).toContain(path.join(pairDir, "bob", `${id}.meta.json`));
-    expect(expanded.stderr).toContain(path.join(pairDir, "carol", `${id}.meta.json`));
+    expect(expanded.stderr).toContain(`${inputPath}${path.sep}alice${path.sep}${id}.meta.json`);
+    expect(expanded.stderr).toContain(`${inputPath}${path.sep}bob${path.sep}${id}.meta.json`);
+    expect(expanded.stderr).toContain(`${inputPath}${path.sep}carol${path.sep}${id}.meta.json`);
+    expect(expanded.stderr).not.toContain(pairDir);
   });
 
   it("supports dry-run without writing rows or managed files", async () => {
@@ -756,6 +1006,7 @@ describe("clog fill", () => {
       kind: "skip",
       reason: "unsupported_promotion",
       failure: true,
+      message: "Skipping b8888888 - promoting a filled read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.",
     });
     expect(singleAction({
       pair,
@@ -854,6 +1105,15 @@ function makeClaudeLines(messageCount: number, prefix = "Message"): unknown[] {
     });
   }
   return lines;
+}
+
+function makeFilesystemError(code: string, filePath: string): NodeJS.ErrnoException {
+  const error = new Error(
+    `${code}: simulated filesystem failure, open '${filePath}'`,
+  ) as NodeJS.ErrnoException;
+  error.code = code;
+  error.path = filePath;
+  return error;
 }
 
 function singleAction(args: {
