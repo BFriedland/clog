@@ -3,8 +3,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { PairDiagnosticAdapter } from "../interchange/pairs.js";
-import { ClogError } from "../utils/errors.js";
+import {
+  assertArchiveByteLimit,
+  ArchiveError,
+  classifyZipSignature,
+  extractPairArchive,
+} from "../interchange/archive.js";
+import { ClogError, UsageError } from "../utils/errors.js";
 import { normalizeUserPath } from "../utils/paths.js";
+import { withPrivateTempDirectory } from "../utils/private-temp.js";
 
 export type FillInputKind = "directory" | "archive";
 
@@ -52,6 +59,97 @@ export function createPreparedDirectoryInput(inputPath: string): PreparedFillInp
         : `${suppliedPath}${path.sep}`;
     },
   };
+}
+
+function createPreparedArchiveInput(
+  inputPath: string,
+  physicalRoot: string,
+): PreparedFillInput {
+  const suppliedPath = inputPath;
+  const resolvedRoot = path.resolve(physicalRoot);
+
+  const formatPath = (physicalPath: string): string => {
+    const relativePath = path.relative(resolvedRoot, path.resolve(physicalPath));
+    if (!isDescendantPath(relativePath)) {
+      throw new ClogError("Fill could not format a path outside the prepared archive directory.");
+    }
+    return formatArchiveEntryPath(suppliedPath, relativePath.split(path.sep).join("/"));
+  };
+
+  return {
+    kind: "archive",
+    physicalRoot: resolvedRoot,
+    suppliedPath,
+    inputDescription: "input archive",
+    formatPath,
+    formatPairPath(normalizedRelativePath: string): string {
+      return formatArchiveEntryPath(suppliedPath, normalizedRelativePath);
+    },
+    translateFilesystemError(operation: string, physicalPath: string, error: unknown): Error {
+      return new TranslatedFillInputError(
+        `${operation} ${formatPath(physicalPath)}${formatFilesystemErrorCode(error)}`,
+      );
+    },
+    formatSummaryPath(): string {
+      return suppliedPath;
+    },
+  };
+}
+
+export async function withPreparedFillInput<T>(
+  inputPath: string,
+  operation: (input: PreparedFillInput) => Promise<T>,
+): Promise<T> {
+  const directoryInput = createPreparedDirectoryInput(inputPath);
+  let stat;
+  try {
+    stat = await fs.stat(directoryInput.physicalRoot);
+  } catch {
+    return runPreparedOperation(directoryInput, operation, async () => {
+      await assertReadableFillDirectory(directoryInput);
+    });
+  }
+
+  if (stat.isDirectory()) {
+    return runPreparedOperation(directoryInput, operation, async () => {
+      await assertReadableFillDirectory(directoryInput);
+    });
+  }
+
+  if (!stat.isFile()) {
+    throw new UsageError(
+      `Fill path must resolve to a directory or regular zip file: ${inputPath}`,
+    );
+  }
+
+  const leadingBytes = await readLeadingBytes(directoryInput.physicalRoot, inputPath);
+  if (classifyZipSignature(leadingBytes) == null) {
+    throw new UsageError(
+      `Fill file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
+    );
+  }
+
+  assertArchiveByteLimit(stat.size);
+
+  return withPrivateTempDirectory(async (temporaryRoot) => {
+    let archiveData;
+    try {
+      archiveData = await fs.readFile(directoryInput.physicalRoot);
+    } catch (error) {
+      throw new ArchiveError(
+        `Could not read archive ${inputPath}${formatFilesystemErrorCode(error)}.`,
+      );
+    }
+
+    assertArchiveByteLimit(archiveData.byteLength);
+    if (classifyZipSignature(archiveData) == null) {
+      throw new ArchiveError(`Archive ${inputPath} changed before it could be decoded.`);
+    }
+
+    await extractPairArchive(archiveData, temporaryRoot, inputPath);
+    const archiveInput = createPreparedArchiveInput(inputPath, temporaryRoot);
+    return runPreparedOperation(archiveInput, operation);
+  });
 }
 
 export async function assertReadableFillDirectory(input: PreparedFillInput): Promise<void> {
@@ -104,6 +202,42 @@ export function protectFillInputError(
     `Failed to process fill input ${input.suppliedPath}${formatFilesystemErrorCode(error)}.`,
     { exitCode: error instanceof ClogError ? error.exitCode : 1 },
   );
+}
+
+async function runPreparedOperation<T>(
+  input: PreparedFillInput,
+  operation: (input: PreparedFillInput) => Promise<T>,
+  beforeOperation?: () => Promise<void>,
+): Promise<T> {
+  try {
+    await beforeOperation?.();
+    return await operation(input);
+  } catch (error) {
+    throw protectFillInputError(input, error);
+  }
+}
+
+async function readLeadingBytes(
+  physicalPath: string,
+  suppliedPath: string,
+): Promise<Uint8Array> {
+  let handle;
+  try {
+    handle = await fs.open(physicalPath, "r");
+    const bytes = Buffer.alloc(4);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.byteLength, 0);
+    return bytes.subarray(0, bytesRead);
+  } catch (error) {
+    throw new ClogError(
+      `Fill file is not readable: ${suppliedPath}${formatFilesystemErrorCode(error)}`,
+    );
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function formatArchiveEntryPath(archivePath: string, relativePath: string): string {
+  return relativePath.length > 0 ? `${archivePath}:${relativePath}` : archivePath;
 }
 
 function appendDisplayPath(displayRoot: string, relativePath: string): string {

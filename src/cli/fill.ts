@@ -12,6 +12,7 @@ import {
   type FillCandidate,
   type FillMode,
   type FillPlan,
+  type FillSkipReason,
 } from "../interchange/fill.js";
 import { scanPairs, validatePair, type ValidatedPair } from "../interchange/pairs.js";
 import type { ClogWarning } from "../models/warnings.js";
@@ -24,9 +25,7 @@ import { nowIso } from "../utils/time.js";
 import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "./clogignore.js";
 import { applyFillWriteAction } from "./fill-executor.js";
 import {
-  assertReadableFillDirectory,
-  createPreparedDirectoryInput,
-  protectFillInputError,
+  withPreparedFillInput,
   type PreparedFillInput,
 } from "./fill-input.js";
 
@@ -51,24 +50,28 @@ interface UnsupportedSourceGroup {
   actions: FillSkipAction[];
 }
 
+interface BenignSkipGroup {
+  reason: FillSkipReason;
+  actions: FillSkipAction[];
+}
+
 export function buildFillCommand(): Command {
   return new Command("fill")
-    .description("Import conversation pair files")
-    .argument("<dir>", "Directory containing conversation pair files")
+    .description("Import conversation pair files from a zip archive or directory")
+    .argument("<path>", "Zip archive or directory containing conversation pair files")
     .option("--own", "Restore pairs authored by the configured user as editable local rows")
     .option("--dry-run", "Plan the import without writing managed files or database rows")
     .option("--allow-partial", "Skip failure-class candidates and import valid candidates")
-    .option("--show-all-errors", "Show every pair-level fill error instead of summarizing")
+    .option("--show-all-errors", "Show every per-pair error and skipped conversation")
     .action(async (dir: string, options: FillOptions) => {
       await runFillCommand(dir, options);
     });
 }
 
 export async function runFillCommand(
-  inputDir: string,
+  inputPath: string,
   options: FillOptions = {},
 ): Promise<void> {
-  const input = createPreparedDirectoryInput(inputDir);
   const config = await loadConfig();
   const mode: FillMode = options.own ? "own" : "file";
   const author = config.author.trim();
@@ -77,12 +80,9 @@ export async function runFillCommand(
     throw new ClogError("clog fill --own requires a configured author. Run 'clog config set author <name>' first.");
   }
 
-  try {
-    await assertReadableFillDirectory(input);
+  await withPreparedFillInput(inputPath, async (input) => {
     await runPreparedFillCommand(input, options, config, mode, author);
-  } catch (error) {
-    throw protectFillInputError(input, error);
-  }
+  });
 }
 
 async function runPreparedFillCommand(
@@ -162,7 +162,7 @@ async function runPreparedFillCommand(
     };
   });
 
-  renderFillMessages(execution.plan, { allowPartial, showAllErrors });
+  renderFillMessages(execution.plan, { allowPartial, showAllErrors, mode });
   if (execution.abortedBeforeWrites) {
     process.stderr.write(
       `${formatFillAbortMessage(execution.plan, dryRun, showAllErrors, input)}\n`,
@@ -310,7 +310,11 @@ function summarizeAbortedPlan(plan: FillPlan): FillStats {
 
 function renderFillMessages(
   plan: FillPlan,
-  options: { allowPartial: boolean; showAllErrors: boolean },
+  options: {
+    allowPartial: boolean;
+    showAllErrors: boolean;
+    mode: FillMode;
+  },
 ): void {
   const collapsedPairErrorActions = getCollapsedPairErrorActions(plan);
   const collapsedPairErrorCount = countBlockedPairs(collapsedPairErrorActions);
@@ -331,21 +335,11 @@ function renderFillMessages(
     options.showAllErrors,
   );
 
-  for (const action of plan.actions) {
-    if (action.kind !== "skip") {
-      continue;
-    }
-    if (action.reason === "ignored" || action.failure) {
-      continue;
-    }
-    process.stderr.write(`notice: ${action.message}\n`);
-  }
-
-  if (plan.ignoredCount > 0) {
-    process.stderr.write(
-      `notice: ${plan.ignoredCount} conversation pair${plan.ignoredCount === 1 ? "" : "s"} skipped by clogignore.\n`,
-    );
-  }
+  renderBenignSkipGroups(
+    getBenignSkipGroups(plan),
+    options.mode,
+    options.showAllErrors,
+  );
 }
 
 function getCollapsedPairErrorActions(plan: FillPlan): FillSkipAction[] {
@@ -418,6 +412,86 @@ function getUnsupportedSource(action: FillSkipAction): string {
 
 function countBlockedPairs(actions: FillSkipAction[]): number {
   return actions.reduce((count, action) => count + (action.count ?? 1), 0);
+}
+
+function getBenignSkipGroups(plan: FillPlan): BenignSkipGroup[] {
+  const groups = new Map<FillSkipReason, BenignSkipGroup>();
+
+  for (const action of plan.actions) {
+    if (action.kind !== "skip" || action.failure) {
+      continue;
+    }
+
+    const existing = groups.get(action.reason);
+    if (existing) {
+      existing.actions.push(action);
+    } else {
+      groups.set(action.reason, { reason: action.reason, actions: [action] });
+    }
+  }
+
+  return [...groups.values()];
+}
+
+function renderBenignSkipGroups(
+  groups: BenignSkipGroup[],
+  mode: FillMode,
+  showAllErrors: boolean,
+): void {
+  for (const group of groups) {
+    const count = countBlockedPairs(group.actions);
+    if (count === 1) {
+      process.stderr.write(`notice: ${group.actions[0]!.message}\n`);
+      continue;
+    }
+
+    process.stderr.write(
+      `notice: ${formatBenignSkipSummary(group.reason, count, mode, showAllErrors)}\n`,
+    );
+    if (!showAllErrors) {
+      continue;
+    }
+
+    for (const action of group.actions) {
+      process.stderr.write(`    ${formatSkipConversationIdentity(action)}\n`);
+    }
+  }
+}
+
+function formatBenignSkipSummary(
+  reason: FillSkipReason,
+  count: number,
+  mode: FillMode,
+  showAllErrors: boolean,
+): string {
+  const expansion = showAllErrors
+    ? ""
+    : " Re-run with --show-all-errors to list each conversation.";
+
+  if (reason === "ignored") {
+    return `${count} conversation pairs were skipped by clogignore.${expansion}`;
+  }
+
+  if (reason === "local_unsaved_precedence") {
+    return `${count} input pairs were skipped because matching unsaved local source copies already exist. Save the local conversations to keep their source metadata, or re-run this fill with --own to restore pair metadata.${expansion}`;
+  }
+
+  if (reason === "local_saved_precedence") {
+    const behavior = mode === "own"
+      ? "'clog fill --own' does not replace local metadata or content; remove the local copies first if you want these pairs to replace them."
+      : "'clog fill' imports read-only copies and does not replace local metadata or content.";
+    return `${count} input pairs were skipped because matching conversations are already saved locally. ${behavior}${expansion}`;
+  }
+
+  return `${count} input pairs were skipped.${expansion}`;
+}
+
+function formatSkipConversationIdentity(action: FillSkipAction): string {
+  if (action.pair) {
+    return `${action.pair.meta.id.slice(0, 8)}@${action.pair.meta.source}`;
+  }
+
+  return action.diagnosticPath ?? action.message;
 }
 
 function formatPairErrorDetail(action: FillSkipAction): string {

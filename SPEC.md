@@ -174,10 +174,10 @@ clog/
 │   │   ├── diff.ts          # Show new messages since last save
 │   │   ├── status.ts        # Show current state
 │   │   ├── show.ts          # Display conversation content
-│   │   ├── conversation-renderers.ts # Shared JSON, Markdown, and raw rendering for show and drain
+│   │   ├── conversation-renderers.ts # JSON, Markdown, and raw rendering for show
 │   │   ├── path.ts          # Print raw file path
-│   │   ├── drain.ts         # Export conversations as JSON, markdown, raw source, or pair files
-│   │   ├── fill.ts          # Import portable conversation file-pair exports
+│   │   ├── drain.ts         # Export saved conversations as archives or pair directories
+│   │   ├── fill.ts          # Import archive and directory conversation-pair exports
 │   │   ├── talk.ts          # Launch an MCP-capable agent for conversation work
 │   │   ├── list.ts          # List conversations with filters
 │   │   ├── exclude.ts       # Append literal ignore rules to clogignore
@@ -204,6 +204,7 @@ clog/
 │   │   ├── schema.ts        # Table definitions + migrations
 │   │   └── index.ts         # Query functions
 │   ├── interchange/         # Transport-neutral conversation file-pair IO and reconciliation planning
+│   │   ├── archive.ts       # Deterministic zip creation and safe selected-entry extraction
 │   │   ├── pairs.ts         # Pair discovery, validation, metadata, and safe writing
 │   │   ├── reconcile.ts     # Deterministic git reconciliation planner
 │   │   └── fill.ts          # File-import collision planning
@@ -920,12 +921,10 @@ clog show <id> --path      Print the file path (raw copy if saved, source if uns
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
-clog drain <selector>      Export conversation data to stdout (JSON by default)
-clog drain [filters]       Export a filtered set to stdout
-clog drain <selector> --to <path>  Export one conversation to a file
-clog drain <selectors...> --to-dir <dir>  Export one file per conversation to a directory
-clog drain <selectors...> --format pair --to-dir <dir>  Export saved conversations as portable conversation file pairs
-clog fill <dir> [flags]    Import portable conversation file pairs
+clog drain <selector>      Export saved conversations to ./clog-export.zip
+clog drain [filters] -o <archive.zip>  Export filtered saved conversations to an archive
+clog drain <selectors...> --format pair -o <dir>  Export saved conversations as unpacked conversation file pairs
+clog fill <path> [flags]   Import a clog archive or unpacked conversation-pair directory
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
@@ -1349,8 +1348,8 @@ A conversation is counted as lacking a structured summary when `summaryKind != "
 - `--json` prints one structured conversation object, never an array. The object
   contains `id`, `source`, `title`, `summary`, `summaryKind`, `extraction`,
   `author`, `projectName`, `tags`, `slug`, `createdAt`, `savedAt`, `state`, and
-  parsed `messages`, matching the single-conversation JSON rendering supported by
-  `clog drain` in v1. The JSON shape is best-effort rather than a stable v1
+  parsed `messages`, matching the pre-release single-conversation JSON rendering
+  that preceded archive drain. The JSON shape is best-effort rather than a stable v1
   compatibility contract.
 - `--md` prints the conversation as Markdown with metadata frontmatter and one
   section per parsed message. The frontmatter omits `saved` when `savedAt` is
@@ -1518,363 +1517,196 @@ Like other DB-touching paths, `clog plunge` acquires the DB lock for the duratio
 
 ### 5.7.3 The `drain` Command
 
-`clog drain` exports conversations out of clog as portable files or stdout
-payloads. It is the inverse of curation: `clog save` brings conversations into
-clog's curated knowledge base; `drain` lets them flow back out.
-
-`clog drain` is read-only. It never modifies the database, raw files,
-source files, or remote checkout contents.
-
-This section defines the user-visible command contract. Lower-level export
-format notes for `drain` live in
-`docs/IMPLEMENTED/DRAIN_SPEC_NOTES.md`.
+`clog drain` transports saved conversations out of clog. The command writes a
+zip archive by default and can instead write the same conversation-pair files
+as an unpacked directory. JSON, Markdown, and raw single-conversation rendering
+belong to `clog show` (§5.7.1), not to the transport command.
 
 Supported command shapes:
 
 ```text
-clog drain <selector>                   Single conversation or project-scoped export to stdout (JSON).
-clog drain <selector> --format md       Single conversation to stdout (markdown).
-clog drain <selector> --raw             Single conversation raw JSONL to stdout.
-clog drain <selector> --to <path>       Single conversation to a file.
-clog drain api-service --author alice   Project selector resolved within a filtered candidate set.
-clog drain [filters]                    JSON array to stdout.
-clog drain [filters] --refresh          Refresh local discovery, then export.
-clog drain --to-dir <dir>               Default curated export to a directory.
-clog drain <selectors...> --to-dir <dir> Multiple conversations to a directory.
-clog drain --to-dir <dir> [filters]     Filtered conversations to a directory.
-clog drain <selectors...> --format pair --to-dir <dir>  Saved conversations as portable conversation file pairs.
+clog drain my-project                            # ./clog-export.zip
+clog drain abcd1234 -o backup.zip               # archive at an explicit path
+clog drain my-project --format pair -o out/      # unpacked pair directory
+clog drain --state saved -o all-saved.zip        # every saved row
+clog drain api-service --author alice -o api.zip # project selector within a filtered set
 ```
 
-#### 5.7.3.1 Resolved Conversation Set
-
-`clog drain` first resolves a conversation set from explicit selectors and filter
-flags.
-
-- By default, `clog drain` resolves against the current database state only.
-- `--refresh` is an explicit opt-in to run the same local discovery refresh
-  as `clog list` before resolving the conversation set. This refresh updates
-  local unsaved conversations and emits the same aggregated scan warnings to
-  stderr that other scan-driven commands use.
-- If selectors and filters are both present, `clog drain` first builds the
-  filtered candidate set, then resolves each explicit selector within that set.
-- Filters are part of the user's selector. An invocation such as
-  `clog drain abcd --author alice` is interpreted as "export Alice's
-  `abcd` conversation," not "resolve `abcd` globally, then filter later."
-- Likewise, `clog drain api-service --author alice` is interpreted as
-  "export Alice's `api-service` conversations," not "resolve the project
-  globally, then filter later."
-- This means a globally ambiguous ID may resolve successfully if the
-  filtered candidate set contains exactly one match.
-- If multiple filtered candidates still match an ID, `clog drain` returns
-  the normal ambiguity error with copy-pasteable candidates.
-- If no filtered candidates match an ID, `clog drain` returns the normal
-  no-match error for that ID.
-- Project selectors participate in the same filtered candidate set as
-  conversation IDs. They match project names using the shared selector model
-  from §5.1.1 and expand to the filtered conversations in that project.
-- After selector resolution and filter application, the resolved set is
-  deduplicated by full conversation ID. Repeating the same ID, or mixing
-  source-qualified and unqualified forms, or mixing a project selector with
-  one of its member conversation IDs, does not produce duplicate exports.
-- If neither selectors nor filters is present, the default scope matches
-  `clog list`'s curated-by-default view: local curated conversations plus
-  same-author imported conversations.
-- If neither selectors nor filters is present and `config.author` is empty or
-  unset, the default scope is local curated conversations only.
-- Broader export requires explicit filters such as `--origin remote`,
-  `--author`, or `--state`.
-- Bare `clog drain` with no selectors, no filters, no `--to`, and no
-  `--to-dir` is a usage error. To export to stdout, the user must provide
-  at least one conversation selector or at least one filter flag.
-
-This preserves the two intended command shapes:
-
-- query-like export (`clog drain --state unsaved`,
-  `clog drain --author alice`) operates on the current clog conversation library
-- refreshed query-like export (`clog drain --state unsaved --refresh`)
-  first updates local unsaved conversations, then exports from that updated
-  state
-- explicit export (`clog drain a1b2c3`, `clog drain api-service`) exports the
-  conversations already known to clog without doing a discovery refresh first
-
-#### 5.7.3.2 Modes
-
-`clog drain` operates in one of three modes, determined by whether
-`--to` or `--to-dir` is present.
-
-**Stdout mode** (no `--to`, no `--to-dir`) writes the resolved export payload to stdout
-with no progress output. Diagnostics go to stderr.
-
-- `json` supports set export. A single explicit selector that resolves to one
-  conversation, with no filters, writes
-  one JSON object; otherwise stdout JSON is a JSON array in deterministic
-  order.
-- `md` requires exactly one matching conversation.
-- `--raw` requires exactly one matching conversation.
-
-Stdout mode is atomic. `clog drain` must not write partial export data to
-stdout. If any conversation needed for the stdout payload fails, it writes
-nothing to stdout, reports the error to stderr, and exits `1`.
-
-**Single-file mode** (`--to <path>`): Writes exactly one exported
-conversation to the supplied file path. It does not create parent
-directories. Existing files are not overwritten unless `--force` is
-passed. If the resolved set contains more than one conversation, `clog
-drain` returns a usage error directing the user to `--to-dir`.
-
-**Directory mode** (`--to-dir <dir>`): Writes one file per conversation into the
-target directory. The directory is created if it does not exist, including
-intermediate parents. Existing files are not overwritten unless `--force`
-is passed.
-
-Directory mode prints no per-conversation success output. When complete, it
-prints a one-line summary to stderr:
-
-```text
-Drained 41 conversations to ./export/
-Drained 38 conversations to ./export/ (3 failed)
-```
-
-Pair-format directory mode writes one conversation as two files, `<source>/<id>.jsonl`
-and `<source>/<id>.meta.json`, using the shared interchange writer. Without
-`--force`, either destination file already existing skips that conversation and
-writes neither side. With `--force`, replacement is pair-atomic for overwrite
-policy: clog writes the JSONL through the atomic writer first and installs
-canonical metadata last, so a complete metadata file implies its content file is
-present.
-
-#### 5.7.3.3 Flags
+`clog drain` supports the following flags:
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--to <path>` | `-o` | Write one exported conversation to this file path. Single-file mode only. |
-| `--to-dir <dir>` | | Write one file per conversation to this directory. Directory mode only. |
-| `--format <fmt>` | `-f` | Output format: `json` (default), `md`, or directory-only `pair`. |
-| `--raw` | | Emit the exact underlying source file instead of parsed export data. Incompatible with `--format`. |
-| `--force` | | File and directory output modes only. Overwrite an existing target file or directory entry. |
-| `--refresh` | | Refresh local discovery before resolving the export set. This may update local unsaved conversations and emit aggregated scan warnings to stderr. |
-| `--state <state>` | `-s` | Filter by state (`unsaved`, `saved`). |
-| `--project <name>` | `-p` | Filter by project name (same semantics as `clog list --project`). |
-| `--author <name>` | `-a` | Filter by author (same semantics as `clog list --author`). |
-| `--tag <tag>` | `-t` | Filter by tag (same semantics as `clog list --tag`). |
-| `--origin <origin>` | | Filter by origin: `local` or `remote` (same semantics as `clog list --origin`). |
+| `--output <path>` | `-o` | Write the archive file or unpacked pair directory at this path. |
+| `--format <fmt>` | `-f` | Output format: `archive` (default) or `pair`. |
+| `--force` | | Replace eligible existing output. |
+| `--refresh` | | Refresh local discovery before resolving the export set. |
+| `--show-all-errors` | | Show every per-conversation export failure. |
+| `--state <state>` | `-s` | Exact state filter: `unsaved` or `saved`. |
+| `--project <name>` | `-p` | Exact project metadata filter. |
+| `--author <name>` | `-a` | Exact author metadata filter. |
+| `--tag <tag>` | `-t` | Exact tag metadata filter. |
+| `--origin <origin>` | | Exact origin filter: `local` or `remote`. |
 
-`clog drain` supports a deliberate subset of `clog list` filters. In v1 it
-supports metadata-backed export selection: `--state`, `--project`,
-`--author`, `--tag`, and `--origin`.
+The removed `--to` and `--to-dir` options fail with guidance to use `-o`. The
+removed `--raw`, `--format json`, and `--format md` forms fail with guidance to
+use `clog show`. Compatibility-only parsing for removed options does not make
+those options appear in command help.
 
-Like `clog list`, these metadata filters are exact-match selectors rather
-than fuzzy search. This keeps export selection predictable and avoids
-overloading metadata filters with text-search behavior. The `--help` output
-for `clog drain` should describe `--project`, `--author`, and `--tag` as
-exact metadata filters so users do not expect substring matching.
+#### 5.7.3.1 Conversation Selection
 
-Filter semantics:
+Drain uses the shared project-aware selector model from §5.1.1. When selectors
+and metadata filters are both present, clog builds the filtered candidate set
+before resolving each selector. Project selectors and conversation-ID selectors
+therefore resolve within the same filtered set.
 
-- `--project` matches `projectName` by case-insensitive exact equality
-- `--author` matches `author` by exact, case-sensitive string equality
-- `--tag` matches normalized tags by exact, case-insensitive equality
-- `--origin` matches `local` or `remote` exactly; `remote` means imported rows (`origin_kind != 'local'`)
+The recognized selection filters are `--project`, `--tag`, `--author`,
+`--state`, and `--origin`. A filter makes the selection explicit when the option
+was supplied, including when its value is invalid or blank. Blank constrained
+values and invalid enum values are usage errors; they cannot turn into an
+implicit broad export.
 
-`clog drain` does not support `clog list` display or discovery-expansion
-flags such as `--columns` or `--all`, and it does not support content-search
-selection via `--grep`.
+Until bare-drain confirmation is implemented, every invocation requires at
+least one positional selector or selection filter. `-o`, `--refresh`, and
+`--force` do not make the selection explicit. Bare drain therefore returns a
+usage error even though archive output has a default destination.
 
-#### 5.7.3.4 Selector Resolution
+Both output formats export saved rows only because conversation-pair metadata
+requires save-time fields. Selection treats unsaved rows as follows:
 
-Conversation-ID resolution follows the same rules as other clog commands, as
-defined in §3.3: short prefixes of at least 4 characters, source-qualified
-forms (`a1b2c3@claude-code`), and ambiguity errors with copy-pasteable
-candidates. Project-selector resolution follows the shared selector model in
-§5.1.1.
+- a project selector or filter selection skips matching unsaved rows and
+  reports the skipped count;
+- an explicitly named unsaved conversation remains a per-conversation failure;
+  and
+- a broad selection containing only unsaved rows fails with guidance to save
+  those conversations first.
 
-When `clog drain` is invoked with explicit selectors and metadata filters, it
-does not resolve selectors against the full conversation table and intersect
-afterward. Instead, it:
+`clog drain --state saved` selects every saved database row across authors and
+origin kinds. It is intentionally broader than the default curated scope used
+by commands such as bare `clog list`. Saved local, Git-imported, and file-filled
+rows are eligible when their resolved stored content is readable.
 
-1. builds the candidate set using the supplied `--state`, `--project`,
-   `--author`, `--tag`, and `--origin` filters
-2. resolves each explicit selector within that candidate set
-3. deduplicates the resolved conversations by full ID
+#### 5.7.3.2 Interchange Files
 
-This preserves normal selector grammar while making filters participate in
-disambiguation.
-
-Consequences:
-
-- an otherwise ambiguous conversation-ID prefix resolves successfully if the filtered
-  candidate set contains exactly one match
-- the same conversation-ID prefix still errors as ambiguous if multiple filtered candidates
-  remain
-- the same conversation-ID prefix errors as no-match if the filtered candidate set contains
-  none
-- source-qualified forms such as `prefix@source` continue to restrict
-  matching to the named source, within the filtered candidate set
-- project selectors such as `api-service` or `project:api-service` expand only
-  within the filtered candidate set, so a filter like `--author alice` narrows
-  the project batch before export
-
-Directory mode accepts zero or more explicit selectors. Single-file mode requires
-exactly one resolved conversation. Stdout mode may also be invoked with
-selectors, filters, or both; the format-specific match-count rules from
-§5.7.3.2 apply after resolution.
-
-#### 5.7.3.5 Accessible Conversations
-
-`clog drain` can export any conversation whose content path resolves
-successfully:
-
-- **Saved** — reads from `filePath`, whether that path is a local raw copy, a
-  git checkout file, or an import-managed file
-- **Unsaved** — reads from `sourcePath` if the source file still exists
-
-Content-path resolution must reuse the same logic as `clog show` /
-`clog path`.
-
-#### 5.7.3.6 Ordering
-
-Whenever `clog drain` exports more than one conversation, the resolved set
-is ordered deterministically:
-
-1. ascending by `createdAt`
-2. then by `source`
-3. then by full `id`
-
-This order governs:
-
-- JSON array output in stdout mode
-- directory traversal order
-
-#### 5.7.3.7 Exit Codes
-
-| Code | Condition |
-|------|-----------|
-| `0` | All drainable requested conversations were successfully drained. In pair-format directory mode, unsaved rows skipped from broad selections do not make the command fail. |
-| `1` | The command was valid but one or more conversations failed, the resolved set was empty, or a pair-format broad selection matched only unsaved rows. Partial success is allowed in directory mode. |
-| `2` | Usage error (bad flags, ambiguous ID, unsupported match count for the selected stdout format, etc.). |
-
-#### 5.7.3.8 Export Formats and Scope
-
-`clog drain` supports these export formats:
-
-- `json` — the canonical parsed export format, using clog-native metadata
-  field names plus parsed `messages`
-- `md` — a human-readable transcript export
-- `--raw` — the exact underlying source file with no parsing or metadata envelope
-- `pair` — a directory-only interchange export: one metadata file plus one
-  source JSONL file per saved conversation
-
-The JSON export is a portable export object, not a dump of clog's internal
-database row. It includes user-facing metadata such as `id`, `source`,
-`title`, `summary`, `summaryKind`, `extraction`, `author`, `projectName`,
-`tags`, `slug`, `createdAt`, `savedAt`, `state`, and parsed `messages`.
-`extraction` is the exported name for `summaryExtraction`. It intentionally omits
-local-only/internal fields such as `sourceId`, `projectPath`,
-`discoveredAt`, `modifiedAt`, `savedMessageCount`, `saveVersion`,
-`sourcePath`, `filePath`, `sourceMtime`, `indexedAt`, `originKind`, and
-`originRef`.
-
-Markdown is a convenience rendering, not the canonical export contract.
-Markdown stdout mode requires exactly one matching conversation. File mode
-writes one markdown file. Directory mode writes one markdown file per
-conversation. Markdown frontmatter includes `summaryKind` when it is not
-`none`, and includes `extraction` as a JSON-stringified scalar when structured
-extraction is present.
-
-Raw export always reads from the same resolved content path that `clog path`
-and `clog show` use. In stdout mode and file mode, `--raw` requires
-exactly one matching conversation. In directory mode, `--raw` writes one
-raw file per conversation.
-
-Pair export is valid only with `--to-dir`. It exports saved rows of any
-provenance kind when their resolved content path is readable. The JSONL file is
-copied byte-for-byte from the same path used by `clog show` and `clog path`; it
-is not parsed and reserialized. Pair metadata uses the shared interchange schema
-from §11.2 and validates the stored `source` value by source-key syntax rather
-than by adapter membership. It includes save-time metadata such as `summaryKind` and
-`summaryExtraction`, and it omits local database fields such as `originKind`,
-`originRef`, `projectPath`, `discoveredAt`, `indexedAt`, managed content paths,
-and parser checkpoints. The output layout is:
+Archive and pair-directory output use the established conversation-pair
+serialization from §11.2:
 
 ```text
-<target>/<source>/<id>.jsonl
-<target>/<source>/<id>.meta.json
+<source>/<id>.jsonl
+<source>/<id>.meta.json
 ```
 
-Pair export targets saved conversations only because pair metadata requires
-save-time fields. Unsaved rows reached by a broad selection are skipped and
-reported in the final summary. An explicitly named unsaved conversation ID is
-a per-conversation failure because the user asked for that row by name. If a
-broad selection matches only unsaved rows, `clog drain --format pair` errors
-with a message that those conversations must be saved before pair export.
+The JSONL file preserves the exact bytes at the conversation's resolved content
+path. The metadata file uses the shared pair schema. Neither output format adds
+origin fields, managed paths, parser checkpoints, or another metadata contract.
+A syntactically valid source key that the current clog build cannot parse keeps
+the existing pair-export behavior: clog serializes its metadata and copies its
+stored content without requiring a source adapter.
 
-File mode writes to the exact path supplied by `--to`. Directory mode
-writes one file per conversation and assigns filenames deterministically
-from the full conversation ID and selected format. The exact filename and
-low-level serialization rules for non-pair exports are documented in
-`docs/IMPLEMENTED/DRAIN_SPEC_NOTES.md`.
+A clog-created archive contains regular pair-file records only. It does not
+contain explicit directory records, a manifest, rendered conversations, or
+unrelated files. Complete entry names use `/` separators and code-point sort
+order. A flat filename map prevents the archive writer from synthesizing
+directory records.
 
-#### 5.7.3.9 Scope Boundaries
+Archive creation assigns one fixed DOS modification time built from local date
+components and uses deterministic deflate compression. Two exports of the same
+pair corpus made by the same clog and `fflate` versions are byte-identical,
+including across host time zones. Byte identity across different `fflate`
+versions is not part of the contract.
 
-`clog drain` intentionally does not:
+#### 5.7.3.3 Output Destinations and Failure Behavior
 
-- modify clog state
-- mark conversations as exported
-- support streaming or watch modes
-- write aggregate multi-conversation files in directory mode
-- reuse `clog show`'s presentation format as a separate export type
-- support filtering by specific remote URL in v1
-- support partial-message export flags such as `--head` / `--tail`
+The default archive destination is exactly `./clog-export.zip`. An explicit
+archive output uses the exact `-o` value; clog does not add a `.zip` extension.
+Pair format requires `-o <dir>`.
 
-#### 5.7.3.10 Error Handling
+Archive output is all-or-nothing. Clog validates every prospective
+`<source>/<id>` entry name, writes all selected conversations through the shared
+pair writer in a private staging directory, and continues after individual
+conversation failures. If any conversation fails, clog publishes no archive.
 
-Specific `clog drain` error conditions:
+An archive destination's parent directory must already exist. The final
+destination may be absent or an ordinary file. A directory, symbolic link, or
+special file is rejected. Without `--force`, an existing ordinary file is
+rejected. With `--force`, the existing file remains unchanged until a complete
+replacement has been written to a temporary ordinary file in the destination
+directory and is ready for the final atomic rename.
 
-| Condition | Behavior |
-|-----------|----------|
-| No IDs, no filters, no `--to`, no `--to-dir` | Usage error: `clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.` Exit `2`. |
-| `--to` with `--to-dir` | Usage error. Exit `2`. |
-| `--raw` with `--format` | Usage error. Exit `2`. |
-| `--format pair` without `--to-dir` | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
-| `--format pair` with `--to <path>` | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
-| `--force` without `--to` or `--to-dir` | Usage error. Exit `2`. |
-| `--refresh` present | Run the same local discovery refresh as `clog list` before resolving the export set; scan warnings are emitted to stderr. |
-| Ambiguous ID prefix | Same ambiguity behavior as other clog commands. When filters are present, ambiguity is evaluated within the filtered candidate set. Exit `2`. |
-| ID prefix has no match within the filtered candidate set | Same no-match behavior as other clog commands, evaluated within the filtered candidate set. Exit `1`. |
-| Resolved set is empty | Error: no conversations match. Exit `1`. |
-| Stdout `md` with multiple matches | Usage error: markdown stdout requires exactly one conversation. Exit `2`. |
-| Stdout `raw` with multiple matches | Usage error: raw stdout requires exactly one conversation. Exit `2`. |
-| `--to` with multiple matches | Usage error directing the user to `--to-dir <dir>`. Exit `2`. |
-| Parent directory for `--to` does not exist | Error. Exit `1`. |
-| Source/raw/import/remote content path missing | Error for that conversation. Stdout mode exits `1`; file mode exits `1`; directory mode continues and exits `1` if any failures occurred. |
-| Parse failure in parsed formats | Error for that conversation. Same partial-success model. |
-| Output file already exists (no `--force`) | File mode: error and exit `1`. Directory mode: skip that conversation, report error, continue, exit `1` if any conflicts occurred. |
-| Pair export destination already has either side (no `--force`) | Skip that conversation, write neither side, report the conflict, continue, and exit `1` if any conflicts occurred. |
-| Explicitly named unsaved ID with `--format pair` | Per-conversation failure because pair export requires saved metadata. Directory mode continues and exits `1`. |
-| Broad pair export selection resolves only unsaved rows | Error naming the unsaved matches and telling the user to save them first. Exit `1`. |
-| `--to-dir` directory cannot be created | Error. Exit `1`. |
+Pair-directory output retains its established filesystem and partial-success
+behavior. Clog creates the destination directory recursively, continues after
+per-conversation failures, and keeps successful pairs when another conversation
+fails. Without `--force`, either existing side of a destination pair blocks
+that conversation. With `--force`, the shared pair writer installs JSONL before
+metadata.
 
-In directory mode, failures are reported individually to stderr as they
-occur, identifying the conversation and the reason. Export continues with
-remaining conversations. After processing completes, `clog drain` prints a
-one-line summary reporting the number written and, when non-zero, the
-number failed. Pair-format directory export also reports the count of unsaved
-rows skipped by a broad selection, for example `Drained 5 conversations to
-./export/ (1 failed, 2 unsaved skipped)`.
+Both formats report `Exported` summaries on stderr:
+
+```text
+Exported 5 conversations to ./clog-export.zip
+Exported 5 conversations to ./clog-export.zip (2 unsaved skipped)
+Exported 5 conversations to out/ (1 failed, 2 unsaved skipped)
+```
+
+A pair-directory failure exits `1` after retaining successful pairs. An archive
+conversation failure exits `1` and reports zero exported conversations because
+no archive was published. Usage errors exit `2`; selection, content, archive,
+resource, and destination failures exit `1`.
+
+Drain always prints the first detailed per-conversation failure. Without
+`--show-all-errors`, later failure details are suppressed and drain reports the
+total after processing:
+
+```text
+error: 12 conversations could not be exported; only the first failure is shown. Re-run with --show-all-errors to list every failure.
+```
+
+With `--show-all-errors`, drain prints every detailed failure and omits that
+collapsed diagnostic. Drain tracks the failure count while processing; it does
+not retain reported error objects. Diagnostic expansion does not change archive
+publication, pair-directory partial success, summaries, or exit status.
+
+#### 5.7.3.4 Archive Safety and Resource Limits
+
+Archive creation validates prospective names before reading conversation
+content. Every stored conversation ID must contribute exactly one non-empty
+path component. The same selected-name validator used by fill rejects empty
+components, C0 controls, backslashes, Windows-forbidden characters, POSIX or
+Windows absolute paths, `.` and `..` components, trailing spaces or periods,
+and standard reserved Windows device basenames.
+
+Archive input and output enforce these fixed limits:
+
+| Budget | Limit | Accounting boundary |
+|--------|------:|---------------------|
+| Zip file bytes | 1 GiB | Recognized archive input and completed archive output |
+| Archive entries | 60,000 | Every reported input record and every emitted output file record |
+| Selected pair bytes | 2 GiB | Selected `.jsonl` and `.meta.json` entries |
+
+The limits are not configurable. `--force` and fill's `--allow-partial` do not
+override them. Resource diagnostics report the observed value and limit and
+recommend unpacked pair-directory input or output.
+
+The archive implementation uses the locked `fflate` runtime dependency.
+`fflate` performs synchronous whole-archive decoding and does not verify ZIP
+CRC-32 checksums or every inconsistency between declared sizes and decoded
+content. Clog applies compression-method-specific accounting and validates the
+selected pair metadata and JSONL content after extraction, but it does not claim
+to detect every corrupted or deliberately modified ZIP file. Streaming,
+CRC-verified extraction and Zip64 output remain future work.
 
 ### 5.7.4 The `fill` Command
 
-`clog fill <dir>` imports portable conversation file pairs written by
-`clog drain --format pair` or by git sync's shared pair writer. It is the
-directory-import counterpart to `clog drain --format pair`.
+`clog fill <path>` imports portable conversation file pairs from a clog archive
+or an unpacked pair directory. Archive drain, pair-directory drain, and Git sync
+all use the same pair metadata and JSONL serialization.
 
 ```bash
+clog fill backup.zip
 clog fill ./export
-clog fill ./export --own
-clog fill ./export --dry-run
-clog fill ./export --allow-partial
-clog fill ./export --show-all-errors
-clog fill ./export --own --allow-partial
+clog fill backup.zip --own
+clog fill backup.zip --dry-run
+clog fill backup.zip --allow-partial
+clog fill backup.zip --show-all-errors
 ```
 
 Flags:
@@ -1884,12 +1716,48 @@ Flags:
 | `--own` | Restore pairs authored by `config.author` as editable local rows. |
 | `--dry-run` | Plan the import and render the same outcome messages without writing rows or managed files. |
 | `--allow-partial` | Skip failure-class candidates and import valid candidates. |
-| `--show-all-errors` | Show every collapsed pair-level fill error instead of the normal bounded summary. |
+| `--show-all-errors` | Show every per-pair error and skipped conversation. |
 
 Default fill imports read-only rows with `origin_kind = 'file'` and
 `origin_ref = NULL`. `clog fill --own` restores conversation file pairs authored
 by `config.author` as editable local rows with `origin_kind = 'local'` and
 `origin_ref = NULL`. Only `git` rows carry a non-null `origin_ref`.
+
+Fill classifies the supplied path by its resolved filesystem type and first four
+bytes. A directory uses unpacked pair behavior. A regular file beginning with
+the non-empty ZIP local-header signature or empty ZIP end signature is decoded
+as an archive candidate. The extension does not determine input type. Another
+regular file is a usage error; a recognized but malformed, empty, pair-less,
+unsafe, unsupported, or over-budget archive is an import failure.
+
+Ordinary operating-system path resolution applies before classification. A
+symbolic link that resolves to a directory or regular file is classified by its
+target. Fill does not add a separate symbolic-link policy for the supplied path
+or its ancestors.
+
+For archive input, fill counts every ZIP record but selects only decoded names
+ending case-sensitively in `.jsonl` or `.meta.json`. Unrelated files and explicit
+directory records are ignored without validating their names, compression
+methods, attributes, or content. Selected entries may use stored compression
+(method 0) or deflate compression (method 8). Archive permissions, ownership,
+timestamps, symbolic-link attributes, and other external metadata are not
+preserved.
+
+Selected archive entry names must be safe relative forward-slash paths under
+the cross-platform policy in §5.7.3.4. Fill decodes every selected entry and
+checks returned lengths before writing any temporary pair file. It then creates
+the selected files exclusively with mode `0600` on POSIX under one private
+operating-system temporary directory with mode `0700`. The temporary-directory
+lifecycle spans pair scanning, validation, planning, managed writes, database
+work, summaries, and handled failures, and cleanup runs in a `finally` path.
+
+After successful archive extraction, fill invokes the same pair scanner,
+validator, `clogignore` filter, duplicate detector, collision planner,
+managed-copy writer, and database workflow as directory input. `--allow-partial`
+applies only to failures produced by that pair workflow. It cannot override ZIP
+decoding, selected-name safety, compression-method, extraction, or resource
+failures. `--dry-run` may use temporary extraction as scratch work but does
+not change clog-managed state or user conversation data.
 
 For directory input, fill separates the absolute physical root used for pair
 scanning, validation, and managed-content copying from the path text shown to
@@ -1898,6 +1766,11 @@ the user. Pair diagnostics preserve the supplied directory spelling: a leading
 unexpanded, absolute input remains absolute, and a trailing separator does not
 produce a doubled separator. Directory completion summaries retain a supplied
 trailing separator or add the host separator when it was absent.
+
+Archive diagnostics use the supplied archive name and decoded entry path, such
+as `backup.zip:claude-code/<id>.meta.json`. Archive summaries name only the
+archive and do not add a trailing separator. No warning, error, summary, or
+guidance exposes the private extraction directory.
 
 Fill constructs warnings and command errors with display paths rather than
 rewriting physical paths during final rendering. A source-input filesystem
@@ -1973,7 +1846,7 @@ summary line naming the count.
 
 Before any write, fill performs validation, ignore filtering, duplicate
 detection, the `--own` author guard, and collision planning. Without
-`--allow-partial`, any failure-class candidate aborts the command before writing
+`--allow-partial`, any failure-class candidate exits the command before writing
 database rows or managed files. With `--allow-partial`, fill skips those
 candidates, writes valid candidates, and exits `1`. Failure-class candidates
 are malformed pairs, duplicate input identities, unsupported-source pairs,
@@ -1996,14 +1869,23 @@ duplicate identity group with three copies contributes three blocked pairs,
 though `--show-all-errors` still renders that duplicate identity as one grouped
 diagnostic line listing every copy's paths. The `--show-all-errors` flag expands
 the collapsed non-unsupported-source pair errors using the same detailed message
-text. Benign skips, such as a local copy already existing, keep the `notice:`
-prefix and are not part of the collapsed failure count.
+text.
 
-When fill aborts before writing rows or managed files and pair details were
-collapsed, the abort message tells the user to re-run with `--show-all-errors`
-instead of referring to errors "above". The abort message still states that no
+Benign skips keep the `notice:` prefix and are not part of the collapsed failure
+count. Fill groups benign skips by structured reason so `clogignore`, existing
+unsaved local conversations, and existing saved local conversations retain
+separate explanations and remedies. A group containing one pair prints its
+detailed notice. A group containing multiple pairs prints one counted notice
+with shared guidance and tells the user to re-run with `--show-all-errors`.
+Expanded benign-skip groups retain the counted notice and list each affected
+conversation as an indented source-qualified short ID; shared remedy text is not
+repeated for every pair. Grouping does not change skip counts or exit status.
+
+When fill exits before writing rows or managed files and pair details were
+collapsed, the exit message tells the user to re-run with `--show-all-errors`
+instead of referring to errors "above". The exit message still states that no
 conversations were imported and keeps the appropriate remedy guidance, such as
-`--allow-partial` for default fill or `clog fill <dir>` without `--own` for an
+`--allow-partial` for default fill or `clog fill <path>` without `--own` for an
 author-guard failure.
 
 Fill resolves each candidate by `(source, id)`. Resolution is by provenance and
@@ -2238,7 +2120,7 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Shows the number of matching conversations and a compact preview before deleting anything
 - Warns that metadata, summaries, tags, search vectors, and managed copies under `raw/` or `imports/` will be removed
 - States that source files under `~/.claude` and `~/.codex` are not modified
-- Mentions `clog drain <id@source...> --to-dir <dir>` as the exact export path before removal
+- Mentions `clog drain <id@source...> -o <archive.zip>` as the exact export path before removal
 - Warns more strongly when matched saved local rows no longer have readable independent source files
 - Requires interactive confirmation with a default of `N`, unless `--yes` is supplied
 - Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
@@ -2709,7 +2591,7 @@ Phase 1 implementation work includes:
 - `src/adapters/registry.ts` — centralize source-aware adapter construction and dispatch
 - `src/adapters/codex-cli.ts` — implement Codex discovery and parsing
 - `src/cli/scan.ts` — iterate all enabled adapters and prune stale unsaved rows per source
-- `src/cli/drain.ts` — export conversations as portable JSON, markdown, or raw source
+- `src/cli/drain.ts` — export saved conversations as deterministic archives or unpacked pair directories
 - `src/cli/show.ts`, `src/cli/path.ts`, `src/cli/diff.ts` — use source-aware content path resolution and parsing
 - `src/cli/save.ts` — copy raw files into `raw/<source>/`, set `saved_message_count`, and use source-aware parsing
 - `src/db/index.ts` — add `projectName`, `projectPath`, and `savedMessageCount` to conversation insert/update/read paths, filters, and save-state queries
@@ -3351,7 +3233,7 @@ as the git remote URL value. No behavior branches on `origin_ref` nullness;
 local versus imported behavior is always determined by `origin_kind`.
 
 These columns are local-only. They never appear in `.meta.json` files, JSON
-drain exports, markdown frontmatter, or pair metadata.
+show output, Markdown show frontmatter, or pair metadata.
 
 Purposes:
 
@@ -4134,8 +4016,11 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Fill tests** (`fill.test.ts`):
 
+- Archive and unpacked-directory input using the same pair plan and write pipeline
+- Signature-based archive detection, unsafe selected names, malformed and pair-less archives, and private diagnostic paths
 - Usage and exit-code branches, including `--dry-run` and `--allow-partial`
-- Collapsed pair-level error output, including `--show-all-errors`
+- Collapsed pair-level errors and benign skip notices, including
+  `--show-all-errors`
 - Metadata-only and JSONL-only input warnings
 - Duplicate input identities rejected with `pair_duplicate_identity`
 - Default fail-before-writes behavior for validation failures, duplicate identities, unsupported promotions, and git-row collisions
@@ -4143,7 +4028,22 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Filled rows stored as clean saved artifacts under `imports/<source>/<id>.jsonl`
 - File-row metadata-only and content updates, including `indexedAt` preservation/clearing rules
 - Removal of file-import managed content and restored-local only-copy warning
-- Drain-to-fill workflow coverage for foreign fill and `--own` restore
+- Archive-drain-to-fill workflow coverage for foreign fill and pair-drain-to-`--own` restore
+
+**Archive tests** (`archive.test.ts`):
+
+- Deterministic flat archive creation and byte-preserving pair round trips
+- Selected entry-name validation and stored/deflated entry extraction
+- Fixed resource-limit boundaries without maximum-size allocations
+- Private file modes and temporary-directory cleanup after success and failure
+
+**Drain tests** (`drain.test.ts`):
+
+- Default and explicit archive destinations plus alternate pair-directory output
+- Saved-only selection, unsaved skips, and explicit all-saved selection
+- All-or-nothing archive failure and forced-destination preservation
+- Bounded per-conversation failures and `--show-all-errors` expansion
+- Removed-option migration guidance and destination validation
 
 **Sync meta tests** (`sync-meta.test.ts`, Phase 3):
 
@@ -4186,7 +4086,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Complete workflow: status → save → edit → tag → save → show
 - Exclude/unexclude round-trip
 - Config get/set
-- Drain pair → foreign fill → show/list/drain round trip
+- Default drain archive → foreign fill → show/list/pair-drain round trip
 - Drain pair → `fill --own` → editable local workflow
 
 ### 13.5 Fixture Generation

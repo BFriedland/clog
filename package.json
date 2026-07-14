@@ -46,6 +46,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
+    "fflate": "^0.8.3",
     "glob": "^13.0.6",
     "proper-lockfile": "^4.1.2",
     "sql.js": "^1.12.0",

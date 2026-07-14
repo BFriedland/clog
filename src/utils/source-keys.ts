@@ -52,7 +52,7 @@ export type SourceQualifiedIdParseResult =
   | { ok: false; reason: SourceQualifiedIdParseError };
 
 export function validateSourceKey(value: string): SourceKeyValidationResult {
-  if (usesWindowsReservedSourceBasename(value)) {
+  if (usesWindowsReservedPathBasename(value)) {
     return { ok: false, reason: "reserved_path_name" };
   }
 
@@ -99,7 +99,7 @@ export function parseSourceQualifiedId(
   return { ok: true, value: { prefix, source } };
 }
 
-function usesWindowsReservedSourceBasename(value: string): boolean {
+export function usesWindowsReservedPathBasename(value: string): boolean {
   const basename = value.split(".")[0]?.toLowerCase();
   return basename != null && WINDOWS_RESERVED_SOURCE_BASENAMES.has(basename);
 }

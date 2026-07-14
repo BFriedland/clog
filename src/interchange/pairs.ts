@@ -115,6 +115,7 @@ export interface WritePairArgs {
   jsonlPath: string;
   meta: PairMetadata;
   jsonl: Buffer | string;
+  mode?: number;
 }
 
 export function conversationToPairMetadata(
@@ -150,8 +151,9 @@ export function serializePairMetadata(meta: PairMetadata): string {
 export async function writePairMetadata(
   filePath: string,
   meta: PairMetadata,
+  options: { mode?: number } = {},
 ): Promise<void> {
-  await writeFileAtomic(filePath, serializePairMetadata(meta));
+  await writeFileAtomic(filePath, serializePairMetadata(meta), options);
 }
 
 export interface ParsePairMetadataResult {
@@ -348,8 +350,8 @@ export async function validatePair(
 }
 
 export async function writePair(args: WritePairArgs): Promise<void> {
-  await writeFileAtomic(args.jsonlPath, args.jsonl);
-  await writePairMetadata(args.metaPath, args.meta);
+  await writeFileAtomic(args.jsonlPath, args.jsonl, { mode: args.mode });
+  await writePairMetadata(args.metaPath, args.meta, { mode: args.mode });
 }
 
 function cloneExtraction(
@@ -489,7 +491,7 @@ function normalizeRelativeDir(relativeDir: string): string {
   return relativeDir.split(path.sep).filter(Boolean).join("/");
 }
 
-function compareCodePoints(left: string, right: string): number {
+export function compareCodePoints(left: string, right: string): number {
   const leftPoints = Array.from(left);
   const rightPoints = Array.from(right);
   const length = Math.min(leftPoints.length, rightPoints.length);

@@ -73,8 +73,8 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display one conversation as a terminal view, JSON (`--json`), Markdown (`--md`), raw content bytes (`--raw`), or its content path (`--path`); parsed formats support `--head N`/`--first N` and `--tail N`/`--last N` |
 | `clog path <id>` | Print the content path for a conversation |
-| `clog drain [selector...]` | Export conversations by project, ID, or filters (`--to`, `--to-dir`, `--raw`, `--format`; `--format pair --to-dir` writes portable conversation file pairs) |
-| `clog fill <dir>` | Import portable conversation file pairs as read-only conversations |
+| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`-o, --output`) |
+| `clog fill <path>` | Import a clog zip archive or unpacked conversation-pair directory as read-only conversations |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 `clog show <id> --json` prints one structured conversation object for scripts,
@@ -209,23 +209,42 @@ clog sync push
 - Use `clog exclude` to ignore projects or conversations, and `clog remove` if you also want to delete current local DB rows.
 - `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
 
-Portable exports can also move conversations without git:
+Portable archives can also move conversations without git:
 
 ```bash
-clog drain myapp --format pair --to-dir ./clog-export
+clog drain myapp                               # ./clog-export.zip
+clog drain myapp -o ./myapp-conversations.zip # explicit archive path
 ```
 
 Import that export as read-only conversations:
 
 ```bash
-clog fill ./clog-export
+clog fill ./myapp-conversations.zip
 ```
 
 Restore the export as local saved clog conversations when you want to edit their title, summary, author, and tags:
 
 ```bash
-clog fill ./clog-export --own
+clog fill ./myapp-conversations.zip --own
 ```
+
+`clog drain myapp --format pair -o ./clog-export/` writes the same metadata and
+JSONL files as an unpacked directory. Both drain formats export saved
+conversations only; broad selections skip unsaved matches, and `clog drain
+--state saved` explicitly exports every saved row across authors and origins.
+Archive publication is atomic, so an existing file replaced with `--force`
+remains unchanged until the complete new archive is ready.
+
+Fill groups repeated skips that have the same reason, and drain shows only the
+first detailed export failure by default. Re-run either command with
+`--show-all-errors` to identify every affected conversation.
+
+Archive input and output are limited to a 1 GiB zip file, 60,000 archive
+records, and 2 GiB of selected pair data. Archive import validates and
+extracts only `.jsonl` and `.meta.json` entries. The initial zip reader does
+not verify CRC-32 or every inconsistent zip size declaration, so clog guarantees
+compatibility with archives produced by the same clog version rather than broad
+compatibility with every zip tool.
 
 Both import forms write only to clog's stored conversation copies; they do not modify Claude Code or Codex CLI source conversations or make imports resumable there.
 

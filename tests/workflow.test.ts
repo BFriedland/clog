@@ -437,7 +437,7 @@ describe("workflow", () => {
     expect(stdout).toContain("Remove 1 conversation from clog?");
     expect(stdout).toContain("summaries, tags, search vectors");
     expect(stdout).toContain("Source files under ~/.claude and ~/.codex are not modified.");
-    expect(stdout).toContain(`clog drain ${convId}@claude-code --to-dir <dir>`);
+    expect(stdout).toContain(`clog drain ${convId}@claude-code -o <archive.zip>`);
     expect(stdout).toContain("no longer has a readable source file");
     expect(stdout).toContain("Dry run: no conversations removed.");
     await expect(getConversationById(convId)).resolves.not.toBeNull();
@@ -462,8 +462,8 @@ describe("workflow", () => {
 
     const { stdout } = await runBuiltCommand(buildRemoveCommand, ["Mobile App", "--dry-run"]);
 
-    expect(stdout).toContain(`clog drain ${convId}@claude-code --to-dir <dir>`);
-    expect(stdout).not.toContain("clog drain Mobile App --to-dir <dir>");
+    expect(stdout).toContain(`clog drain ${convId}@claude-code -o <archive.zip>`);
+    expect(stdout).not.toContain("clog drain Mobile App -o <archive.zip>");
     await expect(getConversationById(convId)).resolves.not.toBeNull();
   });
 });

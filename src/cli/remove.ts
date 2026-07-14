@@ -160,7 +160,7 @@ function renderRemovalPreview(
   lines.push("Source files under ~/.claude and ~/.codex are not modified.");
   lines.push("");
   lines.push("If you want an export first, run:");
-  lines.push(`  clog drain ${conversations.map(formatDrainSelector).join(" ")} --to-dir <dir>`);
+  lines.push(`  clog drain ${conversations.map(formatDrainSelector).join(" ")} -o <archive.zip>`);
   lines.push("");
 
   return `${lines.join("\n")}\n`;

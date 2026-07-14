@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { unzipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { writeJsonl } from "./helpers/fixtures.js";
@@ -226,14 +227,14 @@ describe("e2e", () => {
     expect(stdout).toContain("bob");
   });
 
-  it("drain returns exit code 2 for stdout usage with no ids, no filters, and no --to", async () => {
+  it("drain returns exit code 2 with no selectors or selection filters", async () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
     await expect(run(["drain"])).rejects.toMatchObject({
       code: 2,
       stderr: expect.stringContaining(
-        "clog drain requires a conversation ID, a filter, --to <path>, or --to-dir <dir>.",
+        "clog drain requires a conversation ID, project selector, or selection filter.",
       ),
     });
   });
@@ -250,7 +251,7 @@ describe("e2e", () => {
     });
   });
 
-  it("drain exports a discovered conversation as raw source", async () => {
+  it("show renders a discovered conversation as raw source", async () => {
     const id = "19191919-1919-1919-1919-191919191919";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
     await writeClaudeConversation(filePath, "Drain raw source");
@@ -259,15 +260,15 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
 
-    const { stdout } = await run(["drain", id.slice(0, 8), "--raw"]);
+    const { stdout } = await run(["show", id.slice(0, 8), "--raw"]);
 
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
 
-  it("round-trips a foreign drained pair through fill, show, list --all, and drain", async () => {
+  it("round-trips a foreign drain archive through fill, show, list --all, and pair drain", async () => {
     const id = "fa111111-1111-1111-1111-111111111111";
     const sourcePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
-    const exportDir = path.join(tempDir, "foreign-export");
+    const exportArchive = path.join(tempDir, "foreign-export.zip");
     const roundTripDir = path.join(tempDir, "foreign-round-trip");
     await writeClaudeConversation(sourcePath, "Foreign fill round trip");
 
@@ -276,11 +277,12 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
-    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", exportDir]);
+    await run(["drain", id.slice(0, 8), "-o", exportArchive]);
 
-    const originalMetaPath = path.join(exportDir, "claude-code", `${id}.meta.json`);
-    const originalJsonlPath = path.join(exportDir, "claude-code", `${id}.jsonl`);
-    const originalMeta = JSON.parse(await fs.readFile(originalMetaPath, "utf8"));
+    const archiveEntries = unzipSync(await fs.readFile(exportArchive));
+    const originalMetaBytes = archiveEntries[`claude-code/${id}.meta.json`]!;
+    const originalJsonlBytes = archiveEntries[`claude-code/${id}.jsonl`]!;
+    const originalMeta = JSON.parse(Buffer.from(originalMetaBytes).toString("utf8"));
     expect(originalMeta.author).toBe("bob");
 
     clogHome = path.join(tempDir, ".clog-import-foreign");
@@ -288,7 +290,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const fill = await run(["fill", exportDir]);
+    const fill = await run(["fill", exportArchive]);
     expect(fill.stderr).toContain("Processed 1 conversation pair");
     expect(fill.stderr).toContain("clog list --all");
 
@@ -304,7 +306,7 @@ describe("e2e", () => {
     expect(show.stdout).toContain("Foreign fill round trip");
     expect(show.stdout).toContain("State:   saved");
 
-    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", roundTripDir]);
+    await run(["drain", id.slice(0, 8), "--format", "pair", "-o", roundTripDir]);
     expect(JSON.parse(await fs.readFile(
       path.join(roundTripDir, "claude-code", `${id}.meta.json`),
       "utf8",
@@ -312,7 +314,7 @@ describe("e2e", () => {
     expect(await fs.readFile(
       path.join(roundTripDir, "claude-code", `${id}.jsonl`),
       "utf8",
-    )).toBe(await fs.readFile(originalJsonlPath, "utf8"));
+    )).toBe(Buffer.from(originalJsonlBytes).toString("utf8"));
   });
 
   it("restores an own drained pair as clean and keeps local edit, tag, diff, and save workflows", async () => {
@@ -326,7 +328,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
-    await run(["drain", id.slice(0, 8), "--format", "pair", "--to-dir", exportDir]);
+    await run(["drain", id.slice(0, 8), "--format", "pair", "-o", exportDir]);
 
     clogHome = path.join(tempDir, ".clog-import-own");
     await run(["config", "set", "author", "alice"]);

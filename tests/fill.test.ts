@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { zipSync } from "fflate";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,6 +18,10 @@ import {
   withDb,
 } from "../src/db/index.js";
 import * as dbModule from "../src/db/index.js";
+import {
+  createDeterministicPairArchive,
+  MAX_ARCHIVE_BYTES,
+} from "../src/interchange/archive.js";
 import { planFill, type FillMode, type FillWriteAction } from "../src/interchange/fill.js";
 import { writePair, type PairMetadata, type ValidatedPair } from "../src/interchange/pairs.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
@@ -134,6 +139,163 @@ describe("clog fill", () => {
     expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toBe("No conversation pairs found in ./empty.");
     expect((result.error as Error).message).not.toContain(emptyDir);
+  });
+
+  it("imports a clog archive through the existing pair plan and write pipeline", async () => {
+    const id = "a0353535-3535-3535-3535-353535353535";
+    await writePairFixture(pairDir, id, { author: "bob", title: "Archived pair" }, 2);
+    const archivePath = path.join(tempDir, "portable.bin");
+    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [archivePath]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBeUndefined();
+    expect(result.stderr).toContain(`Processed 1 conversation pair from ${archivePath}`);
+    expect(await getConversationById(id)).toMatchObject({
+      title: "Archived pair",
+      author: "bob",
+      originKind: "file",
+      savedMessageCount: 2,
+    });
+  });
+
+  it("preserves own, dry-run, allow-partial, and expanded-error behavior for archives", async () => {
+    const validId = "a0343434-3434-3434-3434-343434343434";
+    const incompleteId = "a0344444-4444-4444-4444-444444444444";
+    await writePairFixture(pairDir, validId, { author: "alice" }, 1);
+    await fs.writeFile(
+      path.join(pairDir, `${incompleteId}.jsonl`),
+      makeClaudeJsonl(1),
+      "utf8",
+    );
+    const archivePath = path.join(tempDir, "option-parity.zip");
+    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [
+      archivePath,
+      "--own",
+      "--dry-run",
+      "--allow-partial",
+      "--show-all-errors",
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Dry run:");
+    expect(result.stderr).toContain(`${archivePath}:${incompleteId}`);
+    expect(result.stderr).not.toContain("clog-private-");
+    expect(await getConversationById(validId)).toBeNull();
+  });
+
+  it("uses archive entry display paths without exposing private extraction paths", async () => {
+    const id = "a0363636-3636-3636-3636-363636363636";
+    const archivePath = path.join(tempDir, "invalid-pair.data");
+    const archive = zipSync({
+      [`claude-code/${id}.meta.json`]: Buffer.from("{invalid\n"),
+      [`claude-code/${id}.jsonl`]: Buffer.from(makeClaudeJsonl(1)),
+    });
+    await fs.writeFile(archivePath, archive);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [archivePath]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`${archivePath}:claude-code/${id}`);
+    expect(result.stderr).not.toContain("clog-private-");
+  });
+
+  it("translates an archive entry read failure without exposing its temporary path", async () => {
+    const id = "a0383838-3838-3838-3838-383838383838";
+    await writePairFixture(path.join(pairDir, "claude-code"), id, { author: "bob" }, 1);
+    const archivePath = path.join(tempDir, "entry-read-failure.zip");
+    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+    const expectedSuffix = path.join("claude-code", `${id}.meta.json`);
+    const originalReadFile = fs.readFile.bind(fs);
+    const readFileSpy = vi.spyOn(fs, "readFile");
+    let temporaryMetaPath = "";
+    readFileSpy.mockImplementation(async (filePath, ...args) => {
+      const candidatePath = String(filePath);
+      if (candidatePath.includes("clog-private-") && candidatePath.endsWith(expectedSuffix)) {
+        temporaryMetaPath = candidatePath;
+        throw makeFilesystemError("ENOENT", candidatePath);
+      }
+
+      return originalReadFile(filePath, ...args) as ReturnType<typeof fs.readFile>;
+    });
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [archivePath]);
+
+    expect(result.error).toBeNull();
+    expect(result.exitCode).toBe(1);
+    expect(temporaryMetaPath).not.toBe("");
+    expect(result.stderr).toContain("failed to read .meta.json (ENOENT)");
+    expect(result.stderr).toContain(`${archivePath}:claude-code/${id}`);
+    expect(result.stderr).toContain(
+      `path=${archivePath}:claude-code/${id}.meta.json`,
+    );
+    expect(result.stderr).not.toContain(temporaryMetaPath);
+    expect(result.stderr).not.toContain("clog-private-");
+  });
+
+  it("returns a usage error for a regular file without a zip signature", async () => {
+    const inputPath = path.join(tempDir, "not-an-archive.zip");
+    await fs.writeFile(inputPath, "not zip data");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toMatchObject({ exitCode: 2 });
+    expect((result.error as Error).message).toContain("not a recognized zip archive");
+  });
+
+  it("rejects an over-budget recognized archive before reading the complete file", async () => {
+    const inputPath = path.join(tempDir, "over-budget.zip");
+    await fs.writeFile(inputPath, Uint8Array.of(0x50, 0x4b, 0x03, 0x04));
+    await fs.truncate(inputPath, MAX_ARCHIVE_BYTES + 1);
+    const readFileSpy = vi.spyOn(fs, "readFile");
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+
+    expect(result.error).toMatchObject({ exitCode: 1 });
+    expect((result.error as Error).message).toContain(
+      `Archive zip file bytes observed ${MAX_ARCHIVE_BYTES + 1}; limit is ${MAX_ARCHIVE_BYTES}`,
+    );
+    expect((result.error as Error).message).toContain("Use unpacked pair-directory input");
+    expect(
+      readFileSpy.mock.calls.some(([filePath]) => String(filePath) === inputPath),
+    ).toBe(false);
+  });
+
+  it("rejects malformed, empty, pair-less, and unsafe recognized archives before pair import", async () => {
+    const malformedPath = path.join(tempDir, "malformed.zip");
+    const emptyPath = path.join(tempDir, "empty.zip");
+    const pairlessPath = path.join(tempDir, "pairless.zip");
+    const unsafePath = path.join(tempDir, "unsafe.zip");
+    await fs.writeFile(malformedPath, Uint8Array.of(0x50, 0x4b, 0x03, 0x04, 0));
+    await fs.writeFile(emptyPath, zipSync({}));
+    await fs.writeFile(pairlessPath, zipSync({ "notes.txt": Buffer.from("ignored") }));
+    await fs.writeFile(
+      unsafePath,
+      zipSync({ "../escaped.jsonl": Buffer.from(makeClaudeJsonl(1)) }),
+    );
+
+    for (const [inputPath, message] of [
+      [malformedPath, "could not be decoded"],
+      [emptyPath, "contains no conversation pair files"],
+      [pairlessPath, "contains no conversation pair files"],
+      [unsafePath, "traversal component"],
+    ] as const) {
+      const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
+      expect(result.error).toMatchObject({ exitCode: 1 });
+      expect((result.error as Error).message).toContain(message);
+    }
+    const partial = await runBuiltCommandCapturingError(buildFillCommand, [
+      malformedPath,
+      "--allow-partial",
+    ]);
+    expect(partial.error).toMatchObject({ exitCode: 1 });
+    expect((partial.error as Error).message).toContain("could not be decoded");
+    await expect(fs.access(path.join(tempDir, "escaped.jsonl"))).rejects.toThrow();
   });
 
   it("uses an absolute input path in pair diagnostics", async () => {
@@ -761,7 +923,7 @@ describe("clog fill", () => {
     expect(await fs.readFile(managedPath, "utf8")).toContain("Message 1");
   });
 
-  it("applies clogignore import rules and reports one skip summary", async () => {
+  it("applies clogignore import rules and reports one detailed skip", async () => {
     const ignoredId = "b1111111-1111-1111-1111-111111111111";
     const importedId = "b2222222-2222-2222-2222-222222222222";
     await writePairFixture(pairDir, ignoredId, { author: "bob", projectName: "secret" }, 1);
@@ -774,9 +936,62 @@ describe("clog fill", () => {
     expect(result.exitCode).toBeUndefined();
     expect(result.stderr).toContain("Processed 2 conversation pairs");
     expect(result.stderr).toContain("(1 new; 1 skipped)");
-    expect(result.stderr).toContain("1 conversation pair skipped by clogignore");
+    expect(result.stderr).toContain(
+      `notice: Skipping conversation ${ignoredId.slice(0, 8)} because it matches clogignore.`,
+    );
+    expect(result.stderr).not.toContain("Re-run with --show-all-errors");
     expect(await getConversationById(ignoredId)).toBeNull();
     expect(await getConversationById(importedId)).not.toBeNull();
+  });
+
+  it("collapses benign skips by reason and expands their conversation identities", async () => {
+    const savedIds = [
+      "b1212121-1212-1212-1212-121212121212",
+      "b1313131-1313-1313-1313-131313131313",
+    ];
+    const ignoredIds = [
+      "b1414141-1414-1414-1414-141414141414",
+      "b1515151-1515-1515-1515-151515151515",
+    ];
+
+    for (const id of savedIds) {
+      await insertConversation(conversation({ id, sourceId: id }));
+      await writePairFixture(pairDir, id, { author: "bob", projectName: "visible" }, 1);
+    }
+    for (const id of ignoredIds) {
+      await writePairFixture(pairDir, id, { author: "bob", projectName: "secret" }, 1);
+    }
+    await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), "secret\n", "utf8");
+
+    const collapsed = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(collapsed.error).toBeNull();
+    expect(collapsed.exitCode).toBeUndefined();
+    expect(collapsed.stderr).toContain(
+      "notice: 2 input pairs were skipped because matching conversations are already saved locally.",
+    );
+    expect(collapsed.stderr).toContain(
+      "notice: 2 conversation pairs were skipped by clogignore.",
+    );
+    expect(collapsed.stderr.match(/Re-run with --show-all-errors to list each conversation\./g))
+      .toHaveLength(2);
+    for (const id of [...savedIds, ...ignoredIds]) {
+      expect(collapsed.stderr).not.toContain(`${id.slice(0, 8)}@claude-code`);
+    }
+
+    const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
+      pairDir,
+      "--show-all-errors",
+    ]);
+
+    expect(expanded.error).toBeNull();
+    expect(expanded.exitCode).toBeUndefined();
+    expect(expanded.stderr).not.toContain(
+      "Re-run with --show-all-errors to list each conversation.",
+    );
+    for (const id of [...savedIds, ...ignoredIds]) {
+      expect(expanded.stderr).toContain(`    ${id.slice(0, 8)}@claude-code`);
+    }
   });
 
   it("fails closed when --own sees a foreign author", async () => {
