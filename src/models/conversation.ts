@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-export const conversationStateSchema = z.enum([
+const conversationStateSchema = z.enum([
   "unsaved",
   "saved",
 ]);
 
 export type ConversationState = z.infer<typeof conversationStateSchema>;
 
-export const originKindSchema = z.enum([
+const originKindSchema = z.enum([
   "local",
   "git",
   "file",
@@ -24,7 +24,7 @@ export const summaryKindSchema = z.enum([
 
 export type SummaryKind = z.infer<typeof summaryKindSchema>;
 
-export const summaryOutcomeSchema = z.enum([
+const summaryOutcomeSchema = z.enum([
   "fixed",
   "partial",
   "abandoned",
@@ -33,8 +33,6 @@ export const summaryOutcomeSchema = z.enum([
   "noise",
   "unclear",
 ]);
-
-export type SummaryOutcome = z.infer<typeof summaryOutcomeSchema>;
 
 // Two variants on purpose:
 //   - summaryExtractionSchema is tolerant. It's used on read paths (DB load,
@@ -66,14 +64,12 @@ export const summaryExtractionInputSchema = z
 
 export type SummaryExtraction = z.infer<typeof summaryExtractionSchema>;
 
-export const messageRoleSchema = z.enum([
+const messageRoleSchema = z.enum([
   "user",
   "assistant",
   "tool_use",
   "tool_result",
 ]);
-
-export type MessageRole = z.infer<typeof messageRoleSchema>;
 
 export const messageSchema = z.object({
   role: messageRoleSchema,

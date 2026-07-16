@@ -17,7 +17,7 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-export function groupMessagesIntoTurns(messages: Message[]): Turn[] {
+function groupMessagesIntoTurns(messages: Message[]): Turn[] {
   const turns: Turn[] = [];
   let currentMessages: Message[] = [];
   let startMessageIndex = 0;
@@ -49,7 +49,7 @@ export function groupMessagesIntoTurns(messages: Message[]): Turn[] {
   return turns;
 }
 
-export function renderMessageForEmbedding(message: Message): string | null {
+function renderMessageForEmbedding(message: Message): string | null {
   switch (message.role) {
     case "user":
       return message.content.trim() ? `Human: ${message.content.trim()}` : null;
@@ -64,7 +64,7 @@ export function renderMessageForEmbedding(message: Message): string | null {
   }
 }
 
-export function renderTurnForEmbedding(messages: Message[]): string {
+function renderTurnForEmbedding(messages: Message[]): string {
   return messages
     .map((message) => renderMessageForEmbedding(message))
     .filter((entry): entry is string => Boolean(entry))

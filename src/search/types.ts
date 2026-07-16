@@ -1,4 +1,4 @@
-export interface ChunkMetadata {
+interface ChunkMetadata {
   conversationId: string;
   chunkIndex: number;
   startMessageIndex: number;

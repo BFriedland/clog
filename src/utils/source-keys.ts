@@ -36,12 +36,12 @@ export type SourceKeyValidationResult =
   | { ok: true }
   | { ok: false; reason: SourceKeyValidationError };
 
-export interface ParsedSourceQualifiedId {
+interface ParsedSourceQualifiedId {
   prefix: string;
   source: string | null;
 }
 
-export type SourceQualifiedIdParseError =
+type SourceQualifiedIdParseError =
   | "missing_prefix"
   | "missing_source"
   | "invalid_prefix"

@@ -1,5 +1,5 @@
 import type { ConversationMeta } from "../models/conversation.js";
-import { getConversationById, setConversationIndexedAt } from "../db/index.js";
+import { setConversationIndexedAt } from "../db/index.js";
 import { parseConversationMessages } from "../cli/common.js";
 import { loadConfig } from "../config/index.js";
 import { nowIso } from "../utils/time.js";
@@ -127,11 +127,4 @@ export async function tryDeleteConversationVectors(
 
     return conversationIds;
   }
-}
-
-export async function ensureConversationSearchable(
-  conversationId: string,
-): Promise<boolean> {
-  const conversation = await getConversationById(conversationId);
-  return isConversationSearchable(conversation);
 }

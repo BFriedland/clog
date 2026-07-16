@@ -5,7 +5,7 @@ export const BUILTIN_SOURCES = ["claude-code", "codex-cli"] as const;
 
 export type BuiltinSource = (typeof BUILTIN_SOURCES)[number];
 
-export function expandHomePath(value: string): string {
+function expandHomePath(value: string): string {
   if (value === "~") {
     return os.homedir();
   }
@@ -70,7 +70,7 @@ export function getRawConversationPath(source: string, id: string): string {
   return path.join(getRawSourceDir(source), `${id}.jsonl`);
 }
 
-export function getImportSourceDir(source: string): string {
+function getImportSourceDir(source: string): string {
   return path.join(getImportsRoot(), source);
 }
 

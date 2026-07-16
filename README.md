@@ -321,6 +321,7 @@ npm test               # Run tests
 npm run test:watch     # Watch mode
 npm run test:coverage  # Run tests with coverage report
 npm run lint           # Lint src/ and tests/
+npm run knip           # Find unused files, exports, types, and dependencies
 npm run build          # Build clog and fix bin permissions
 npm run dev -- status  # Run without building
 ```

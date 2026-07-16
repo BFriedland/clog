@@ -7,7 +7,7 @@ import { listConversations } from "../db/index.js";
 import { isUnsummarized } from "../models/conversation.js";
 import { UsageError } from "../utils/errors.js";
 
-export type TalkClient = "claude" | "codex";
+type TalkClient = "claude" | "codex";
 
 interface TalkClientConfig {
   label: string;

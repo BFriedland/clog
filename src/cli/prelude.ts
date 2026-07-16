@@ -30,7 +30,3 @@ export async function runWithCliErrorHandling(
     process.exitCode = error instanceof ClogError ? error.exitCode : 1;
   }
 }
-
-export function fail(message: string): never {
-  throw new ClogError(message);
-}

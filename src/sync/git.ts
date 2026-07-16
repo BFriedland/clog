@@ -12,17 +12,17 @@ export class GitError extends Error {
   }
 }
 
-export interface GitRunOptions {
+interface GitRunOptions {
   cwd?: string;
   stdin?: string;
 }
 
-export interface GitRunResult {
+interface GitRunResult {
   stdout: string;
   stderr: string;
 }
 
-export async function runGit(
+async function runGit(
   args: string[],
   options: GitRunOptions = {},
 ): Promise<GitRunResult> {
@@ -84,15 +84,6 @@ export async function isGitAvailable(): Promise<boolean> {
   }
 }
 
-export async function getGitVersion(): Promise<string | null> {
-  try {
-    const { stdout } = await runGit(["--version"]);
-    return stdout.trim();
-  } catch {
-    return null;
-  }
-}
-
 export async function gitClone(url: string, targetDir: string): Promise<void> {
   await runGit(["clone", url, targetDir]);
 }
@@ -126,7 +117,7 @@ export async function gitRevParseHead(cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-export async function gitStatusPorcelain(cwd: string): Promise<string> {
+async function gitStatusPorcelain(cwd: string): Promise<string> {
   const { stdout } = await runGit(["status", "--porcelain"], { cwd });
   return stdout;
 }
@@ -156,8 +147,4 @@ export async function gitRemoteGetUrl(
   } catch {
     return null;
   }
-}
-
-export async function gitInitBare(targetDir: string): Promise<void> {
-  await runGit(["init", "--bare", targetDir]);
 }

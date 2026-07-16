@@ -83,7 +83,7 @@ export function searchRuntimePackagesInstalled(packages: string[]): boolean {
   return packages.every((packageName) => resolveSearchRuntimePackage(packageName) !== null);
 }
 
-export function assertSearchRuntimePackagesInstalled(packages: string[]): void {
+function assertSearchRuntimePackagesInstalled(packages: string[]): void {
   const missing = packages.filter((packageName) => resolveSearchRuntimePackage(packageName) === null);
   if (missing.length > 0) {
     throw new SearchDepsError(missing);

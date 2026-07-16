@@ -16,7 +16,7 @@ import {
   type ValidatedPair,
 } from "./pairs.js";
 
-export interface SourceIdentity {
+interface SourceIdentity {
   source: string;
   id: string;
 }
@@ -28,7 +28,7 @@ export interface GitValidatedPair {
   pair: ValidatedPair;
 }
 
-export type GitPairScanResult =
+type GitPairScanResult =
   | { kind: "valid"; pair: GitValidatedPair }
   | {
       kind: "invalid";
@@ -43,7 +43,7 @@ export interface GitPairScan {
   warnings: ClogWarning[];
 }
 
-export type ReconcileSkipReason =
+type ReconcileSkipReason =
   | "ignored"
   | "duplicate"
   | "local_unsaved_owner"
@@ -313,7 +313,7 @@ export function planGitReconciliation(
   };
 }
 
-export function buildConversationFromGitPair(
+function buildConversationFromGitPair(
   pair: GitValidatedPair,
   remoteUrl: string,
 ): ConversationMeta {
@@ -347,7 +347,7 @@ export function buildConversationFromGitPair(
   };
 }
 
-export function mergeGitPairIntoConversation(
+function mergeGitPairIntoConversation(
   existing: ConversationMeta,
   pair: GitValidatedPair,
   remoteUrl: string,

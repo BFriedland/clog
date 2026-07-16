@@ -48,7 +48,7 @@ interface PlungeFindingInternal {
   sortKey: string;
 }
 
-export interface PlungeV1Finding {
+interface PlungeV1Finding {
   check: number;
   subsystem: PlungeSubsystem;
   severity: PlungeSeverity;
@@ -133,7 +133,7 @@ export function buildPlungeCommand(): Command {
     });
 }
 
-export async function runPlungeCommand(
+async function runPlungeCommand(
   options: { json: boolean; verbose: boolean },
 ): Promise<PlungeV1Report> {
   try {

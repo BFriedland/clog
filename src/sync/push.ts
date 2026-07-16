@@ -21,7 +21,7 @@ import {
   getRemoteSourceDir,
 } from "./paths.js";
 
-export type ChangeKind = "added" | "updated" | "retracted";
+type ChangeKind = "added" | "updated" | "retracted";
 
 export interface ChangeRecord {
   kind: ChangeKind;

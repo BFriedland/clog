@@ -7,7 +7,7 @@ import { Command } from "commander";
 
 import { ClogError, UsageError } from "../utils/errors.js";
 
-export type McpClient = "claude" | "codex";
+type McpClient = "claude" | "codex";
 export type McpSetupTarget = McpClient | "both";
 
 interface ExternalCommandError extends Error {
@@ -101,7 +101,7 @@ export async function runMcpSetup(target: McpSetupTarget): Promise<void> {
   }
 }
 
-export function parseMcpSetupTarget(input: string): McpSetupTarget {
+function parseMcpSetupTarget(input: string): McpSetupTarget {
   const normalized = input.trim().toLowerCase();
   if (normalized === "claude" || normalized === "codex" || normalized === "both") {
     return normalized;

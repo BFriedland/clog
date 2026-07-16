@@ -13,7 +13,7 @@ import { ClogError, UsageError } from "../utils/errors.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import { withPrivateTempDirectory } from "../utils/private-temp.js";
 
-export type FillInputKind = "directory" | "archive";
+type FillInputKind = "directory" | "archive";
 
 export interface PreparedFillInput extends PairDiagnosticAdapter {
   kind: FillInputKind;
@@ -25,7 +25,7 @@ export interface PreparedFillInput extends PairDiagnosticAdapter {
 
 class TranslatedFillInputError extends ClogError {}
 
-export function createPreparedDirectoryInput(inputPath: string): PreparedFillInput {
+function createPreparedDirectoryInput(inputPath: string): PreparedFillInput {
   const physicalRoot = normalizeUserPath(inputPath);
   const suppliedPath = inputPath;
 
@@ -152,7 +152,7 @@ export async function withPreparedFillInput<T>(
   });
 }
 
-export async function assertReadableFillDirectory(input: PreparedFillInput): Promise<void> {
+async function assertReadableFillDirectory(input: PreparedFillInput): Promise<void> {
   let stat;
   try {
     stat = await fs.stat(input.physicalRoot);
@@ -179,7 +179,7 @@ export async function assertReadableFillDirectory(input: PreparedFillInput): Pro
   }
 }
 
-export function protectFillInputError(
+function protectFillInputError(
   input: PreparedFillInput,
   error: unknown,
 ): unknown {

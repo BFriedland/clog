@@ -37,7 +37,7 @@ export function classifyZipSignature(bytes: Uint8Array): ZipSignatureKind | null
   return null;
 }
 
-export function isPairArchiveEntryName(name: string): boolean {
+function isPairArchiveEntryName(name: string): boolean {
   return PAIR_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 

@@ -73,7 +73,6 @@ export interface FillPlan {
   actions: FillAction[];
   warnings: ClogWarning[];
   ignoredCount: number;
-  validCandidateCount: number;
   hiddenForeignAuthorCount: number;
   allValidCandidatesMatchAuthor: boolean;
   hasFailures: boolean;
@@ -500,7 +499,6 @@ function buildPlanResult(args: {
     actions: args.actions,
     warnings: args.warnings,
     ignoredCount: args.ignoredCount,
-    validCandidateCount: args.validPairs.length,
     hiddenForeignAuthorCount: hiddenForeignAuthorIds.size,
     allValidCandidatesMatchAuthor:
       args.validPairs.length > 0 &&

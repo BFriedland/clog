@@ -7,7 +7,7 @@ export type ClogWarningCode =
   | "missing_source_file"
   | PairWarningCode;
 
-export type PairWarningCode =
+type PairWarningCode =
   | "pair_incomplete"
   | "pair_invalid_metadata"
   | "pair_id_mismatch"

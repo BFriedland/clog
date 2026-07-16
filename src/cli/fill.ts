@@ -69,7 +69,7 @@ export function buildFillCommand(): Command {
     });
 }
 
-export async function runFillCommand(
+async function runFillCommand(
   inputPath: string,
   options: FillOptions = {},
 ): Promise<void> {

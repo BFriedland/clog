@@ -9,7 +9,7 @@ export interface ProviderRegistryEntry<TConfig> {
   configSchema: z.ZodType<TConfig>;
 }
 
-export const TransformersConfigSchema = z.object({
+const TransformersConfigSchema = z.object({
   model: z.string().default("Xenova/all-MiniLM-L6-v2"),
 });
 
@@ -26,7 +26,7 @@ export const embeddingProviders = {
 
 export type EmbeddingProviderType = keyof typeof embeddingProviders;
 
-export const VectraConfigSchema = z.object({});
+const VectraConfigSchema = z.object({});
 
 export type VectraConfig = z.infer<typeof VectraConfigSchema>;
 
@@ -41,11 +41,11 @@ export const vectorStoreProviders = {
 
 export type VectorStoreProviderType = keyof typeof vectorStoreProviders;
 
-export const SearchEmbeddingConfigSchema = z.discriminatedUnion("type", [
+const SearchEmbeddingConfigSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("transformers"), ...TransformersConfigSchema.shape }),
 ]);
 
-export const SearchVectorStoreConfigSchema = z.discriminatedUnion("type", [
+const SearchVectorStoreConfigSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("vectra"), ...VectraConfigSchema.shape }),
 ]);
 

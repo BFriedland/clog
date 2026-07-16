@@ -2,7 +2,7 @@ import type { ConversationMeta, Message } from "../models/conversation.js";
 import { chunkConversationMessages } from "./chunker.js";
 import type { EmbeddingProvider, SearchHit, VectorStore } from "./types.js";
 
-export const MIN_SEARCH_SCORE = 0.15;
+const MIN_SEARCH_SCORE = 0.15;
 export const MAX_SEARCH_SCAN_WINDOW = 5_000;
 
 export interface IndexedConversationHit {

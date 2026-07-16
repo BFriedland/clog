@@ -4,7 +4,7 @@ import { ClaudeCodeAdapter } from "./claude-code.js";
 import type { SourceAdapter, SourceAdapterFactory } from "./adapter.js";
 import { CodexCliAdapter } from "./codex-cli.js";
 
-export type SourceAdapterRegistry = Record<string, SourceAdapterFactory>;
+type SourceAdapterRegistry = Record<string, SourceAdapterFactory>;
 
 const FACTORIES: SourceAdapterRegistry = {
   "claude-code": (config) => new ClaudeCodeAdapter(config),

@@ -189,10 +189,6 @@ export async function ensureRawCopy(
   return destination;
 }
 
-export function printConversationRows(conversations: ConversationMeta[]): void {
-  renderConversationTable(conversations);
-}
-
 export async function confirm(message: string): Promise<boolean> {
   if (!process.stdin.isTTY) {
     return false;
@@ -550,19 +546,11 @@ export async function removeImportCopyIfPresent(
   }
 }
 
-export async function rawCopyMatchesSource(conversation: ConversationMeta): Promise<boolean> {
-  if (!conversation.filePath) {
-    return false;
-  }
-
-  return compareFileContents(conversation.sourcePath, conversation.filePath);
-}
-
 export function defaultSaveFilePath(conversation: ConversationMeta): string {
   return getRawConversationPath(conversation.source, conversation.id);
 }
 
-export async function compareFileContents(
+async function compareFileContents(
   leftPath: string,
   rightPath: string,
 ): Promise<boolean> {
@@ -581,7 +569,7 @@ export async function compareFileContents(
   return leftContent.equals(rightContent);
 }
 
-export async function pathExists(filePath: string): Promise<boolean> {
+async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
     return true;
@@ -684,7 +672,7 @@ export async function classifySavedDelta(
   return messages.length > conversation.savedMessageCount ? "ready" : "clean";
 }
 
-export function isSavedMetadataAhead(
+function isSavedMetadataAhead(
   conversation: ConversationMeta,
 ): boolean {
   if (conversation.state !== "saved" || !conversation.savedAt) {
@@ -698,15 +686,6 @@ export function isSavedMetadataAhead(
   }
 
   return modifiedAt > savedAt;
-}
-
-export async function isSavedReadyForResave(
-  conversation: ConversationMeta,
-): Promise<boolean> {
-  return isSavedReadyForResaveWithDelta(
-    conversation,
-    await classifySavedDelta(conversation),
-  );
 }
 
 export function isSavedReadyForResaveWithDelta(

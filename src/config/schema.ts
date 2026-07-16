@@ -37,7 +37,6 @@ export const configSchema = z.object({
   remote: remoteConfigSchema,
 });
 
-export type SourceConfig = z.infer<typeof sourceConfigSchema>;
 export type RemoteConfig = z.infer<typeof remoteConfigSchema>;
 export type Config = z.infer<typeof configSchema>;
 

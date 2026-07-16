@@ -12,7 +12,6 @@ import {
   getDefaultSourcePaths,
   getImportsRoot,
   getRawRoot,
-  normalizeUserPath,
 } from "../utils/paths.js";
 import { pathExists } from "../utils/fs.js";
 import { type Config, configSchema, parseConfig } from "./schema.js";
@@ -70,10 +69,6 @@ export async function saveConfig(config: Config): Promise<void> {
   const configPath = getConfigPath();
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-}
-
-export function resolveConfiguredPaths(paths: string[]): string[] {
-  return paths.map((entry) => normalizeUserPath(entry));
 }
 
 export async function ensureClogHomeDirs(): Promise<void> {

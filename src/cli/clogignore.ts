@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ConversationMeta } from "../models/conversation.js";
 import { getClogIgnorePath, normalizeUserPath } from "../utils/paths.js";
 
-export interface ClogIgnoreLine {
+interface ClogIgnoreLine {
   raw: string;
   trimmed: string;
   lineNumber: number;
@@ -17,7 +17,7 @@ interface IgnoreMatchTarget {
   sourcePath: string;
 }
 
-export async function readClogIgnoreLines(): Promise<ClogIgnoreLine[]> {
+async function readClogIgnoreLines(): Promise<ClogIgnoreLine[]> {
   const filePath = getClogIgnorePath();
 
   try {
@@ -88,7 +88,7 @@ export async function removeExactClogIgnoreRules(rules: string[]): Promise<{
   };
 }
 
-export function matchesClogIgnoreRule(
+function matchesClogIgnoreRule(
   rule: string,
   target: IgnoreMatchTarget,
 ): boolean {
