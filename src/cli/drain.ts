@@ -17,12 +17,13 @@ import {
   pairMetadataSchema,
   writePair,
 } from "../interchange/pairs.js";
-import type { ConversationMeta, ConversationState } from "../models/conversation.js";
+import type { ConversationMeta } from "../models/conversation.js";
 import { publishArchiveAtomic, assertArchivePublicationDestination } from "../utils/archive-publication.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { pathExists } from "../utils/fs.js";
 import { withPrivateTempDirectory } from "../utils/private-temp.js";
 import {
+  confirm,
   getScanWarningsForCommand,
   parseConversationMessages,
   renderWarnings,
@@ -38,6 +39,8 @@ interface DrainOptions {
   output?: string;
   format?: string;
   force?: boolean;
+  includeImported?: boolean;
+  yes?: boolean;
   refresh?: boolean;
   showAllErrors?: boolean;
   state?: string;
@@ -63,9 +66,16 @@ export function buildDrainCommand(): Command {
     .option("-o, --output <path>", "Archive file or unpacked pair-directory destination")
     .option("-f, --format <fmt>", "Output format: archive or pair", "archive")
     .option("--force", "Replace eligible existing output")
+    .option(
+      "--include-imported",
+      "Include imported conversations when no selector or filter is supplied",
+    )
+    .option(
+      "--yes",
+      "Export saved local conversations without prompting when no selector or filter is supplied",
+    )
     .option("--refresh", "Refresh local discovery before resolving the export set")
     .option("--show-all-errors", "Show every per-conversation export failure")
-    .option("-s, --state <state>", "Exact state filter: unsaved or saved")
     .option("-p, --project <name>", "Exact project metadata filter")
     .option("-a, --author <name>", "Exact author metadata filter")
     .option("-t, --tag <tag>", "Exact tag metadata filter")
@@ -73,6 +83,7 @@ export function buildDrainCommand(): Command {
     .addOption(new Option("--to <path>").hideHelp())
     .addOption(new Option("--to-dir <dir>").hideHelp())
     .addOption(new Option("--raw").hideHelp())
+    .addOption(new Option("-s, --state <state>").hideHelp())
     .action(async (selectors: string[], options: DrainOptions) => {
       await runDrainCommand(selectors, options);
     });
@@ -82,9 +93,16 @@ async function runDrainCommand(
   selectors: string[],
   options: DrainOptions,
 ): Promise<void> {
-  validateRemovedOptions(options);
+  validateRemovedOptions(selectors, options);
   const format = parseFormat(options.format);
   validateDrainOptions(selectors, options, format);
+  const bare = isBareDrain(selectors, options);
+
+  if (bare && !options.yes && !process.stdin.isTTY) {
+    throw new UsageError(
+      "Bare clog drain requires confirmation. Add a conversation or project selector, add a selection filter, or use --yes.",
+    );
+  }
 
   const config = await loadConfig();
   if (options.refresh) {
@@ -92,7 +110,9 @@ async function runDrainCommand(
     renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
-  const resolved = await resolveDrainConversations(selectors, options);
+  const resolved = await resolveDrainConversations(selectors, options, {
+    bare,
+  });
   if (resolved.conversations.length === 0) {
     if (resolved.skippedUnsaved > 0) {
       throw new ClogError(
@@ -115,18 +135,43 @@ async function runDrainCommand(
     );
   }
 
+  const destination = format === "pair"
+    ? options.output!
+    : options.output ?? "./clog-export.zip";
+
+  if (bare) {
+    if (format === "pair") {
+      await assertPairDestinationBeforeConfirmation(destination);
+    } else {
+      await assertArchivePublicationDestination(destination, {
+        force: options.force === true,
+      });
+    }
+
+    if (!options.yes) {
+      const accepted = await confirm(
+        `Export ${resolved.conversations.length} saved local conversation${
+          resolved.conversations.length === 1 ? "" : "s"
+        } to ${destination}?`,
+      );
+      if (!accepted) {
+        process.stdout.write("Operation cancelled.\n");
+        return;
+      }
+    }
+  }
+
   if (format === "pair") {
     await drainPairsToDirectory(resolved.conversations, {
       config,
       force: options.force === true,
-      targetDir: options.output!,
+      targetDir: destination,
       skippedUnsaved: resolved.skippedUnsaved,
       showAllErrors: options.showAllErrors === true,
     });
     return;
   }
 
-  const destination = options.output ?? "./clog-export.zip";
   await drainToArchive(resolved.conversations, {
     config,
     destination,
@@ -136,7 +181,10 @@ async function runDrainCommand(
   });
 }
 
-function validateRemovedOptions(options: DrainOptions): void {
+function validateRemovedOptions(
+  selectors: string[],
+  options: DrainOptions,
+): void {
   if (options.to != null || options.toDir != null) {
     throw new UsageError(
       "--to and --to-dir were removed from clog drain. Use -o, --output <path> instead.",
@@ -147,6 +195,27 @@ function validateRemovedOptions(options: DrainOptions): void {
       "--raw was removed from clog drain. Use 'clog show <id> --raw' instead.",
     );
   }
+  if (options.state != null) {
+    const state = options.state.trim().toLowerCase();
+    if (state === "saved") {
+      if (selectors.length > 0 || hasFilterOptions(options)) {
+        throw new UsageError(
+          "--state was removed from clog drain. Remove --state; clog drain already exports only saved conversations from an explicit selection.",
+        );
+      }
+      throw new UsageError(
+        "--state was removed from clog drain. Use --include-imported to export all saved local and imported conversations.",
+      );
+    }
+    if (state === "unsaved") {
+      throw new UsageError(
+        "--state was removed from clog drain. clog drain exports saved conversations only.",
+      );
+    }
+    throw new UsageError(
+      "--state was removed from clog drain. Remove it and select conversations by ID, project, or a supported filter.",
+    );
+  }
 }
 
 function validateDrainOptions(
@@ -154,12 +223,6 @@ function validateDrainOptions(
   options: DrainOptions,
   format: DrainFormat,
 ): void {
-  if (selectors.length === 0 && !hasFilterOptions(options)) {
-    throw new UsageError(
-      "clog drain requires a conversation ID, project selector, or selection filter.",
-    );
-  }
-
   if (format === "pair" && options.output == null) {
     throw new UsageError("--format pair requires -o <dir>.");
   }
@@ -168,7 +231,6 @@ function validateDrainOptions(
     throw new UsageError("--output cannot be empty.");
   }
 
-  parseStateFilter(options.state);
   parseOriginFilter(options.origin);
   for (const [flag, value] of [
     ["--project", options.project],
@@ -178,6 +240,15 @@ function validateDrainOptions(
     if (value != null && value.trim().length === 0) {
       throw new UsageError(`${flag} cannot be empty.`);
     }
+  }
+
+  if (
+    options.includeImported &&
+    (selectors.length > 0 || hasFilterOptions(options))
+  ) {
+    throw new UsageError(
+      "--include-imported cannot be combined with a conversation or project selector or a selection filter.",
+    );
   }
 }
 
@@ -189,12 +260,21 @@ interface ResolvedDrainConversations {
 async function resolveDrainConversations(
   selectors: string[],
   options: DrainOptions,
+  context: { bare: boolean },
 ): Promise<ResolvedDrainConversations> {
+  if (context.bare || options.includeImported) {
+    const origin = context.bare ? ("local" as const) : undefined;
+    const conversations = await listConversations({ states: ["saved"], origin });
+    const unsaved = await listConversations({ states: ["unsaved"], origin });
+    return {
+      conversations: dedupeAndSortConversations(conversations),
+      skippedUnsaved: unsaved.length,
+    };
+  }
+
   const hasFilters = hasFilterOptions(options);
-  const stateFilter = parseStateFilter(options.state);
   const filteredConversations = hasFilters
     ? await listConversations({
-        states: stateFilter ? [stateFilter] : undefined,
         projectName: trimmed(options.project),
         author: trimmed(options.author),
         tag: trimmed(options.tag),
@@ -235,6 +315,28 @@ async function resolveDrainConversations(
   const keptIds = new Set(deduped.map((conversation) => conversation.id));
   const skippedUnsaved = [...droppedUnsaved].filter((id) => !keptIds.has(id)).length;
   return { conversations: deduped, skippedUnsaved };
+}
+
+async function assertPairDestinationBeforeConfirmation(
+  targetDir: string,
+): Promise<void> {
+  let destinationStat;
+  try {
+    destinationStat = await fs.stat(targetDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw new ClogError(
+      `Could not inspect pair export destination ${targetDir}: ${formatError(error)}`,
+    );
+  }
+
+  if (!destinationStat.isDirectory()) {
+    throw new ClogError(
+      `Pair export destination is not a directory: ${targetDir}`,
+    );
+  }
 }
 
 async function drainPairsToDirectory(
@@ -498,20 +600,20 @@ function parseOriginFilter(value?: string): "local" | "remote" | undefined {
   throw new UsageError(`--origin must be "local" or "remote", got "${value}".`);
 }
 
-function parseStateFilter(value?: string): ConversationState | undefined {
-  if (value == null) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "unsaved" || normalized === "saved") return normalized;
-  throw new UsageError(`--state must be "unsaved" or "saved", got "${value}".`);
-}
-
 function hasFilterOptions(options: DrainOptions): boolean {
   return (
-    options.state !== undefined ||
     options.project !== undefined ||
     options.author !== undefined ||
     options.tag !== undefined ||
     options.origin !== undefined
+  );
+}
+
+function isBareDrain(selectors: string[], options: DrainOptions): boolean {
+  return (
+    selectors.length === 0 &&
+    !hasFilterOptions(options) &&
+    !options.includeImported
   );
 }
 

@@ -73,7 +73,7 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display one conversation as a terminal view, JSON (`--json`), Markdown (`--md`), raw content bytes (`--raw`), or its content path (`--path`); parsed formats support `--head N`/`--first N` and `--tail N`/`--last N` |
 | `clog path <id>` | Print the content path for a conversation |
-| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`-o, --output`) |
+| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`-o, --output`, `--include-imported`, `--yes`) |
 | `clog fill <path>` | Import a clog zip archive or unpacked conversation-pair directory as read-only conversations |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
@@ -216,6 +216,15 @@ clog drain myapp                               # ./clog-export.zip
 clog drain myapp -o ./myapp-conversations.zip # explicit archive path
 ```
 
+Running `clog drain` without a selector or selection filter asks for
+confirmation before exporting saved local conversations. Scripts can use
+`clog drain --yes` to export those saved local conversations without prompting.
+`clog drain --include-imported` explicitly exports every saved local and
+imported conversation without prompting. `--include-imported` cannot be
+combined with a conversation selector, project selector, or selection filter,
+and neither `--yes` nor `--include-imported` replaces an existing destination
+without `--force`.
+
 Import that export as read-only conversations:
 
 ```bash
@@ -231,7 +240,8 @@ clog fill ./myapp-conversations.zip --own
 `clog drain myapp --format pair -o ./clog-export/` writes the same metadata and
 JSONL files as an unpacked directory. Both drain formats export saved
 conversations only; broad selections skip unsaved matches, and `clog drain
---state saved` explicitly exports every saved row across authors and origins.
+--include-imported` explicitly exports saved conversations across local and
+imported origins.
 Archive publication is atomic, so an existing file replaced with `--force`
 remains unchanged until the complete new archive is ready.
 

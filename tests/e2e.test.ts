@@ -227,14 +227,14 @@ describe("e2e", () => {
     expect(stdout).toContain("bob");
   });
 
-  it("drain returns exit code 2 with no selectors or selection filters", async () => {
+  it("drain requires --yes for a non-interactive saved-local export", async () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
     await expect(run(["drain"])).rejects.toMatchObject({
       code: 2,
       stderr: expect.stringContaining(
-        "clog drain requires a conversation ID, project selector, or selection filter.",
+        "Add a conversation or project selector, add a selection filter, or use --yes.",
       ),
     });
   });

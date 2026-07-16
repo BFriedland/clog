@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 import type { Command } from "commander";
 import { unzipSync } from "fflate";
@@ -28,12 +29,21 @@ vi.mock("../src/interchange/archive.js", async (importOriginal) => {
   };
 });
 
+const repositoryRoot = process.cwd();
+const tsxImport = import.meta.resolve("tsx");
+
 describe("clog drain archive transport", () => {
   let tempDir: string;
   let originalCwd: string;
+  let originalIsTTY: boolean | undefined;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
+    originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: false,
+    });
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-drain-test-"));
     process.env.CLOG_HOME = path.join(tempDir, "clog-home");
     await ensureClogHome({ interactive: false });
@@ -45,6 +55,10 @@ describe("clog drain archive transport", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     process.chdir(originalCwd);
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: originalIsTTY,
+    });
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -381,30 +395,218 @@ describe("clog drain archive transport", () => {
     await expect(fs.access(explicitOutput)).rejects.toThrow();
   });
 
-  it("treats --state saved as an explicit all-author and all-origin selection", async () => {
-    const alice = await seedSavedConversation(
+  it("exports saved local and imported conversations with --include-imported", async () => {
+    const localAlice = await seedSavedConversation(
       "d8888888-8888-8888-8888-888888888888",
       { author: "alice" },
     );
-    const bob = await seedSavedConversation(
+    const importedBob = await seedSavedConversation(
       "d9999999-9999-9999-9999-999999999999",
       { author: "bob", originKind: "git", originRef: "git@example.com:team/repo.git" },
     );
-    const output = path.join(tempDir, "all-saved.zip");
+    const importedAlice = await seedSavedConversation(
+      "d9898989-9898-9898-9898-989898989898",
+      { author: "alice", originKind: "file", originRef: null },
+    );
+    const unsavedId = "d9797979-9797-9797-9797-979797979797";
+    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
+    const output = path.join(tempDir, "with-imports.zip");
 
-    await runBuiltCommandCapturingError(buildDrainCommand, [
-      "--state",
-      "saved",
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--include-imported",
       "-o",
       output,
     ]);
 
+    expect(result.error).toBeNull();
+    expect(result.stdout).not.toContain("[y/N]");
     const names = Object.keys(unzipSync(await fs.readFile(output)));
-    expect(names).toContain(`claude-code/${alice.id}.meta.json`);
-    expect(names).toContain(`claude-code/${bob.id}.meta.json`);
+    expect(names).toContain(`claude-code/${localAlice.id}.meta.json`);
+    expect(names).toContain(`claude-code/${importedBob.id}.meta.json`);
+    expect(names).toContain(`claude-code/${importedAlice.id}.meta.json`);
+    expect(names).not.toContain(`claude-code/${unsavedId}.meta.json`);
+
+    const redundantYesOutput = path.join(tempDir, "with-imports-and-yes.zip");
+    const redundantYes = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--include-imported",
+      "--yes",
+      "-o",
+      redundantYesOutput,
+    ]);
+    expect(redundantYes.error).toBeNull();
+    expect(Object.keys(unzipSync(await fs.readFile(redundantYesOutput)))).toEqual(names);
   });
 
-  it("requires explicit selection and rejects empty constrained filter values", async () => {
+  it("exports only saved local conversations with --yes", async () => {
+    const localAlice = await seedSavedConversation(
+      "d1010101-1010-1010-1010-101010101010",
+      { author: "alice" },
+    );
+    const localBob = await seedSavedConversation(
+      "d2020202-2020-2020-2020-202020202020",
+      { author: "bob" },
+    );
+    const remoteAlice = await seedSavedConversation(
+      "d3030303-3030-3030-3030-303030303030",
+      { author: "alice", originKind: "file", originRef: null },
+    );
+    const remoteBob = await seedSavedConversation(
+      "d4040404-4040-4040-4040-404040404040",
+      { author: "bob", originKind: "file", originRef: null },
+    );
+    const unsavedId = "d4141414-4141-4141-4141-414141414141";
+    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
+    const output = path.join(tempDir, "saved-local.zip");
+
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--yes",
+      "-o",
+      output,
+    ]);
+
+    expect(result.error).toBeNull();
+    const names = Object.keys(unzipSync(await fs.readFile(output)));
+    expect(names).toContain(`claude-code/${localAlice.id}.meta.json`);
+    expect(names).toContain(`claude-code/${localBob.id}.meta.json`);
+    expect(names).not.toContain(`claude-code/${remoteAlice.id}.meta.json`);
+    expect(names).not.toContain(`claude-code/${remoteBob.id}.meta.json`);
+    expect(names).not.toContain(`claude-code/${unsavedId}.meta.json`);
+  });
+
+  it("accepts redundant --yes without prompting for an explicit selection", async () => {
+    const conversation = await seedSavedConversation(
+      "d7070707-7070-7070-7070-707070707070",
+    );
+    const output = path.join(tempDir, "explicit-yes.zip");
+
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      conversation.id,
+      "--yes",
+      "-o",
+      output,
+    ]);
+
+    expect(result.error).toBeNull();
+    await expect(fs.access(output)).resolves.toBeUndefined();
+    expect(result.stdout).not.toContain("saved local conversation");
+  });
+
+  it("does not let --yes replace an archive destination without --force", async () => {
+    await seedSavedConversation("d8080808-8080-8080-8080-808080808080");
+    const output = path.join(tempDir, "existing-local.zip");
+    await fs.writeFile(output, "existing archive bytes");
+
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--yes",
+      "-o",
+      output,
+    ]);
+
+    expect(result.error).toMatchObject({ exitCode: 1 });
+    expect(await fs.readFile(output, "utf8")).toBe("existing archive bytes");
+  });
+
+  it("fails an empty bare selection without creating output", async () => {
+    const output = path.join(tempDir, "empty-local.zip");
+
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--yes",
+      "-o",
+      output,
+    ]);
+
+    expect(result.error).toMatchObject({ exitCode: 1 });
+    expect((result.error as Error).message).toContain("No conversations match");
+    await expect(fs.access(output)).rejects.toThrow();
+
+    const unsavedId = "d5050505-5050-5050-5050-505050505050";
+    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
+    const unsavedOnly = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--yes",
+      "-o",
+      output,
+    ]);
+
+    expect(unsavedOnly.error).toMatchObject({ exitCode: 1 });
+    expect((unsavedOnly.error as Error).message).toContain(
+      "1 matching conversation is unsaved; save it first with 'clog save'",
+    );
+    await expect(fs.access(output)).rejects.toThrow();
+  });
+
+  it("fails an interactive bare drain with nothing to export before prompting", async () => {
+    const result = await runInteractiveCli(["drain"], "", {
+      cwd: tempDir,
+      clogHome: process.env.CLOG_HOME!,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain("[y/N]");
+    expect(result.stderr).toContain("No conversations match");
+    await expect(fs.access(path.join(tempDir, "clog-export.zip"))).rejects.toThrow();
+  });
+
+  it("prompts for an interactive bare archive and exports after acceptance", async () => {
+    await seedSavedConversation("d9090909-9090-9090-9090-909090909090");
+
+    const result = await runInteractiveCli(["drain"], "y\n", {
+      cwd: tempDir,
+      clogHome: process.env.CLOG_HOME!,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(
+      "Export 1 saved local conversation to ./clog-export.zip? [y/N]",
+    );
+    expect(result.stderr).toContain("Exported 1 conversation to ./clog-export.zip");
+    await expect(fs.access(path.join(tempDir, "clog-export.zip"))).resolves.toBeUndefined();
+  });
+
+  it("does not let --force skip interactive confirmation or replace a declined archive", async () => {
+    await seedSavedConversation("d9191919-9191-9191-9191-919191919191");
+    const output = path.join(tempDir, "existing-interactive.zip");
+    await fs.writeFile(output, "existing archive bytes");
+
+    const result = await runInteractiveCli([
+      "drain",
+      "--force",
+      "-o",
+      output,
+    ], "n\n", {
+      cwd: tempDir,
+      clogHome: process.env.CLOG_HOME!,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`to ${output}? [y/N]`);
+    expect(result.stdout).toContain("Operation cancelled.");
+    expect(result.stderr).toBe("");
+    expect(await fs.readFile(output, "utf8")).toBe("existing archive bytes");
+  });
+
+  it("cancels an interactive bare pair export before creating its destination", async () => {
+    await seedSavedConversation("da0a0a0a-a0a0-a0a0-a0a0-a0a0a0a0a0a0");
+    const output = path.join(tempDir, "declined-pairs");
+
+    const result = await runInteractiveCli([
+      "drain",
+      "--format",
+      "pair",
+      "-o",
+      output,
+    ], "n\n", {
+      cwd: tempDir,
+      clogHome: process.env.CLOG_HOME!,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`to ${output}? [y/N]`);
+    expect(result.stdout).toContain("Operation cancelled.");
+    expect(result.stderr).toBe("");
+    await expect(fs.access(output)).rejects.toThrow();
+  });
+
+  it("requires --yes for non-interactive bare drain and rejects empty filter values", async () => {
     for (const args of [
       [] as string[],
       ["-o", path.join(tempDir, "bare.zip")],
@@ -415,14 +617,21 @@ describe("clog drain archive transport", () => {
       const result = await runBuiltCommandCapturingError(buildDrainCommand, args);
       expect(result.error).toMatchObject({ exitCode: 2 });
     }
+
+    const bare = await runBuiltCommandCapturingError(buildDrainCommand, []);
+    expect((bare.error as Error).message).toContain("use --yes");
   });
 
   it("reports migration guidance for removed destinations and render formats", async () => {
     const command = buildDrainCommand();
     const help = command.helpInformation();
     expect(help).toContain("--output");
+    expect(help).toContain("--include-imported");
+    expect(help).toContain("--yes");
+    expect(help).toContain("saved local conversations");
     expect(help).not.toContain("--to-dir");
     expect(help).not.toContain("--raw");
+    expect(help).not.toContain("--state");
 
     for (const [args, message] of [
       [["abcd", "--to", "out.zip"], "--output"],
@@ -434,6 +643,52 @@ describe("clog drain archive transport", () => {
       const result = await runBuiltCommandCapturingError(buildDrainCommand, [...args]);
       expect(result.error).toMatchObject({ exitCode: 2 });
       expect((result.error as Error).message).toContain(message);
+    }
+
+    const savedState = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--state",
+      "saved",
+    ]);
+    expect(savedState.error).toMatchObject({ exitCode: 2 });
+    expect((savedState.error as Error).message).toContain("--include-imported");
+
+    for (const args of [
+      ["abcd", "--state", "saved"],
+      ["--author", "alice", "--state", "saved"],
+    ]) {
+      const selectedSavedState = await runBuiltCommandCapturingError(
+        buildDrainCommand,
+        args,
+      );
+      expect(selectedSavedState.error).toMatchObject({ exitCode: 2 });
+      expect((selectedSavedState.error as Error).message).toContain("Remove --state");
+      expect((selectedSavedState.error as Error).message).not.toContain(
+        "--include-imported",
+      );
+    }
+
+    const unsavedState = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--state",
+      "unsaved",
+    ]);
+    expect(unsavedState.error).toMatchObject({ exitCode: 2 });
+    expect((unsavedState.error as Error).message).toContain(
+      "exports saved conversations only",
+    );
+  });
+
+  it("rejects --include-imported with selectors or selection filters", async () => {
+    const conversation = await seedSavedConversation(
+      "da1a1a1a-a1a1-a1a1-a1a1-a1a1a1a1a1a1",
+    );
+
+    for (const args of [
+      ["--include-imported", conversation.id],
+      ["--include-imported", "--author", "alice"],
+    ]) {
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, args);
+      expect(result.error).toMatchObject({ exitCode: 2 });
+      expect((result.error as Error).message).toContain("cannot be combined");
     }
   });
 
@@ -447,6 +702,13 @@ describe("clog drain archive transport", () => {
       "pair",
     ]);
     expect(missingPairOutput.error).toMatchObject({ exitCode: 2 });
+
+    const bareMissingPairOutput = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--format",
+      "pair",
+    ]);
+    expect(bareMissingPairOutput.error).toMatchObject({ exitCode: 2 });
+    expect((bareMissingPairOutput.error as Error).message).toContain("requires -o");
 
     const directoryDestination = path.join(tempDir, "directory.zip");
     await fs.mkdir(directoryDestination);
@@ -493,6 +755,45 @@ async function seedSavedConversation(
   });
   await insertConversation(conversation);
   return conversation;
+}
+
+async function runInteractiveCli(
+  args: string[],
+  stdin: string,
+  options: { cwd: string; clogHome: string },
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        tsxImport,
+        path.join(repositoryRoot, "tests/helpers/interactive-cli.ts"),
+        ...args,
+      ],
+      {
+        cwd: options.cwd,
+        env: {
+          ...process.env,
+          CLOG_HOME: options.clogHome,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(stdin);
+  });
 }
 
 async function directoryIsCaseInsensitive(directory: string): Promise<boolean> {

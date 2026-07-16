@@ -1528,7 +1528,8 @@ Supported command shapes:
 clog drain my-project                            # ./clog-export.zip
 clog drain abcd1234 -o backup.zip               # archive at an explicit path
 clog drain my-project --format pair -o out/      # unpacked pair directory
-clog drain --state saved -o all-saved.zip        # every saved row
+clog drain --yes                                 # saved local conversations without prompting
+clog drain --include-imported -o all-saved.zip   # saved local and imported conversations
 clog drain api-service --author alice -o api.zip # project selector within a filtered set
 ```
 
@@ -1539,9 +1540,10 @@ clog drain api-service --author alice -o api.zip # project selector within a fil
 | `--output <path>` | `-o` | Write the archive file or unpacked pair directory at this path. |
 | `--format <fmt>` | `-f` | Output format: `archive` (default) or `pair`. |
 | `--force` | | Replace eligible existing output. |
+| `--include-imported` | | Include imported conversations when no selector or filter is supplied. |
+| `--yes` | | Export saved local conversations without prompting when no selector or filter is supplied. |
 | `--refresh` | | Refresh local discovery before resolving the export set. |
 | `--show-all-errors` | | Show every per-conversation export failure. |
-| `--state <state>` | `-s` | Exact state filter: `unsaved` or `saved`. |
 | `--project <name>` | `-p` | Exact project metadata filter. |
 | `--author <name>` | `-a` | Exact author metadata filter. |
 | `--tag <tag>` | `-t` | Exact tag metadata filter. |
@@ -1549,8 +1551,13 @@ clog drain api-service --author alice -o api.zip # project selector within a fil
 
 The removed `--to` and `--to-dir` options fail with guidance to use `-o`. The
 removed `--raw`, `--format json`, and `--format md` forms fail with guidance to
-use `clog show`. Compatibility-only parsing for removed options does not make
-those options appear in command help.
+use `clog show`. The removed selector-free `--state saved` form points to
+`--include-imported`. When `--state saved` accompanies a selector or selection
+filter, the error says to remove `--state` because `clog drain` already exports
+only saved conversations from an explicit selection. The removed
+`--state unsaved` form explains that `clog drain` exports saved conversations
+only. Compatibility-only parsing for removed options does not make those
+options appear in command help.
 
 #### 5.7.3.1 Conversation Selection
 
@@ -1559,31 +1566,52 @@ and metadata filters are both present, clog builds the filtered candidate set
 before resolving each selector. Project selectors and conversation-ID selectors
 therefore resolve within the same filtered set.
 
-The recognized selection filters are `--project`, `--tag`, `--author`,
-`--state`, and `--origin`. A filter makes the selection explicit when the option
-was supplied, including when its value is invalid or blank. Blank constrained
-values and invalid enum values are usage errors; they cannot turn into an
-implicit broad export.
+The recognized selection filters are `--project`, `--tag`, `--author`, and
+`--origin`. A filter makes the selection explicit when the option was supplied,
+including when its value is invalid or blank. Blank constrained values and
+invalid enum values are usage errors; they cannot turn into an implicit broad
+export.
 
-Until bare-drain confirmation is implemented, every invocation requires at
-least one positional selector or selection filter. `-o`, `--refresh`, and
-`--force` do not make the selection explicit. Bare drain therefore returns a
-usage error even though archive output has a default destination.
+A drain invocation is selector-free when it has no positional selector and
+none of `--project`, `--tag`, `--author`, or `--origin`. It is bare when it is
+selector-free and does not supply `--include-imported`. Destination, format,
+refresh, replacement, error-reporting, and confirmation options do not make the
+selection explicit.
+
+Bare drain exports saved local conversations only, regardless of author
+metadata. Imported conversations are excluded even when their author matches
+`config.author`. `clog drain --yes` exports those saved local conversations
+without prompting.
+
+`clog drain --include-imported` explicitly exports every saved local and
+imported conversation across authors and origin kinds without prompting. It
+does not include unsaved discovered conversations and may not be combined with
+a positional selector or selection filter. A redundant `--yes` has no effect.
+
+With interactive stdin, bare drain resolves the saved-local conversation count
+and checks the destination before asking whether to export. Only `y`, compared
+case-insensitively after trimming, accepts. Declining prints `Operation
+cancelled.` and exits `0` without creating an output destination or staging
+conversation content. Without interactive stdin, bare drain requires `--yes`
+and otherwise exits `2` before refresh or selection resolution. The error
+suggests an explicit selector, a selection filter, or `--yes`; it does not
+suggest `--include-imported`, because that option broadens the export. Explicit
+selectors and selection filters never prompt, and a redundant `--yes` has no
+effect on them. `--force` does not skip confirmation, and `--yes` does not
+permit destination replacement.
 
 Both output formats export saved rows only because conversation-pair metadata
 requires save-time fields. Selection treats unsaved rows as follows:
 
-- a project selector or filter selection skips matching unsaved rows and
-  reports the skipped count;
+- a project selector, filter selection, or selector-free selection skips
+  matching unsaved rows and reports the skipped count;
 - an explicitly named unsaved conversation remains a per-conversation failure;
   and
 - a broad selection containing only unsaved rows fails with guidance to save
   those conversations first.
 
-`clog drain --state saved` selects every saved database row across authors and
-origin kinds. It is intentionally broader than the default curated scope used
-by commands such as bare `clog list`. Saved local, Git-imported, and file-filled
-rows are eligible when their resolved stored content is readable.
+Saved local, Git-imported, and file-filled rows are eligible for
+`clog drain --include-imported` when their resolved stored content is readable.
 
 #### 5.7.3.2 Interchange Files
 
@@ -1637,7 +1665,9 @@ behavior. Clog creates the destination directory recursively, continues after
 per-conversation failures, and keeps successful pairs when another conversation
 fails. Without `--force`, either existing side of a destination pair blocks
 that conversation. With `--force`, the shared pair writer installs JSONL before
-metadata.
+metadata. Bare pair output may inspect an existing destination before
+confirmation, but it does not create the directory or run per-conversation
+conflict checks until the user accepts.
 
 Both formats report `Exported` summaries on stderr:
 

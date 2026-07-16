@@ -1,5 +1,6 @@
 .OLD_*
 docs/UNUSED_*
+clog-export.zip
 node_modules/
 dist/
 coverage/
