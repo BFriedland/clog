@@ -61,6 +61,7 @@ interface DrainResults {
 
 export function buildDrainCommand(): Command {
   return new Command("drain")
+    .alias("export")
     .description("Export saved conversations as a zip archive or unpacked pair files")
     .argument("[selectors...]", "Conversation IDs or project selectors to export")
     .option("-o, --output <path>", "Archive file or unpacked pair-directory destination")
@@ -100,7 +101,7 @@ async function runDrainCommand(
 
   if (bare && !options.yes && !process.stdin.isTTY) {
     throw new UsageError(
-      "Bare clog drain requires confirmation. Add a conversation or project selector, add a selection filter, or use --yes.",
+      "Exporting all saved local conversations requires confirmation. Add a conversation or project selector, add a filter, or use --yes.",
     );
   }
 

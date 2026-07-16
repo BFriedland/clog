@@ -32,7 +32,7 @@ export function createPreparedDirectoryInput(inputPath: string): PreparedFillInp
   const formatPath = (physicalPath: string): string => {
     const relativePath = path.relative(physicalRoot, path.resolve(physicalPath));
     if (!isDescendantPath(relativePath)) {
-      throw new ClogError("Fill could not format a path outside the prepared input directory.");
+      throw new ClogError("Could not format a path outside the prepared input directory.");
     }
 
     return appendDisplayPath(suppliedPath, relativePath);
@@ -71,7 +71,7 @@ function createPreparedArchiveInput(
   const formatPath = (physicalPath: string): string => {
     const relativePath = path.relative(resolvedRoot, path.resolve(physicalPath));
     if (!isDescendantPath(relativePath)) {
-      throw new ClogError("Fill could not format a path outside the prepared archive directory.");
+      throw new ClogError("Could not format a path outside the prepared archive directory.");
     }
     return formatArchiveEntryPath(suppliedPath, relativePath.split(path.sep).join("/"));
   };
@@ -118,14 +118,14 @@ export async function withPreparedFillInput<T>(
 
   if (!stat.isFile()) {
     throw new UsageError(
-      `Fill path must resolve to a directory or regular zip file: ${inputPath}`,
+      `Import path must resolve to a directory or regular zip file: ${inputPath}`,
     );
   }
 
   const leadingBytes = await readLeadingBytes(directoryInput.physicalRoot, inputPath);
   if (classifyZipSignature(leadingBytes) == null) {
     throw new UsageError(
-      `Fill file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
+      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
     );
   }
 
@@ -158,21 +158,21 @@ export async function assertReadableFillDirectory(input: PreparedFillInput): Pro
     stat = await fs.stat(input.physicalRoot);
   } catch (error) {
     throw input.translateFilesystemError(
-      "Fill directory is not readable:",
+      "Import path is not readable:",
       input.physicalRoot,
       error,
     );
   }
 
   if (!stat.isDirectory()) {
-    throw new ClogError(`Fill path is not a directory: ${input.suppliedPath}`);
+    throw new ClogError(`Import path is not a directory: ${input.suppliedPath}`);
   }
 
   try {
     await fs.access(input.physicalRoot, fsConstants.R_OK);
   } catch (error) {
     throw input.translateFilesystemError(
-      "Fill directory is not readable:",
+      "Import path is not readable:",
       input.physicalRoot,
       error,
     );
@@ -199,7 +199,7 @@ export function protectFillInputError(
   }
 
   return new ClogError(
-    `Failed to process fill input ${input.suppliedPath}${formatFilesystemErrorCode(error)}.`,
+    `Failed to process import input ${input.suppliedPath}${formatFilesystemErrorCode(error)}.`,
     { exitCode: error instanceof ClogError ? error.exitCode : 1 },
   );
 }
@@ -229,7 +229,7 @@ async function readLeadingBytes(
     return bytes.subarray(0, bytesRead);
   } catch (error) {
     throw new ClogError(
-      `Fill file is not readable: ${suppliedPath}${formatFilesystemErrorCode(error)}`,
+      `Import file is not readable: ${suppliedPath}${formatFilesystemErrorCode(error)}`,
     );
   } finally {
     await handle?.close().catch(() => undefined);

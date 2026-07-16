@@ -57,6 +57,7 @@ interface BenignSkipGroup {
 
 export function buildFillCommand(): Command {
   return new Command("fill")
+    .alias("import")
     .description("Import conversation pair files from a zip archive or directory")
     .argument("<path>", "Zip archive or directory containing conversation pair files")
     .option("--own", "Restore pairs authored by the configured user as editable local rows")
@@ -201,17 +202,17 @@ function formatFillAbortMessage(
   const shouldMentionShowAll = shouldSuggestShowAllErrors(plan, showAllErrors);
   if (plan.hasAuthorGuardFailure) {
     const base = dryRun
-      ? "Dry run: fill --own found pairs by another author; no conversations would be imported."
-      : "error: fill --own found pairs by another author; no conversations were imported.";
+      ? "Dry run: one or more conversations by another author were found while importing with --own; no conversations would be imported."
+      : "error: One or more conversations by another author were found while importing with --own; no conversations were imported.";
     const detailGuidance = shouldMentionShowAll
       ? "Re-run with --show-all-errors to see each pair error"
       : "Fix the pair errors";
-    return `${base} ${detailGuidance}, or run clog fill without --own to import them as read-only rows.`;
+    return `${base} ${detailGuidance}, or run clog fill without --own to import them as read-only copies.`;
   }
 
   const base = dryRun
-    ? `Dry run: fill found errors in the ${input.inputDescription}; no conversations would be imported.`
-    : `error: fill found errors in the ${input.inputDescription}; no conversations were imported.`;
+    ? `Dry run: errors were found while importing from the ${input.inputDescription}; no conversations would be imported.`
+    : `error: Errors were found while importing from the ${input.inputDescription}; no conversations were imported.`;
 
   if (shouldMentionShowAll) {
     return `${base} Re-run with --show-all-errors to see each pair error, or use --allow-partial to import the valid pairs.`;
@@ -473,7 +474,7 @@ function formatBenignSkipSummary(
   }
 
   if (reason === "local_unsaved_precedence") {
-    return `${count} input pairs were skipped because matching unsaved local source copies already exist. Save the local conversations to keep their source metadata, or re-run this fill with --own to restore pair metadata.${expansion}`;
+    return `${count} input pairs were skipped because matching unsaved local source copies already exist. Save the local conversations to keep their source metadata, or re-run with --own to import these conversations as editable local copies.${expansion}`;
   }
 
   if (reason === "local_saved_precedence") {
@@ -585,13 +586,13 @@ function renderFillGuidance(args: {
     plan.allValidCandidatesMatchAuthor
   ) {
     process.stderr.write(
-      `hint: All importable pairs from ${input.suppliedPath} are authored by the configured user. Re-run this fill with --own to restore editable local rows.\n`,
+      `hint: All importable pairs from ${input.suppliedPath} are authored by the configured user. Re-run with --own to import them as editable local copies.\n`,
     );
   }
 
   if (!dryRun && searchConfigured && staleIndexCount > 0) {
     process.stderr.write(
-      `hint: ${staleIndexCount} filled conversation${staleIndexCount === 1 ? "" : "s"} need search indexing. Run 'clog index' to index them.\n`,
+      `hint: ${staleIndexCount} imported conversation${staleIndexCount === 1 ? "" : "s"} ${staleIndexCount === 1 ? "needs" : "need"} search indexing. Run 'clog index' to index them.\n`,
     );
   }
 }

@@ -299,7 +299,7 @@ function planFillCollision(args: {
     return {
       kind: "skip",
       reason: "local_unsaved_precedence",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run this fill with --own to restore pair metadata.`,
+      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run with --own to import this conversation as an editable local copy.`,
       failure: false,
       pair,
       owner,
@@ -326,7 +326,7 @@ function planFillCollision(args: {
       reason: mode === "own" ? "unsupported_promotion" : "git_collision",
       message:
         mode === "own"
-          ? `Skipping ${pair.meta.id.slice(0, 8)} - promoting a synced read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.`
+          ? `Skipping ${pair.meta.id.slice(0, 8)} - this synced conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`
           : `Skipping ${pair.meta.id.slice(0, 8)} - a synced read-only copy already owns this identity.`,
       failure: true,
       pair,
@@ -338,7 +338,7 @@ function planFillCollision(args: {
     return {
       kind: "skip",
       reason: "unsupported_promotion",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - promoting a filled read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.`,
+      message: `Skipping ${pair.meta.id.slice(0, 8)} - this imported conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`,
       failure: true,
       pair,
       owner,

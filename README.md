@@ -73,8 +73,8 @@ Many clog commands work with either a project name or a conversation ID. Convers
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display one conversation as a terminal view, JSON (`--json`), Markdown (`--md`), raw content bytes (`--raw`), or its content path (`--path`); parsed formats support `--head N`/`--first N` and `--tail N`/`--last N` |
 | `clog path <id>` | Print the content path for a conversation |
-| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`-o, --output`, `--include-imported`, `--yes`) |
-| `clog fill <path>` | Import a clog zip archive or unpacked conversation-pair directory as read-only conversations |
+| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`clog export` is an alias; `-o, --output`, `--include-imported`, `--yes`) |
+| `clog fill <path>` | Import a clog zip archive or unpacked conversation-pair directory as read-only conversations (`clog import` is an alias) |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 `clog show <id> --json` prints one structured conversation object for scripts,

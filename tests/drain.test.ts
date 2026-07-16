@@ -619,7 +619,9 @@ describe("clog drain archive transport", () => {
     }
 
     const bare = await runBuiltCommandCapturingError(buildDrainCommand, []);
-    expect((bare.error as Error).message).toContain("use --yes");
+    expect((bare.error as Error).message).toBe(
+      "Exporting all saved local conversations requires confirmation. Add a conversation or project selector, add a filter, or use --yes.",
+    );
   });
 
   it("reports migration guidance for removed destinations and render formats", async () => {

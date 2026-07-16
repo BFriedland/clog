@@ -112,7 +112,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toBe(
-      "Fill directory is not readable: ./missing (ENOENT)",
+      "Import path is not readable: ./missing (ENOENT)",
     );
     expect((result.error as Error).message).not.toContain(physicalMissingPath);
   });
@@ -125,7 +125,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toBe(
-      `Fill directory is not readable: ${inputPath} (ENOENT)`,
+      `Import path is not readable: ${inputPath} (ENOENT)`,
     );
   });
 
@@ -245,7 +245,9 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
 
     expect(result.error).toMatchObject({ exitCode: 2 });
-    expect((result.error as Error).message).toContain("not a recognized zip archive");
+    expect((result.error as Error).message).toBe(
+      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
+    );
   });
 
   it("rejects an over-budget recognized archive before reading the complete file", async () => {
@@ -446,7 +448,7 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, ["./pairs"]);
 
     expect(result.error).toBeInstanceOf(Error);
-    expect((result.error as Error).message).toBe("Failed to process fill input ./pairs.");
+    expect((result.error as Error).message).toBe("Failed to process import input ./pairs.");
     expect((result.error as Error).message).not.toContain(physicalPairDir);
   });
 
@@ -502,7 +504,9 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain("Re-run this fill with --own");
+    expect(result.stderr).toContain(
+      "Re-run with --own to import them as editable local copies",
+    );
     expect(result.stderr).not.toContain("clog list --all");
 
     const row = await getConversationById(id);
@@ -555,7 +559,9 @@ describe("clog fill", () => {
       `error: Skipping conversation pair ${path.join(pairDir, "broken", badId)} - incomplete pair`,
     );
     expect(result.stderr).not.toContain("input pairs could not be imported");
-    expect(result.stderr).toContain("fill found errors in the input directory");
+    expect(result.stderr).toContain(
+      "Errors were found while importing from the input directory",
+    );
     expect(result.stderr).toContain("no conversations were imported");
     expect(result.stderr).not.toContain("Filled ");
     expect(result.stderr).not.toContain("clog list --all");
@@ -646,7 +652,9 @@ describe("clog fill", () => {
 
     expect(fullImport.error).toBeNull();
     expect(fullImport.exitCode).toBe(1);
-    expect(fullImport.stderr).toContain("fill found errors in the input directory");
+    expect(fullImport.stderr).toContain(
+      "Errors were found while importing from the input directory",
+    );
     expect(fullImport.stderr).toContain("no conversations were imported");
     expect(await getConversationById(goodId)).toBeNull();
     expect(await getConversationById(unknownId)).toBeNull();
@@ -837,7 +845,9 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("fill --own found pairs by another author");
+    expect(result.stderr).toContain(
+      "Dry run: one or more conversations by another author were found while importing with --own",
+    );
     expect(result.stderr).toContain("no conversations would be imported");
     expect(result.stderr).not.toContain("would process");
     expect(await getConversationById(ownId)).toBeNull();
@@ -1005,7 +1015,9 @@ describe("clog fill", () => {
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('pair author "bob"');
-    expect(result.stderr).toContain("fill --own found pairs by another author");
+    expect(result.stderr).toContain(
+      "error: One or more conversations by another author were found while importing with --own",
+    );
     expect(result.stderr).not.toContain("--allow-partial");
     expect(result.stderr).not.toContain("Filled ");
     expect(await getConversationById(ownId)).toBeNull();
@@ -1044,7 +1056,7 @@ describe("clog fill", () => {
     expect(preview.stdout).toContain("may be the only local transcript copies");
   });
 
-  it("reports unindexed filled rows when search is configured", async () => {
+  it("reports imported conversations that need search indexing", async () => {
     const config = getDefaultConfig("alice");
     config.sources["codex-cli"].enabled = false;
     config.search = {
@@ -1059,6 +1071,7 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
     expect(result.error).toBeNull();
+    expect(result.stderr).toContain("1 imported conversation needs search indexing");
     expect(result.stderr).toContain("Run 'clog index'");
   });
 
@@ -1221,7 +1234,7 @@ describe("clog fill", () => {
       kind: "skip",
       reason: "unsupported_promotion",
       failure: true,
-      message: "Skipping b8888888 - promoting a filled read-only copy to local is not supported. Remove the imported row first, then re-run this fill with --own.",
+      message: "Skipping b8888888 - this imported conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.",
     });
     expect(singleAction({
       pair,
@@ -1240,6 +1253,7 @@ describe("clog fill", () => {
       kind: "skip",
       reason: "unsupported_promotion",
       failure: true,
+      message: "Skipping b8888888 - this synced conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.",
     });
   });
 });

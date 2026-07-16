@@ -227,16 +227,18 @@ describe("e2e", () => {
     expect(stdout).toContain("bob");
   });
 
-  it("drain requires --yes for a non-interactive saved-local export", async () => {
+  it("drain and export use operation-focused confirmation guidance", async () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    await expect(run(["drain"])).rejects.toMatchObject({
-      code: 2,
-      stderr: expect.stringContaining(
-        "Add a conversation or project selector, add a selection filter, or use --yes.",
-      ),
-    });
+    for (const command of ["drain", "export"]) {
+      await expect(run([command])).rejects.toMatchObject({
+        code: 2,
+        stderr: expect.stringContaining(
+          "Exporting all saved local conversations requires confirmation. Add a conversation or project selector, add a filter, or use --yes.",
+        ),
+      });
+    }
   });
 
   it("drain returns exit code 1 with recovery guidance when an explicit ID does not match", async () => {
@@ -265,7 +267,7 @@ describe("e2e", () => {
     expect(stdout).toBe(await fs.readFile(filePath, "utf8"));
   });
 
-  it("round-trips a foreign drain archive through fill, show, list --all, and pair drain", async () => {
+  it("round-trips a foreign archive through export and import aliases", async () => {
     const id = "fa111111-1111-1111-1111-111111111111";
     const sourcePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
     const exportArchive = path.join(tempDir, "foreign-export.zip");
@@ -277,7 +279,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
-    await run(["drain", id.slice(0, 8), "-o", exportArchive]);
+    await run(["export", id.slice(0, 8), "-o", exportArchive]);
 
     const archiveEntries = unzipSync(await fs.readFile(exportArchive));
     const originalMetaBytes = archiveEntries[`claude-code/${id}.meta.json`]!;
@@ -290,7 +292,20 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.enabled", "false"]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const fill = await run(["fill", exportArchive]);
+    for (const command of ["fill", "import"]) {
+      const failedOwnImport = await run([command, exportArchive, "--own"]).catch(
+        (error: unknown) => error as { code: number; stderr: string },
+      );
+      expect(failedOwnImport).toMatchObject({ code: 1 });
+      expect(failedOwnImport.stderr).toContain(
+        "One or more conversations by another author were found while importing with --own",
+      );
+      expect(failedOwnImport.stderr).toContain(
+        "Fix the pair errors, or run clog fill without --own to import them as read-only copies.",
+      );
+    }
+
+    const fill = await run(["import", exportArchive]);
     expect(fill.stderr).toContain("Processed 1 conversation pair");
     expect(fill.stderr).toContain("clog list --all");
 

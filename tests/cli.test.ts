@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 
-import type { Command } from "commander";
+import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@inquirer/prompts", () => ({
@@ -113,6 +113,7 @@ import { buildConfigCommand } from "../src/cli/config.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildDiffCommand } from "../src/cli/diff.js";
 import { buildEditCommand } from "../src/cli/edit.js";
+import { buildFillCommand } from "../src/cli/fill.js";
 import { buildInitCommand } from "../src/cli/init.js";
 import { assertMcpServerFileExists, buildMcpCommand } from "../src/cli/mcp.js";
 import { buildListCommand } from "../src/cli/list.js";
@@ -362,6 +363,27 @@ describe("cli", () => {
 
     it("registers setup as an alias for init", () => {
       expect(buildInitCommand().aliases()).toContain("setup");
+    });
+  });
+
+  describe("interchange command aliases", () => {
+    it("registers export and import as aliases for drain and fill", () => {
+      expect(buildDrainCommand().aliases()).toContain("export");
+      expect(buildFillCommand().aliases()).toContain("import");
+    });
+
+    it("shows the aliases in parent and subcommand help", () => {
+      const program = new Command().name("clog");
+      const drain = buildDrainCommand();
+      const fill = buildFillCommand();
+      program.addCommand(drain);
+      program.addCommand(fill);
+
+      const parentHelp = program.helpInformation();
+      expect(parentHelp).toContain("drain|export");
+      expect(parentHelp).toContain("fill|import");
+      expect(drain.helpInformation()).toContain("Usage: clog drain|export");
+      expect(fill.helpInformation()).toContain("Usage: clog fill|import");
     });
   });
 

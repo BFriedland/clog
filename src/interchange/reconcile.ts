@@ -680,7 +680,7 @@ function ownerSkipMessage(pair: GitValidatedPair, owner: ConversationMeta): stri
   }
 
   if (owner.originKind === "file") {
-    return `Skipping remote conversation ${shortId} - a filled read-only copy takes precedence until it is removed.`;
+    return `Skipping remote conversation ${shortId} - an imported read-only copy takes precedence until it is removed.`;
   }
 
   return `Skipping remote conversation ${shortId} - another configured remote already owns this conversation.`;

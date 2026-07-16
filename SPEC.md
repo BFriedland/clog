@@ -921,10 +921,10 @@ clog show <id> --path      Print the file path (raw copy if saved, source if uns
 clog show <id> --head N    Show only the first N messages (--first is an alias)
 clog show <id> --tail N    Show only the last N messages (--last is an alias)
 clog path <id>             Print the file path (shorthand for show --path)
-clog drain <selector>      Export saved conversations to ./clog-export.zip
+clog drain <selector>      Export saved conversations to ./clog-export.zip (alias: clog export)
 clog drain [filters] -o <archive.zip>  Export filtered saved conversations to an archive
 clog drain <selectors...> --format pair -o <dir>  Export saved conversations as unpacked conversation file pairs
-clog fill <path> [flags]   Import a clog archive or unpacked conversation-pair directory
+clog fill <path> [flags]   Import a clog archive or unpacked conversation-pair directory (alias: clog import)
 clog plunge [--json] [--verbose]  Audit local clog state for obvious corruption
 clog config [get|set]      View or edit configuration
 clog mcp setup [client]    Register clog's MCP server with Claude Code, Codex CLI, or both
@@ -1517,10 +1517,11 @@ Like other DB-touching paths, `clog plunge` acquires the DB lock for the duratio
 
 ### 5.7.3 The `drain` Command
 
-`clog drain` transports saved conversations out of clog. The command writes a
-zip archive by default and can instead write the same conversation-pair files
-as an unpacked directory. JSON, Markdown, and raw single-conversation rendering
-belong to `clog show` (§5.7.1), not to the transport command.
+`clog drain` (also available as `clog export`) transports saved conversations
+out of clog. The command writes a zip archive by default and can instead write
+the same conversation-pair files as an unpacked directory. JSON, Markdown, and
+raw single-conversation rendering belong to `clog show` (§5.7.1), not to the
+transport command.
 
 Supported command shapes:
 
@@ -1593,8 +1594,9 @@ and checks the destination before asking whether to export. Only `y`, compared
 case-insensitively after trimming, accepts. Declining prints `Operation
 cancelled.` and exits `0` without creating an output destination or staging
 conversation content. Without interactive stdin, bare drain requires `--yes`
-and otherwise exits `2` before refresh or selection resolution. The error
-suggests an explicit selector, a selection filter, or `--yes`; it does not
+and otherwise exits `2` before refresh or selection resolution. The error says
+`Exporting all saved local conversations requires confirmation. Add a
+conversation or project selector, add a filter, or use --yes.` It does not
 suggest `--include-imported`, because that option broadens the export. Explicit
 selectors and selection filters never prompt, and a redundant `--yes` has no
 effect on them. `--force` does not skip confirmation, and `--yes` does not
@@ -1610,7 +1612,7 @@ requires save-time fields. Selection treats unsaved rows as follows:
 - a broad selection containing only unsaved rows fails with guidance to save
   those conversations first.
 
-Saved local, Git-imported, and file-filled rows are eligible for
+Saved local, Git-imported, and file-imported rows are eligible for
 `clog drain --include-imported` when their resolved stored content is readable.
 
 #### 5.7.3.2 Interchange Files
@@ -1726,9 +1728,10 @@ CRC-verified extraction and Zip64 output remain future work.
 
 ### 5.7.4 The `fill` Command
 
-`clog fill <path>` imports portable conversation file pairs from a clog archive
-or an unpacked pair directory. Archive drain, pair-directory drain, and Git sync
-all use the same pair metadata and JSONL serialization.
+`clog fill <path>` (also available as `clog import <path>`) imports portable
+conversation file pairs from a clog archive or an unpacked pair directory.
+Archive drain, pair-directory drain, and Git sync all use the same pair metadata
+and JSONL serialization.
 
 ```bash
 clog fill backup.zip
@@ -1937,7 +1940,7 @@ and content win. Fill preserves only the existing `discoveredAt`, writes the
 managed raw copy to `raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`,
 sets `sourceMtime` from the managed copy, sets `projectPath = null`, and stores
 the row as a clean saved local conversation. A later local source scan may
-reattach a live source path. If a later save would replace filled or restored
+reattach a live source path. If a later save would replace imported or restored
 content with a live local source version found by discovery, clog asks for confirmation
 before overwriting the managed copy.
 
@@ -3224,7 +3227,7 @@ This extends the base storage layout (§3.5) with a `remote/` directory:
 - `imports/` holds managed file-import copies created by default `clog fill`.
 - `remote/` is the git working tree — a clone of the team repo.
 
-Remote conversation content is read directly from the git checkout. No duplication into `raw/`. Filled read-only conversation content is read directly from `imports/`. A `resolveContentPath(conversation)` function returns the right path from the row state and stored `filePath`:
+Remote conversation content is read directly from the git checkout. No duplication into `raw/`. Imported read-only conversation content is read directly from `imports/`. A `resolveContentPath(conversation)` function returns the right path from the row state and stored `filePath`:
 
 - Local `unsaved` conversations: `sourcePath`
 - Saved conversations: `filePath`
@@ -3858,7 +3861,7 @@ See §13.2 and §13.4 for the interchange and sync test inventory (`interchange.
 | 4.6 | Cross-developer context handoff — MCP tool that lets an agent load a teammate's saved conversation as reference context in a new session, enabling "pick up where they left off" workflows without writing to source locations |
 | 4.7 | Content-aware deduplication of conversations shared by multiple authors |
 | 4.8 | Conversation diff functionality beyond new-since-save output |
-| 4.9 | Cross-kind promotion from a synced or filled read-only copy to a local editable row |
+| 4.9 | Cross-kind promotion from a synced or imported read-only copy to a local editable row |
 | 4.10 | Local metadata overlays on imported conversations (local tags, notes) |
 | 4.11 | `clog rename-author` automatic cleanup of old remote directory |
 | 4.12 | Multi-remote support |
@@ -4055,7 +4058,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Duplicate input identities rejected with `pair_duplicate_identity`
 - Default fail-before-writes behavior for validation failures, duplicate identities, unsupported promotions, and git-row collisions
 - `--own` author guard, unsaved-row restore, and full collision matrix
-- Filled rows stored as clean saved artifacts under `imports/<source>/<id>.jsonl`
+- Imported rows stored as clean saved artifacts under `imports/<source>/<id>.jsonl`
 - File-row metadata-only and content updates, including `indexedAt` preservation/clearing rules
 - Removal of file-import managed content and restored-local only-copy warning
 - Archive-drain-to-fill workflow coverage for foreign fill and pair-drain-to-`--own` restore

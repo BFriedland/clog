@@ -126,7 +126,7 @@ describe("git reconciliation planner", () => {
         originRef: null,
       }),
       reason: "file_owner",
-      message: "filled read-only copy",
+      message: "imported read-only copy",
     },
     {
       label: "other git remote",
