@@ -649,7 +649,11 @@ describe("db", () => {
   it("listConversationsNeedingIndex returns saved conversations with missing or stale indexed_at", async () => {
     // Saved + null → needs index
     await insertConversation(
-      makeConversation({ state: "saved", indexedAt: null }),
+      makeConversation({
+        state: "saved",
+        createdAt: "2026-02-01T09:00:00.000Z",
+        indexedAt: null,
+      }),
     );
     // Saved + indexed before saved_at → needs index
     await insertConversation(
@@ -657,6 +661,7 @@ describe("db", () => {
         id: "d0000000-1234-1234-1234-123456789012",
         sourceId: "d0000000-1234-1234-1234-123456789012",
         state: "saved",
+        createdAt: "2026-02-01T08:00:00.000Z",
         savedAt: "2026-02-01T10:00:00.000Z",
         indexedAt: "2026-02-01T09:59:59.000Z",
       }),
@@ -667,6 +672,7 @@ describe("db", () => {
         id: "d1111111-1234-1234-1234-123456789012",
         sourceId: "d1111111-1234-1234-1234-123456789012",
         state: "saved",
+        createdAt: "2026-02-01T07:00:00.000Z",
         savedAt: "2026-02-01T10:00:00.000Z",
         indexedAt: "2026-02-01T10:00:01.000Z",
       }),
@@ -677,6 +683,7 @@ describe("db", () => {
         id: "d2222222-1234-1234-1234-123456789012",
         sourceId: "d2222222-1234-1234-1234-123456789012",
         state: "unsaved",
+        createdAt: "2026-02-01T06:00:00.000Z",
         indexedAt: null,
       }),
     );
