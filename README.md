@@ -2,15 +2,15 @@
   <img src="clog.png" alt="Clogs are a type of footwear that has a thick, rigid sole typically made of wood.">
 </p>
 
-# clog
+# clog &middot; [![npm version](https://img.shields.io/npm/v/@getclog/clog)](https://www.npmjs.com/package/@getclog/clog) [![node version](https://img.shields.io/node/v/@getclog/clog)](https://nodejs.org) [![license](https://img.shields.io/npm/l/@getclog/clog)](LICENSE)
 
-Turn your AI coding agent conversations into a searchable, shareable knowledge base.
+Conversation log exploration right in your terminal. Turn your AI coding agent conversations into a searchable, shareable knowledge base.
 
-With clog, you can build a library from your Claude Code and Codex CLI conversations and make it available to your team and your agents. Use titles, summaries, and tags to curate it, then explore it through MCP tools, semantic search, or git-based sharing.
+With clog, you can build a library from your Claude Code and Codex CLI conversations and make it available to your team and your agents. Use titles, summaries, and tags to curate it, then explore it through MCP tools, semantic search, and either archive- or git-based sharing.
 
 ## Requirements
 
-clog requires Node.js 22 or newer. Local development is tested with Node.js 22.
+Node.js 22 or newer is required to run clog.
 
 ## Install
 
@@ -24,27 +24,25 @@ To install from a local checkout instead, see [Development](#development).
 ## Quick Start
 
 ```bash
-# See what conversations clog found on your machine
+# See conversations needing attention, grouped by project or listed individually
 clog status
+clog status -c
 
-# Add source keys when multiple backends are in play
-clog status --source
-
-# Show individual conversation rows
-clog status --conversations
-
-# Save pending conversations for a project
-clog save myapp
-
-# Or save one conversation by short ID
-clog save a1b2c3
+# Save all conversations for a project, to use with the clog MCP server
+clog save myproject
 
 # Browse and inspect
 clog list
 clog show a1b2c3 | less -R
 
-# Share with your team (requires a private git repo)
-clog sync push
+# Create an archive of conversations and projects for sharing with your team
+clog drain myproject -o my-project-export.zip
+
+# Import a teammate's archive as read-only conversations
+clog fill my-project-export.zip
+
+# Work with a local coding agent of your choice to explore your knowledge base
+clog talk
 ```
 
 ## Commands
@@ -177,7 +175,7 @@ Then just search:
 
 ```bash
 clog search "JWT refresh token race condition"
-clog search "database migration" --project myapp --limit 5
+clog search "database migration" --project myproject --limit 5
 ```
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
@@ -199,21 +197,29 @@ clog sync pull
 clog sync push
 ```
 
-**How it works:** clog manages a git checkout under `~/.clog/remote/`. Each author writes to their own directory to avoid conflicts. `sync push` exports and pushes your saved conversations; `sync pull` imports your teammates'.
+**How it works:** clog manages a git checkout under `~/.clog/remote/`. Each
+author writes to their own directory to avoid conflicts. `sync push` exports and
+pushes your saved conversations; `sync pull` imports your teammates'.
 
 **Good to know:**
 
-- `clog list` shows your saved conversations by default, including imported conversations with your author name. `--all` includes other authors' imports; `--author bob` filters to one person.
-- Imported conversations are read-only — you can view but not edit git-synced or default `clog fill` rows.
-- Removing one of your saved local conversations retracts it from the remote on next push.
-- Use `clog exclude` to ignore projects or conversations, and `clog remove` if you also want to delete current local DB rows.
-- `clog refresh` reconciles from the git checkout without fetching — handy if you ran `git pull` manually in `~/.clog/remote/`.
+- `clog list` shows your saved conversations by default, including imported
+  conversations with your author name. `--all` includes other authors' imports;
+  `--author bob` filters to one person.
+- Imported conversations are read-only — you can view but not edit git-synced or
+  default `clog fill` rows.
+- Removing one of your saved local conversations retracts it from the remote on
+  next push.
+- Use `clog exclude` to ignore projects or conversations, and `clog remove` if
+  you also want to delete current local DB rows.
+- `clog refresh` reconciles from the git checkout without fetching — handy if
+  you ran `git pull` manually in `~/.clog/remote/`.
 
 Portable archives can also move conversations without git:
 
 ```bash
-clog drain myapp                               # ./clog-export.zip
-clog drain myapp -o ./myapp-conversations.zip # explicit archive path
+clog drain myproject                             # creates a file: ./clog-export.zip
+clog drain myproject -o ./my-project-export.zip  # write to an explicit path
 ```
 
 Running `clog drain` without a selector or selection filter asks for
@@ -228,17 +234,17 @@ without `--force`.
 Import that export as read-only conversations:
 
 ```bash
-clog fill ./myapp-conversations.zip
+clog fill ./my-project-export.zip
 ```
 
 Restore the export as local saved clog conversations when you want to edit their title, summary, author, and tags:
 
 ```bash
-clog fill ./myapp-conversations.zip --own
+clog fill ./my-project-export.zip --own
 ```
 
-`clog drain myapp --format pair -o ./clog-export/` writes the same metadata and
-JSONL files as an unpacked directory. Both drain formats export saved
+`clog drain myproject --format pair -o ./clog-export/` writes the same metadata
+and JSONL files as an unpacked directory. Both drain formats export saved
 conversations only; broad selections skip unsaved matches, and `clog drain
 --include-imported` explicitly exports saved conversations across local and
 imported origins.
@@ -257,6 +263,10 @@ compatibility with archives produced by the same clog version rather than broad
 compatibility with every zip tool.
 
 Both import forms write only to clog's stored conversation copies; they do not modify Claude Code or Codex CLI source conversations or make imports resumable there.
+
+Because they contain complete conversation transcripts and are not encrypted,
+archives generated by clog should only be shared through an access-controlled
+channel.
 
 ## Config File
 
@@ -279,7 +289,7 @@ Use `~/.clog/clogignore` to keep projects or conversations out of clog:
 
 ```text
 # Ignore a project by name
-myapp
+myproject
 
 # Ignore one conversation by filename
 12345678-1234-1234-1234-123456789abc.jsonl
@@ -289,12 +299,6 @@ myapp
 ```
 
 The `search` and `remote` config blocks are managed by `clog search --init` and `clog remote add`.
-
-## Complementary Tools
-
-**Claude Code `/insights`** — Run `/insights` inside Claude Code to get a report analyzing your Claude Code sessions — project areas, interaction patterns, friction points. Useful for spotting which conversations are worth adding to clog.
-
-**[cass](https://github.com/Dicklesworthstone/coding_agent_session_search)** — A local search engine for AI coding agent sessions. Indexes conversations from 19+ agents (Claude Code, Codex, Cursor, Aider, Gemini, and others) with full-text and semantic search.
 
 ## Environment Variables
 
