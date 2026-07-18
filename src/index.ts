@@ -14,7 +14,12 @@ import { runIndexCommand } from "./cli/index-cmd.js";
 import { buildListCommand } from "./cli/list.js";
 import { buildPathCommand } from "./cli/path.js";
 import { buildPlungeCommand } from "./cli/plunge.js";
-import { preAction, runWithCliErrorHandling, shouldSkipPreAction } from "./cli/prelude.js";
+import {
+  installBrokenPipeHandler,
+  preAction,
+  runWithCliErrorHandling,
+  shouldSkipPreAction,
+} from "./cli/prelude.js";
 import { buildSaveCommand } from "./cli/save.js";
 import { buildRefreshCommand } from "./cli/refresh.js";
 import { buildRemoveCommand } from "./cli/remove.js";
@@ -103,4 +108,5 @@ async function main(): Promise<void> {
   await program.parseAsync(process.argv);
 }
 
+installBrokenPipeHandler();
 await runWithCliErrorHandling(main);

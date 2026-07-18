@@ -2,7 +2,8 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "tests/**/*.test.ts",
-    "tests/helpers/interactive-cli.ts"
+    "tests/helpers/interactive-cli.ts",
+    "tests/helpers/broken-pipe-producer.ts"
   ],
   "project": [
     "src/**/*.ts!",

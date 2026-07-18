@@ -41,7 +41,7 @@ clog save a1b2c3
 
 # Browse and inspect
 clog list
-clog show a1b2c3
+clog show a1b2c3 | less -R
 
 # Share with your team (requires a private git repo)
 clog sync push
