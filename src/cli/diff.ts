@@ -18,10 +18,10 @@ export function buildDiffCommand(): Command {
   return new Command("diff")
     .description("Show new messages since last save")
     .argument("[ids...]")
-    .option("--head <n>")
-    .option("--tail <n>")
-    .option("--first <n>")
-    .option("--last <n>")
+    .option("--head <n>", "Show the first N new messages")
+    .option("--tail <n>", "Show the last N new messages")
+    .option("--first <n>", "Show the first N new messages")
+    .option("--last <n>", "Show the last N new messages")
     .action(async (ids: string[], options) => {
       const config = await loadConfig();
       const conversations =

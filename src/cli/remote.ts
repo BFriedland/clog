@@ -34,7 +34,7 @@ export function buildRemoteCommand(): Command {
     .command("add")
     .description("Configure a git remote for clog sync")
     .argument("<url>", "Git remote URL")
-    .option("--yes", "Skip interactive confirmations (scripts/tests)")
+    .option("--yes", "Skip the confirmation prompt")
     .action(async (url: string, options: { yes?: boolean }) => {
       await runRemoteAdd(url, { yes: Boolean(options.yes) });
     });
@@ -49,7 +49,7 @@ export function buildRemoteCommand(): Command {
   remote
     .command("remove")
     .description("Remove the configured remote and purge imported conversations")
-    .option("--yes", "Skip interactive confirmation (scripts/tests)")
+    .option("--yes", "Skip the confirmation prompt")
     .action(async (options: { yes?: boolean }) => {
       await runRemoteRemove({ yes: Boolean(options.yes) });
     });

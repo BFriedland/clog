@@ -10,9 +10,9 @@ export function buildEditCommand(): Command {
   const command = new Command("edit")
     .description("Edit conversation metadata")
     .argument("<id>")
-    .option("--title <text>")
-    .option("--summary <text>")
-    .option("--author <name>")
+    .option("--title <text>", "Set the title")
+    .option("--summary <text>", "Set the summary (marks it curated)")
+    .option("--author <name>", "Set the author")
     .action(async (id: string, options, actionCommand: Command) => {
       if (
         options.title === undefined &&

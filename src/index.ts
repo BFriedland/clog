@@ -51,46 +51,41 @@ async function main(): Promise<void> {
       await preAction({ interactive: Boolean(process.stdin.isTTY) });
     });
 
-  program.addCommand(buildInitCommand());
-  program.addCommand(buildMcpCommand());
-
+  // These command groups mirror the command tables in README.md. Until the
+  // reference generator lands, changes here (groups, ordering, add/remove)
+  // must be mirrored there by hand.
+  program.commandsGroup("Discovery & Curation");
   program.addCommand(buildStatusCommand());
   program.addCommand(buildListCommand());
   program.addCommand(buildEditCommand());
   program.addCommand(buildTagCommand());
   program.addCommand(buildUntagCommand());
-  program.addCommand(buildSaveCommand());
-  program.addCommand(buildShowCommand());
-  program.addCommand(buildPathCommand());
-  program.addCommand(buildPlungeCommand());
-  program.addCommand(buildDiffCommand());
-  program.addCommand(buildDrainCommand());
-  program.addCommand(buildFillCommand());
   program.addCommand(buildExcludeCommand());
   program.addCommand(buildUnexcludeCommand());
   program.addCommand(buildRemoveCommand());
-  program.addCommand(buildConfigCommand());
   program.addCommand(buildRenameAuthorCommand());
-  program.addCommand(buildRemoteCommand());
-  program.addCommand(buildSyncCommand());
-  program.addCommand(buildRefreshCommand());
+
+  program.commandsGroup("Saving & Inspection");
+  program.addCommand(buildSaveCommand());
+  program.addCommand(buildDiffCommand());
+  program.addCommand(buildShowCommand());
+  program.addCommand(buildPathCommand());
+  program.addCommand(buildDrainCommand());
+  program.addCommand(buildFillCommand());
+  program.addCommand(buildPlungeCommand());
+
+  program.commandsGroup("Agent Sessions");
   program.addCommand(buildTalkCommand());
   program.addCommand(buildSummarizeCommand());
-  program
-    .command("index")
-    .description("Index saved conversations for semantic search")
-    .option("--rebuild", "Re-index all saved conversations from scratch")
-    .action(async (options: { rebuild?: boolean }) => {
-      await runIndexCommand(options);
-    });
 
+  program.commandsGroup("Semantic Search");
   program
     .command("search [query]")
     .description("Semantic search across saved conversations")
     .option("--init", "Set up search")
-    .option("-p, --project <name>")
-    .option("-a, --author <name>")
-    .option("-t, --tag <tag>")
+    .option("-p, --project <name>", "Filter by project")
+    .option("-a, --author <name>", "Filter by author")
+    .option("-t, --tag <tag>", "Filter by tag")
     .option("-l, --limit <n>", "Maximum results", (value) => Number(value))
     .action(async (query: string | undefined, options) => {
       if (options.init) {
@@ -104,6 +99,23 @@ async function main(): Promise<void> {
 
       await runSearchCommand(query, options);
     });
+  program
+    .command("index")
+    .description("Index saved conversations for semantic search")
+    .option("--rebuild", "Re-index all saved conversations from scratch")
+    .action(async (options: { rebuild?: boolean }) => {
+      await runIndexCommand(options);
+    });
+
+  program.commandsGroup("Team Sharing");
+  program.addCommand(buildRemoteCommand());
+  program.addCommand(buildSyncCommand());
+  program.addCommand(buildRefreshCommand());
+
+  program.commandsGroup("Configuration");
+  program.addCommand(buildInitCommand());
+  program.addCommand(buildMcpCommand());
+  program.addCommand(buildConfigCommand());
 
   await program.parseAsync(process.argv);
 }

@@ -37,7 +37,7 @@ import { resolveConversationSelectors } from "./selectors.js";
 export function buildSaveCommand(): Command {
   return new Command("save")
     .description("Save conversations")
-    .argument("[selectors...]")
+    .argument("[selectors...]", "Conversation IDs or project names to save")
     .option("--all", "Save all unsaved conversations and saved pending changes")
     .action(async (selectors: string[], options: { all?: boolean }) => {
       if (options.all && selectors.length > 0) {

@@ -11,7 +11,8 @@ export function buildConfigCommand(): Command {
 
   command
     .command("get")
-    .argument("[key]")
+    .description("Print all config or one key")
+    .argument("[key]", "Dotted config key, e.g. sources.claude-code.paths")
     .action(async (key?: string) => {
       const config = await loadConfig();
       const value = key ? getNestedValue(config, key) : config;
@@ -20,8 +21,9 @@ export function buildConfigCommand(): Command {
 
   command
     .command("set")
-    .argument("<key>")
-    .argument("<value>")
+    .description("Set a config key to a value")
+    .argument("<key>", "Dotted config key")
+    .argument("<value>", "JSON or scalar value")
     .action(async (key: string, value: string) => {
       const config = await loadConfig();
       const supplied = parseConfigValue(value);

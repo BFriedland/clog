@@ -28,14 +28,14 @@ export function buildListCommand(): Command {
   const command = new Command("list").description("List conversations");
 
   command
-    .option("-s, --state <state>")
-    .option("-p, --project <name>")
-    .option("-a, --author <name>")
-    .option("-t, --tag <tag>")
-    .option("-g, --grep <text>")
-    .option("-c, --columns <cols>")
-    .option("--origin <origin>", "local or remote")
-    .option("--all")
+    .option("-s, --state <state>", "Filter by state: saved or unsaved")
+    .option("-p, --project <name>", "Filter by project")
+    .option("-a, --author <name>", "Filter by author")
+    .option("-t, --tag <tag>", "Filter by tag")
+    .option("-g, --grep <text>", "Filter by text in title, summary, or content")
+    .option("-c, --columns <cols>", "Comma-separated columns to display")
+    .option("--origin <origin>", "Filter by origin: local or remote")
+    .option("--all", "Include unsaved and ignored conversations, plus imported conversations from other authors")
     .action(async (options) => {
       const config = await loadConfig();
       const scanResult = await scanLocalSources(config);
