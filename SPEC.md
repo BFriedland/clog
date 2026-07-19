@@ -127,21 +127,22 @@ Phase 3 (§11) adds a git-based sync layer for team sharing. Phase 2 (§10) adds
 
 If `sql.js` performance ever becomes a problem (unlikely), the DB layer is isolated enough to swap in `better-sqlite3` later.
 
-**`sql.js` persistence caveat:** Because `sql.js` operates entirely in memory, changes must be explicitly flushed to disk by writing the database buffer to the file. If the process crashes between an in-memory mutation and a flush, that mutation is lost. The flush strategy is **transaction-scoped**: each CLI command wraps its DB work in a logical transaction and flushes once at the end (e.g., scanning that inserts 100 rows flushes once, not 100 times). The MCP server flushes after each tool call completes. This is safe, correct, and avoids unnecessary disk writes.
+**`sql.js` persistence caveat:** Because `sql.js` operates entirely in memory, changes must be explicitly flushed to disk by writing the database buffer to the file. Database access declares whether its callback reads or writes. Read access ensures that the schema is current, runs the callback with SQLite query-only enforcement, and flushes only when schema creation or schema migration changed the in-memory database. Write access flushes once after a successful callback, so a logical mutation such as a scan that inserts 100 rows writes the database file once rather than 100 times. A callback that throws does not flush its partial in-memory changes.
 
 **Concurrent access:** The MCP server and CLI can run simultaneously (e.g., a developer runs `clog save` while the MCP server is handling a query). Since `sql.js` loads the entire database into memory, concurrent writers risk last-write-wins data loss — one process's flush could overwrite the other's changes.
 
-**Mitigation: file-based locking.** All database access is wrapped in a lockfile (`~/.clog/clog.db.lock`) using `proper-lockfile` (or a similar zero-native-dep package). The lock is acquired before loading the database into memory and released after flushing to disk. This serializes all DB access across processes:
+**Mitigation: file-based locking.** All database access is wrapped in a lockfile (`~/.clog/clog.db.lock`) using `proper-lockfile` (or a similar zero-native-dep package). The lock is acquired before loading the database into memory and released after the callback and any required flush complete. This serializes all DB access across processes:
 
-1. Acquire lock on `~/.clog/clog.db.lock` (blocking, with a reasonable timeout — e.g., 5 seconds)
-2. Load database from disk into `sql.js` memory
-3. Perform mutations (the callback can be sync or async — `withDb` awaits the result before proceeding)
-4. Flush (write buffer to `clog.db`)
-5. Release lock
+1. Acquire the lock at `~/.clog/clog.db.lock` (blocking, with a reasonable timeout — e.g., 5 seconds)
+2. Load the database from disk into `sql.js` memory
+3. Ensure that the database schema is current, except during explicit diagnostic inspection
+4. Run the read or write callback (`withDb` awaits either a synchronous or asynchronous result)
+5. Flush after a successful write callback, or after read access created or migrated the schema
+6. Release the lock
 
 This means each CLI command or MCP tool call holds the lock for the duration of its DB work — typically milliseconds. The lock is advisory (not OS-enforced), but both the CLI and MCP server respect it, which is sufficient. If a process crashes while holding the lock, `proper-lockfile` detects stale locks via the lockfile's PID and cleans up automatically.
 
-**Performance note:** This load-mutate-flush-release cycle means the database is re-read from disk on every operation rather than kept in memory. For the MCP server (which handles sequential tool calls), this adds a few milliseconds per call — negligible given the DB is under 10MB. If this becomes measurable, the MCP server could hold the lock longer (across multiple tool calls in a session), but this optimization is not needed initially.
+**Performance note:** This lock-load-access-conditional-flush-release cycle means the database is re-read from disk on every operation rather than kept in memory. For the MCP server (which handles sequential tool calls), this adds a few milliseconds per call — negligible given the DB is under 10MB. If this becomes measurable, the MCP server could hold the lock longer (across multiple tool calls in a session), but this optimization is not needed initially.
 
 **Key dependencies:**
 

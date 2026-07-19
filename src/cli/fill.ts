@@ -161,7 +161,7 @@ async function runPreparedFillCommand(
       abortedBeforeWrites: false,
       staleIndexCount,
     };
-  });
+  }, dryRun ? { mode: "read" } : { mode: "write" });
 
   renderFillMessages(execution.plan, { allowPartial, showAllErrors, mode });
   if (execution.abortedBeforeWrites) {

@@ -84,7 +84,7 @@ describe("agent-assisted summarization", () => {
     it("upgrades a v4-shaped DB to v5 and back-fills summaryKind='curated' for non-empty summaries", async () => {
       // Construct a v4-shaped database directly: no summary_kind or
       // summary_extraction columns, with schema_version = 4. Then trigger
-      // applyMigrations through a normal withDb call and verify both the
+      // ensureCurrentSchema through a normal withDb call and verify both the
       // new columns and the back-fill behavior.
       await withDb(
         (db) => {
@@ -159,7 +159,7 @@ describe("agent-assisted summarization", () => {
             ],
           );
         },
-        { applyMigrations: false },
+        { mode: "write" },
       );
 
       // Sanity: the v4 DB has no summary_kind column yet.
@@ -170,13 +170,13 @@ describe("agent-assisted summarization", () => {
             result[0]?.values.map((row) => String(row[1])) ?? [],
           );
         },
-        { applyMigrations: false },
+        { mode: "diagnostic" },
       );
       expect(v4Columns.has("summary_kind")).toBe(false);
       expect(v4Columns.has("summary_extraction")).toBe(false);
 
-      // Trigger the migration: applyMigrations defaults to true.
-      await withDb(() => undefined);
+      // Trigger the migration through ordinary read access.
+      await withDb(() => undefined, { mode: "read" });
 
       const populated = await getConversationById(
         "11111111-1234-1234-1234-123456789012",

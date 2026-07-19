@@ -9,7 +9,9 @@ import { buildPlungeCommand, generatePlungeReport } from "../src/cli/plunge.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import * as dbModule from "../src/db/index.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogDbPath, getClogIgnorePath, getConfigPath, getRawConversationPath } from "../src/utils/paths.js";
 import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
@@ -40,6 +42,33 @@ describe("plunge", () => {
     await expect(fs.stat(getConfigPath())).resolves.toBeTruthy();
     await expect(fs.stat(getClogDbPath())).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(path.join(tempDir, "clog.db.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports an incompatible schema without migrating or rewriting the database", async () => {
+    await ensureClogHome({ interactive: false });
+    await dbModule.withDb(
+      (db) => {
+        db.exec(`
+          DROP TABLE conversations;
+          DROP TABLE schema_version;
+          CREATE TABLE schema_version (version INTEGER NOT NULL);
+          INSERT INTO schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION - 1});
+        `);
+      },
+      { mode: "write" },
+    );
+    const before = await fs.readFile(getClogDbPath());
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    const report = await generatePlungeReport();
+
+    expect(report.exitCode).toBe(1);
+    expect(findCheck(report, 2)).toMatchObject({
+      severity: "fatal",
+      message: `schema_version is ${CURRENT_SCHEMA_VERSION - 1} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
+    });
+    expect(writeSpy).not.toHaveBeenCalled();
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
   });
 
   it("reports a simulated non-ok integrity_check result as fatal", async () => {

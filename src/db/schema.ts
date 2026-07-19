@@ -2,11 +2,11 @@ import type { Database } from "sql.js";
 
 export const CURRENT_SCHEMA_VERSION = 8;
 
-export function applyMigrations(db: Database): void {
+export function ensureCurrentSchema(db: Database): boolean {
   if (!tableExists(db, "schema_version")) {
     createLatestSchema(db);
     setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
-    return;
+    return true;
   }
 
   const currentVersion = getSchemaVersion(db);
@@ -50,6 +50,8 @@ export function applyMigrations(db: Database): void {
     migrateToV8(db);
     setSchemaVersion(db, 8);
   }
+
+  return currentVersion < CURRENT_SCHEMA_VERSION;
 }
 
 function createLatestSchema(db: Database): void {

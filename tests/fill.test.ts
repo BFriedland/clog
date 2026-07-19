@@ -18,6 +18,7 @@ import {
   withDb,
 } from "../src/db/index.js";
 import * as dbModule from "../src/db/index.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import {
   createDeterministicPairArchive,
   MAX_ARCHIVE_BYTES,
@@ -787,6 +788,8 @@ describe("clog fill", () => {
   it("supports dry-run without writing rows or managed files", async () => {
     const id = "a8888888-8888-8888-8888-888888888888";
     await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await withDb(() => undefined, { mode: "read" });
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       pairDir,
@@ -797,6 +800,7 @@ describe("clog fill", () => {
     expect(result.exitCode).toBeUndefined();
     expect(result.stderr).toContain("Dry run: would process 1 conversation pair");
     expect(await getConversationById(id)).toBeNull();
+    expect(writeSpy).not.toHaveBeenCalled();
     await expect(fs.stat(getImportConversationPath("claude-code", id))).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -1186,9 +1190,9 @@ describe("clog fill", () => {
       },
     };
 
-    await expect(withDb((db) => applyFillWriteAction(db, action))).rejects.toThrow(
-      /managed file import/,
-    );
+    await expect(
+      withDb((db) => applyFillWriteAction(db, action), { mode: "write" }),
+    ).rejects.toThrow(/managed file import/);
 
     await expect(fs.readFile(managedPath, "utf8")).resolves.toBe("existing import content\n");
     const row = await getConversationById(id);

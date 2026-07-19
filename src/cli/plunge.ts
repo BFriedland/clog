@@ -192,8 +192,7 @@ async function generatePlungeReportInternal(): Promise<PlungeV1ReportInternal> {
         configForParsing,
       }),
       {
-        applyMigrations: false,
-        flush: false,
+        mode: "diagnostic",
         requireExistingHome: true,
       },
     );

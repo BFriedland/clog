@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   browseValues,
@@ -18,6 +18,7 @@ import {
   setConversationIndexedAt,
   withDb,
 } from "../src/db/index.js";
+import * as atomicWrite from "../src/utils/atomic-write.js";
 import { nowIso } from "../src/utils/time.js";
 import { deleteConversation, insertConversation, updateConversation } from "./helpers/db.js";
 
@@ -33,6 +34,7 @@ describe("db", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -45,7 +47,7 @@ describe("db", () => {
     const dbModuleUrl = new URL("../src/db/index.ts", import.meta.url).href;
     const script = `
       import { withDb } from ${JSON.stringify(dbModuleUrl)};
-      await withDb(() => undefined);
+      await withDb(() => undefined, { mode: "read" });
     `;
 
     await execFileAsync(
@@ -73,10 +75,70 @@ describe("db", () => {
   });
 
   it("creates schema on first access", async () => {
-    await withDb(() => undefined);
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    await withDb(() => undefined, { mode: "read" });
 
     const dbPath = path.join(tempDir, "clog.db");
     await expect(fs.stat(dbPath)).resolves.toBeTruthy();
+    expect(writeSpy).toHaveBeenCalledOnce();
+  });
+
+  it("does not flush current-schema read access", async () => {
+    await withDb(() => undefined, { mode: "read" });
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    await withDb((db) => db.exec("SELECT version FROM schema_version"), {
+      mode: "read",
+    });
+
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects mutations during read access without flushing them", async () => {
+    await withDb(() => undefined, { mode: "read" });
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    await expect(
+      withDb((db) => db.exec("CREATE TABLE accidental_write (id INTEGER)"), {
+        mode: "read",
+      }),
+    ).rejects.toThrow(/readonly/i);
+    expect(writeSpy).not.toHaveBeenCalled();
+
+    const tableExists = await withDb(
+      (db) =>
+        db.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'accidental_write'",
+        ).length > 0,
+      { mode: "read" },
+    );
+    expect(tableExists).toBe(false);
+  });
+
+  it("does not flush partial changes when a write callback throws", async () => {
+    await withDb(() => undefined, { mode: "read" });
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    await expect(
+      withDb(
+        (db) => {
+          db.exec("CREATE TABLE partial_write (id INTEGER)");
+          throw new Error("write failed");
+        },
+        { mode: "write" },
+      ),
+    ).rejects.toThrow("write failed");
+    expect(writeSpy).not.toHaveBeenCalled();
+
+    const tableExists = await withDb(
+      (db) =>
+        db.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'partial_write'",
+        ).length > 0,
+      { mode: "read" },
+    );
+    expect(tableExists).toBe(false);
   });
 
   it("removes a legacy file-shaped db lock path before acquiring the lock", async () => {
@@ -84,9 +146,25 @@ describe("db", () => {
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(legacyLockPath, "", "utf8");
 
-    await withDb(() => undefined);
+    await withDb(() => undefined, { mode: "read" });
 
     await expect(fs.stat(legacyLockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("releases the database lock when the database cannot be loaded", async () => {
+    const dbPath = path.join(tempDir, "clog.db");
+    const lockPath = path.join(tempDir, "clog.db.lock");
+    await fs.mkdir(dbPath);
+
+    await expect(
+      withDb(() => undefined, { mode: "diagnostic" }),
+    ).rejects.toThrow();
+    await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await fs.rm(dbPath, { recursive: true });
+    await expect(
+      withDb(() => undefined, { mode: "read" }),
+    ).resolves.toBeUndefined();
   });
 
   it("inserts and reads a conversation", async () => {
@@ -294,9 +372,9 @@ describe("db", () => {
   // Schema migration and constraint enforcement
   // ============================================================
 
-  it("applyMigrations is idempotent across successive withDb calls (SPEC §3.4.1)", async () => {
-    await withDb(() => undefined);
-    await withDb(() => undefined);
+  it("schema checks are idempotent across successive withDb calls (SPEC §3.4.1)", async () => {
+    await withDb(() => undefined, { mode: "read" });
+    await withDb(() => undefined, { mode: "read" });
     await insertConversation(makeConversation());
     await expect(getConversationById("a1234567-1234-1234-1234-123456789012")).resolves.toBeTruthy();
   });
@@ -304,6 +382,8 @@ describe("db", () => {
   it("migrates legacy origin into origin_kind and origin_ref", async () => {
     await withDb((db) => {
       db.exec(`
+        DROP TABLE conversations;
+        DROP TABLE schema_version;
         CREATE TABLE schema_version (version INTEGER NOT NULL);
         INSERT INTO schema_version (version) VALUES (6);
         CREATE TABLE conversations (
@@ -372,9 +452,11 @@ describe("db", () => {
           "git@example.com:repo.git",
         ],
       );
-    }, { applyMigrations: false });
+    }, { mode: "write" });
 
-    await withDb(() => undefined);
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+    await withDb(() => undefined, { mode: "read" });
+    expect(writeSpy).toHaveBeenCalledOnce();
 
     const loaded = await getConversationById("e2222222-1234-1234-1234-123456789012");
     expect(loaded?.originKind).toBe("git");
@@ -384,6 +466,8 @@ describe("db", () => {
   it("renames the legacy 'discovered' state to 'unsaved' on migration", async () => {
     await withDb((db) => {
       db.exec(`
+        DROP TABLE conversations;
+        DROP TABLE schema_version;
         CREATE TABLE schema_version (version INTEGER NOT NULL);
         INSERT INTO schema_version (version) VALUES (7);
         CREATE TABLE conversations (
@@ -439,9 +523,9 @@ describe("db", () => {
           null,
         ],
       );
-    }, { applyMigrations: false });
+    }, { mode: "write" });
 
-    await withDb(() => undefined);
+    await withDb(() => undefined, { mode: "read" });
 
     const loaded = await getConversationById("f4444444-1234-1234-1234-123456789012");
     expect(loaded?.state).toBe("unsaved");
@@ -489,7 +573,7 @@ describe("db", () => {
           ],
         );
       }).toThrow();
-    });
+    }, { mode: "write" });
   });
 
   it("rejects inserting a duplicate conversation id (SPEC §3.1)", async () => {
@@ -612,15 +696,18 @@ describe("db", () => {
     const conversation = makeConversation();
     await insertConversation(conversation);
 
-    const loaded = await withDb((db) =>
-      getConversationBySourceIdentityInDb(db, conversation.source, conversation.sourceId),
+    const loaded = await withDb(
+      (db) =>
+        getConversationBySourceIdentityInDb(db, conversation.source, conversation.sourceId),
+      { mode: "read" },
     );
     expect(loaded?.id).toBe(conversation.id);
   });
 
   it("getConversationBySourceIdentityInDb returns null when nothing matches", async () => {
-    const loaded = await withDb((db) =>
-      getConversationBySourceIdentityInDb(db, "claude-code", "not-a-real-id"),
+    const loaded = await withDb(
+      (db) => getConversationBySourceIdentityInDb(db, "claude-code", "not-a-real-id"),
+      { mode: "read" },
     );
     expect(loaded).toBeNull();
   });

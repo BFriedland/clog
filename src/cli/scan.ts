@@ -108,7 +108,7 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
     counts.discovered += writeCounts.discovered;
     counts.updated += writeCounts.updated;
     counts.pruned += writeCounts.pruned;
-  });
+  }, { mode: "write" });
 
   return { warnings, undiscoverable, counts };
 }

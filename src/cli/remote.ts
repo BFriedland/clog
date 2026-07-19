@@ -174,8 +174,9 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
     throw new ClogError("No remote configured.");
   }
 
-  const remoteRows = await withDb((db) =>
-    listConversationsInDb(db, { origin: gitOriginFilter(remote.url!) }),
+  const remoteRows = await withDb(
+    (db) => listConversationsInDb(db, { origin: gitOriginFilter(remote.url!) }),
+    { mode: "read" },
   );
 
   if (!options.yes) {
@@ -194,7 +195,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
   const idsToDelete = remoteRows.map((row) => row.id);
   await withDb((db) => {
     removeGitConversationsForRemoteInDb(db, remote.url!);
-  });
+  }, { mode: "write" });
 
   const failures = await tryDeleteConversationVectors(idsToDelete);
   for (const failedId of failures) {

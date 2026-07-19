@@ -47,7 +47,7 @@ export async function reconcileRemote(
     }
 
     return planned;
-  });
+  }, { mode: "write" });
 
   const cleanupFailures = await tryDeleteConversationVectors(plan.deletedRowIds);
 

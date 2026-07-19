@@ -22,17 +22,25 @@ import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
-import { applyMigrations } from "./schema.js";
+import { ensureCurrentSchema } from "./schema.js";
 import { unsafeUpdateLocalConversationInDb } from "./unsafe-conversations.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
 const require = createRequire(import.meta.url);
 
-export interface DbAccessOptions {
-  applyMigrations?: boolean;
-  flush?: boolean;
-  requireExistingHome?: boolean;
-}
+export type DbAccessOptions =
+  | {
+      mode: "read";
+      requireExistingHome?: boolean;
+    }
+  | {
+      mode: "write";
+      requireExistingHome?: boolean;
+    }
+  | {
+      mode: "diagnostic";
+      requireExistingHome?: boolean;
+    };
 
 export type OriginFilter =
   | "local"
@@ -71,15 +79,12 @@ let sqlJsPromise: Promise<SqlJsStatic> | null = null;
 
 export async function withDb<T>(
   callback: DbCallback<T>,
-  options: DbAccessOptions = {},
+  options: DbAccessOptions,
 ): Promise<T> {
   const dbPath = getClogDbPath();
   const lockPath = getDbLockPath();
-  const {
-    applyMigrations: shouldApplyMigrations = true,
-    flush: shouldFlush = true,
-    requireExistingHome = false,
-  } = options;
+  const requireExistingHome = options.requireExistingHome ?? false;
+  const shouldEnsureSchema = options.mode !== "diagnostic";
 
   if (requireExistingHome) {
     const clogHome = path.dirname(dbPath);
@@ -108,28 +113,35 @@ export async function withDb<T>(
     realpath: false,
   });
 
-  const SQL = await getSqlJs();
-  const db = await loadDatabase(SQL, dbPath);
+  let db: Database | null = null;
 
   try {
-    if (shouldApplyMigrations) {
-      applyMigrations(db);
+    const SQL = await getSqlJs();
+    db = await loadDatabase(SQL, dbPath);
+    const schemaChanged = shouldEnsureSchema
+      ? ensureCurrentSchema(db)
+      : false;
+    if (options.mode === "read") {
+      db.exec("PRAGMA query_only = ON");
     }
     const result = await callback(db);
-    if (shouldFlush) {
+    if (options.mode === "write" || schemaChanged) {
       await flushDatabase(db, dbPath);
     }
     return result;
   } finally {
-    db.close();
-    await release();
+    try {
+      db?.close();
+    } finally {
+      await release();
+    }
   }
 }
 
 export async function getConversationById(
   id: string,
 ): Promise<ConversationMeta | null> {
-  return withDb((db) => getConversationByIdInDb(db, id));
+  return withDb((db) => getConversationByIdInDb(db, id), { mode: "read" });
 }
 
 export function getConversationByIdInDb(
@@ -143,7 +155,7 @@ export function getConversationByIdInDb(
 export async function listConversations(
   filters: ListConversationFilters = {},
 ): Promise<ConversationMeta[]> {
-  return withDb((db) => listConversationsInDb(db, filters));
+  return withDb((db) => listConversationsInDb(db, filters), { mode: "read" });
 }
 
 export async function browseValues(
@@ -186,7 +198,7 @@ export async function browseValues(
       name: String(row.name),
       count: Number(row.count),
     }));
-  });
+  }, { mode: "read" });
 }
 
 export async function resolveConversationId(
@@ -234,7 +246,7 @@ export async function resolveConversationId(
       id: String(rows[0].id),
       source: String(rows[0].source),
     };
-  });
+  }, { mode: "read" });
 }
 
 export function isLocalConversation(
@@ -276,7 +288,9 @@ export async function updateLocalConversation(
   conversation: ConversationMeta,
   options: { command: string },
 ): Promise<LocalConversation> {
-  return withDb((db) => updateLocalConversationInDb(db, conversation, options));
+  return withDb((db) => updateLocalConversationInDb(db, conversation, options), {
+    mode: "write",
+  });
 }
 
 export async function saveLocalConversation(
@@ -328,7 +342,7 @@ export async function renameLocalAuthor(
       [newName, options.modifiedAt, oldName],
     );
     return db.getRowsModified();
-  });
+  }, { mode: "write" });
 }
 
 export async function removeConversationCopy(
@@ -343,7 +357,9 @@ export async function removeConversationCopies(
   conversations: ConversationMeta[],
   options: { command: string },
 ): Promise<RemovedConversationCopy[]> {
-  return withDb((db) => removeConversationCopiesInDb(db, conversations, options));
+  return withDb((db) => removeConversationCopiesInDb(db, conversations, options), {
+    mode: "write",
+  });
 }
 
 export function removeConversationCopiesInDb(
@@ -582,7 +598,7 @@ export async function listConversationsNeedingIndex(): Promise<ConversationMeta[
     );
 
     return resultToConversations(result);
-  });
+  }, { mode: "read" });
 }
 
 export async function setConversationIndexedAt(
@@ -591,13 +607,13 @@ export async function setConversationIndexedAt(
 ): Promise<void> {
   await withDb((db) => {
     db.run("UPDATE conversations SET indexed_at = ? WHERE id = ?", [indexedAt, id]);
-  });
+  }, { mode: "write" });
 }
 
 export async function clearSavedIndexedAt(): Promise<void> {
   await withDb((db) => {
     db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'saved'");
-  });
+  }, { mode: "write" });
 }
 
 function buildAmbiguousIdMessage(

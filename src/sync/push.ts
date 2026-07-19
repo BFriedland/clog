@@ -45,7 +45,7 @@ export async function collectSameAuthorSavedIdentities(
       author,
     });
     return new Set(saved.map((c) => `${c.source}\0${c.sourceId}`));
-  });
+  }, { mode: "read" });
 }
 
 export async function exportAuthorToCheckout(
@@ -54,12 +54,14 @@ export async function exportAuthorToCheckout(
 ): Promise<ExportStats> {
   const stats: ExportStats = { changes: [], warnings: [] };
 
-  const ownSavedRows = await withDb((db) =>
-    listConversationsInDb(db, {
-      states: ["saved"],
-      author,
-      origin: "local",
-    }),
+  const ownSavedRows = await withDb(
+    (db) =>
+      listConversationsInDb(db, {
+        states: ["saved"],
+        author,
+        origin: "local",
+      }),
+    { mode: "read" },
   );
   const ownSaved = selectExportableConversations(ownSavedRows, stats.warnings);
 
