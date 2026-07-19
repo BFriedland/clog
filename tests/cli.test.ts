@@ -769,7 +769,7 @@ describe("cli", () => {
       expect(reloaded?.savedMessageCount).toBe(4);
     });
 
-    it("resaves metadata-only saved conversations when called without ids", async () => {
+    it("does not resave metadata-only saved conversations when called without ids", async () => {
       const convId = "53535353-5353-5353-5353-535353535353";
       const rawPath = getRawConversationPath("claude-code", convId);
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
@@ -794,20 +794,20 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("Nothing to save.");
+      expect(stdout).not.toContain("Saved conversations to resave:");
 
       const saved = await getConversationById(convId);
       expect(saved?.saveVersion).toBe(1);
       expect(saved?.savedAt).toBe("2026-02-01T10:00:00.000Z");
 
       const saveResult = await runBuiltCommand(buildSaveCommand, []);
-      expect(saveResult.stdout).toContain("Saved 1 conversation(s)");
+      expect(saveResult.stdout).toContain("No conversations need saving");
 
       const reloaded = await getConversationById(convId);
-      expect(reloaded?.saveVersion).toBe(2);
-      expect(reloaded?.savedAt).not.toBe("2026-02-01T10:00:00.000Z");
-      expect(reloaded?.modifiedAt).toBe(reloaded?.savedAt);
+      expect(reloaded?.saveVersion).toBe(1);
+      expect(reloaded?.savedAt).toBe("2026-02-01T10:00:00.000Z");
+      expect(reloaded?.modifiedAt).toBe("2026-02-01T10:05:00.000Z");
     });
 
     it("--all saves discovered conversations and refreshes saved conversations with source changes", async () => {
@@ -2478,7 +2478,7 @@ describe("cli", () => {
       expect(stdout).toContain('use "clog save" to save these updates');
     });
 
-    it("marks a saved conversation as ready when metadata changed after save", async () => {
+    it("does not mark a saved conversation as ready when metadata changed after save", async () => {
       const convId = "c7777777-7777-7777-7777-777777777777";
       const rawPath = getRawConversationPath("claude-code", convId);
       await fs.mkdir(path.dirname(rawPath), { recursive: true });
@@ -2503,11 +2503,76 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Saved conversations to resave:");
-      expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("Nothing to save.");
+      expect(stdout).not.toContain("Saved conversations to resave:");
       expect(stdout).not.toContain("Metadata changed");
-      expect(stdout).toContain('use "clog save" to save these updates');
+    });
+
+    it("ignores a newer source mtime when the source and managed raw copy are identical", async () => {
+      const convId = "c7676767-7676-7676-7676-767676767676";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(sourcePath, "Identical content");
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await fs.copyFile(sourcePath, rawPath);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Touched without content changes",
+          state: "saved",
+          filePath: rawPath,
+          sourcePath,
+          sourceMtime: "2026-02-01T09:00:00.000Z",
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          savedMessageCount: 2,
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Nothing to save.");
+      expect(stdout).not.toContain("Saved conversations to resave:");
+      expect(stdout).not.toContain("Saved conversations whose source files changed:");
+
+      const rescanned = await getConversationById(convId);
+      expect(rescanned?.sourceMtime).not.toBe("2026-02-01T09:00:00.000Z");
+      expect(Date.parse(rescanned!.modifiedAt)).toBeGreaterThan(
+        Date.parse(rescanned!.savedAt!),
+      );
+    });
+
+    it("keeps byte-different source content with the same message count under source files changed", async () => {
+      const convId = "c7777777-6767-6767-6767-676767676767";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+      const rawPath = getRawConversationPath("claude-code", convId);
+      await writeMinimalClaudeJsonl(sourcePath, "Edited historical prompt");
+      await fs.mkdir(path.dirname(rawPath), { recursive: true });
+      await writeJsonl(rawPath, [
+        userLine("Original historical prompt"),
+        assistantLine("Response", "msg_01"),
+      ]);
+
+      await insertConversation(
+        makeConversation({
+          id: convId,
+          sourceId: convId,
+          title: "Same count source edit",
+          state: "saved",
+          filePath: rawPath,
+          sourcePath,
+          modifiedAt: "2026-02-01T10:00:00.000Z",
+          savedAt: "2026-02-01T10:00:00.000Z",
+          savedMessageCount: 2,
+          saveVersion: 1,
+        }),
+      );
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+      expect(stdout).toContain("Saved conversations whose source files changed:");
+      expect(stdout).not.toContain("Saved conversations to resave:");
     });
 
     it("shows saved source changes separately from saved rows ready to resave", async () => {

@@ -10,7 +10,6 @@ import {
   classifySavedDelta,
   getTerminalWidth,
   getScanWarningsForCommand,
-  isSavedReadyForResaveWithDelta,
   renderWarnings,
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
@@ -58,8 +57,6 @@ export function buildStatusCommand(): Command {
           readySaved.push(conversation);
         } else if (kind === "source_ahead") {
           sourceAheadSaved.push(conversation);
-        } else if (isSavedReadyForResaveWithDelta(conversation, kind)) {
-          readySaved.push(conversation);
         } else {
           cleanSaved.push(conversation);
         }

@@ -1,9 +1,6 @@
 import { listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
-import {
-  classifySavedDelta,
-  isSavedReadyForResaveWithDelta,
-} from "./common.js";
+import { classifySavedDelta } from "./common.js";
 
 export async function collectBareSaveTargets(): Promise<ConversationMeta[]> {
   return collectSavedSaveTargets({ includeSourceChanges: false });
@@ -30,7 +27,7 @@ async function collectSavedSaveTargets(options: {
     const delta = await classifySavedDelta(conversation);
     if (
       (options.includeSourceChanges && delta === "source_ahead") ||
-      isSavedReadyForResaveWithDelta(conversation, delta)
+      delta === "ready"
     ) {
       saveableSaved.push(conversation);
     }

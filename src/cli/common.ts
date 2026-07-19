@@ -672,29 +672,6 @@ export async function classifySavedDelta(
   return messages.length > conversation.savedMessageCount ? "ready" : "clean";
 }
 
-function isSavedMetadataAhead(
-  conversation: ConversationMeta,
-): boolean {
-  if (conversation.state !== "saved" || !conversation.savedAt) {
-    return false;
-  }
-
-  const modifiedAt = Date.parse(conversation.modifiedAt);
-  const savedAt = Date.parse(conversation.savedAt);
-  if (Number.isNaN(modifiedAt) || Number.isNaN(savedAt)) {
-    return false;
-  }
-
-  return modifiedAt > savedAt;
-}
-
-export function isSavedReadyForResaveWithDelta(
-  conversation: ConversationMeta,
-  delta: SavedDelta,
-): boolean {
-  return delta === "ready" || (delta === "clean" && isSavedMetadataAhead(conversation));
-}
-
 export async function getSaveCandidate(conversation: ConversationMeta): Promise<{
   path: string;
   shouldRefreshRawCopy: boolean;

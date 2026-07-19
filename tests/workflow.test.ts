@@ -12,6 +12,7 @@ import { buildRemoveCommand } from "../src/cli/remove.js";
 import { buildStatusCommand } from "../src/cli/status.js";
 import { buildTagCommand } from "../src/cli/tag.js";
 import { buildUnexcludeCommand } from "../src/cli/unexclude.js";
+import { buildUntagCommand } from "../src/cli/untag.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById } from "../src/db/index.js";
@@ -186,35 +187,68 @@ describe("workflow", () => {
     expect(unchanged?.savedAt).toBe(firstSavedAt);
   });
 
-  it("status and bare save agree on metadata-only resave readiness", async () => {
-    const convId = "abababab-1234-5678-9abc-def012345678";
-    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
-    await writeClaudeJsonl(sourcePath, "Initial prompt");
+  it("metadata-only changes stay durable without becoming automatic save targets", async () => {
+    vi.useFakeTimers();
+    try {
+      const convId = "abababab-1234-5678-9abc-def012345678";
+      const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+      await writeClaudeJsonl(sourcePath, "Initial prompt");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
+      await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
-    await runBuiltCommand(buildSaveCommand, [convId]);
-    await runBuiltCommand(buildSaveCommand, [convId]);
+      vi.setSystemTime(new Date("2030-01-01T10:00:00.000Z"));
+      await runBuiltCommand(buildSaveCommand, [convId]);
+      await runBuiltCommand(buildSaveCommand, [convId]);
 
-    const firstSave = await getConversationById(convId);
-    const firstSavedAt = firstSave?.savedAt;
-    expect(firstSave?.saveVersion).toBe(2);
+      const firstSave = await getConversationById(convId);
+      const firstSavedAt = firstSave?.savedAt;
+      expect(firstSave?.saveVersion).toBe(2);
+      expect(firstSavedAt).toBe("2030-01-01T10:00:00.000Z");
 
-    await runBuiltCommand(buildEditCommand, [convId, "--title", "Metadata-only resave"]);
+      vi.setSystemTime(new Date("2030-01-01T10:01:00.000Z"));
+      await runBuiltCommand(buildEditCommand, [convId, "--title", "Metadata-only resave"]);
+      const edited = await getConversationById(convId);
+      expect(edited?.modifiedAt).toBe("2030-01-01T10:01:00.000Z");
+      expect(Date.parse(edited!.modifiedAt)).toBeGreaterThan(Date.parse(firstSavedAt!));
 
-    const status = await runBuiltCommand(buildStatusCommand, []);
-    expect(status.stdout).toContain("Saved conversations to resave:");
-    expect(status.stdout).toContain("webapp");
-    expect(status.stdout).toContain("1 modified");
+      const editStatus = await runBuiltCommand(buildStatusCommand, []);
+      expect(editStatus.stdout).toContain("Nothing to save.");
+      expect(editStatus.stdout).not.toContain("Saved conversations to resave:");
+      const allSave = await runBuiltCommand(buildSaveCommand, ["--all"]);
+      expect(allSave.stdout).toContain("No conversations need saving");
 
-    await runBuiltCommand(buildSaveCommand, []);
+      vi.setSystemTime(new Date("2030-01-01T10:02:00.000Z"));
+      await runBuiltCommand(buildTagCommand, [convId, "temporary"]);
+      const tagged = await getConversationById(convId);
+      expect(tagged?.tags).toEqual(["temporary"]);
+      expect(tagged?.modifiedAt).toBe("2030-01-01T10:02:00.000Z");
 
-    const resaved = await getConversationById(convId);
-    expect(resaved?.state).toBe("saved");
-    expect(resaved?.title).toBe("Metadata-only resave");
-    expect(resaved?.saveVersion).toBe(3);
-    expect(resaved?.savedAt).not.toBe(firstSavedAt);
-    expect(resaved?.modifiedAt).toBe(resaved?.savedAt);
+      const tagStatus = await runBuiltCommand(buildStatusCommand, []);
+      expect(tagStatus.stdout).toContain("Nothing to save.");
+      expect(tagStatus.stdout).not.toContain("Saved conversations to resave:");
+      const projectSave = await runBuiltCommand(buildSaveCommand, ["webapp"]);
+      expect(projectSave.stdout).toContain("No conversations need saving");
+
+      vi.setSystemTime(new Date("2030-01-01T10:03:00.000Z"));
+      await runBuiltCommand(buildUntagCommand, [convId, "temporary"]);
+      const untagged = await getConversationById(convId);
+      expect(untagged?.tags).toEqual([]);
+      expect(untagged?.modifiedAt).toBe("2030-01-01T10:03:00.000Z");
+
+      const untagStatus = await runBuiltCommand(buildStatusCommand, []);
+      expect(untagStatus.stdout).toContain("Nothing to save.");
+      expect(untagStatus.stdout).not.toContain("Saved conversations to resave:");
+      const bareSave = await runBuiltCommand(buildSaveCommand, []);
+      expect(bareSave.stdout).toContain("No conversations need saving");
+
+      const unchanged = await getConversationById(convId);
+      expect(unchanged?.state).toBe("saved");
+      expect(unchanged?.title).toBe("Metadata-only resave");
+      expect(unchanged?.saveVersion).toBe(2);
+      expect(unchanged?.savedAt).toBe(firstSavedAt);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explicit save can resave an unchanged saved conversation", async () => {
