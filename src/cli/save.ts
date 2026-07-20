@@ -33,6 +33,7 @@ import {
 } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
+import { normalizeTags } from "./tag.js";
 
 export function buildSaveCommand(): Command {
   return new Command("save")
@@ -90,9 +91,17 @@ export function buildSaveCommand(): Command {
             parsePath,
           );
           const timestamp = nowIso();
+          const configuredMetadata =
+            conversation.state === "unsaved"
+              ? {
+                  author: config.author,
+                  tags: normalizeTags(config.defaultTags),
+                }
+              : {};
 
           const savedConversation = {
             ...conversation,
+            ...configuredMetadata,
             filePath: rawPath,
             state: "saved" as const,
             saveVersion: conversation.saveVersion + 1,

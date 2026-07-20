@@ -95,6 +95,80 @@ describe("workflow", () => {
     expect(rawContent).toBe(sourceContent);
   });
 
+  it("uses the current configured author when an unsaved conversation becomes saved", async () => {
+    const convId = "b1b1b1b1-2222-3333-4444-555555555555";
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+    await writeClaudeJsonl(sourcePath, "Save with the current author");
+    await insertConversation(makeDiscoveredConversation({
+      id: convId,
+      sourceId: convId,
+      sourcePath,
+      author: "author-at-discovery",
+    }));
+
+    const config = getDefaultConfig("author-at-save");
+    config.sources["claude-code"].paths = [sourceDir];
+    config.sources["codex-cli"].enabled = false;
+    await saveConfig(config);
+
+    await runBuiltCommand(buildSaveCommand, [convId]);
+
+    expect((await getConversationById(convId))?.author).toBe("author-at-save");
+  });
+
+  it("normalizes the current default tags when an unsaved conversation becomes saved", async () => {
+    const convId = "b2b2b2b2-2222-3333-4444-555555555555";
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+    await writeClaudeJsonl(sourcePath, "Save with the current default tags");
+    await insertConversation(makeDiscoveredConversation({
+      id: convId,
+      sourceId: convId,
+      sourcePath,
+      tags: ["tag-at-discovery"],
+    }));
+
+    const config = getDefaultConfig("testuser");
+    config.sources["claude-code"].paths = [sourceDir];
+    config.sources["codex-cli"].enabled = false;
+    config.defaultTags = [" Team-A ", "", "team-a", "TEAM-B", "  "];
+    await saveConfig(config);
+
+    await runBuiltCommand(buildSaveCommand, [convId]);
+
+    expect((await getConversationById(convId))?.tags).toEqual(["team-a", "team-b"]);
+  });
+
+  it("preserves stored author and tags when refreshing a saved conversation", async () => {
+    const convId = "b3b3b3b3-2222-3333-4444-555555555555";
+    const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
+    await writeClaudeJsonl(sourcePath, "Refresh without restamping metadata");
+    await insertConversation(makeDiscoveredConversation({
+      id: convId,
+      sourceId: convId,
+      sourcePath,
+    }));
+
+    const initialConfig = getDefaultConfig("stored-author");
+    initialConfig.sources["claude-code"].paths = [sourceDir];
+    initialConfig.sources["codex-cli"].enabled = false;
+    initialConfig.defaultTags = ["stored-tag"];
+    await saveConfig(initialConfig);
+    await runBuiltCommand(buildSaveCommand, [convId]);
+
+    const config = getDefaultConfig("new-configured-author");
+    config.sources["claude-code"].paths = [sourceDir];
+    config.sources["codex-cli"].enabled = false;
+    config.defaultTags = ["new-default-tag"];
+    await saveConfig(config);
+
+    await runBuiltCommand(buildSaveCommand, [convId]);
+
+    expect(await getConversationById(convId)).toMatchObject({
+      author: "stored-author",
+      tags: ["stored-tag"],
+    });
+  });
+
   it("save increments saveVersion on resave (SPEC §5.6)", async () => {
     const convId = "eeeeeeee-5555-6666-7777-888888888888";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
