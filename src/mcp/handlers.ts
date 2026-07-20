@@ -26,7 +26,12 @@ import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError }
 import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { searchConversations } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
-import { filterConversationsByGrep, parseConversationMessages } from "../cli/common.js";
+import {
+  filterConversationsByGrep,
+  getScanWarningsForCommand,
+  parseConversationMessages,
+} from "../cli/common.js";
+import { scanLocalSources } from "../cli/scan.js";
 import { requireLocalConversation } from "../conversations/write-guards.js";
 
 const listSortBySchema = z.enum([
@@ -39,16 +44,52 @@ const listSortBySchema = z.enum([
 ]);
 const listSortDirectionSchema = z.enum(["asc", "desc"]);
 
-const listInputSchema = z.object({
-  tags: z.array(z.string()).optional(),
-  project: z.string().optional(),
-  author: z.string().optional(),
-  grep: z.string().optional(),
-  origin: z.enum(["local", "remote"]).optional(),
-  limit: z.number().int().positive().max(100).default(20),
-  offset: z.number().int().nonnegative().default(0),
-  sortBy: listSortBySchema.default("createdAt"),
-  sortDirection: listSortDirectionSchema.default("desc"),
+export const listInputSchema = z.object({
+  state: z
+    .enum(["saved", "unsaved", "all"])
+    .default("saved")
+    .describe(
+      "Defaults to saved. Use unsaved or all only when the user asks about unsaved conversations or needs a complete saved-and-unsaved view. Either value scans all enabled coding-agent transcript sources before listing.",
+    ),
+  tags: z
+    .array(z.string())
+    .optional()
+    .describe("Filter by tags using OR semantics after tag normalization."),
+  project: z
+    .string()
+    .optional()
+    .describe("Filter by project using case-insensitive substring matching."),
+  author: z
+    .string()
+    .optional()
+    .describe("Filter by author metadata using case-insensitive substring matching."),
+  grep: z
+    .string()
+    .optional()
+    .describe("Case-insensitive substring match on title, summary, or message content."),
+  origin: z
+    .enum(["local", "remote"])
+    .optional()
+    .describe("Use local for locally writable rows, remote for imported read-only rows."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .default(20)
+    .describe("Maximum conversations to return. Defaults to 20; maximum is 100."),
+  offset: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(0)
+    .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
+  sortBy: listSortBySchema
+    .default("createdAt")
+    .describe("Sort field. Defaults to createdAt."),
+  sortDirection: listSortDirectionSchema
+    .default("desc")
+    .describe("Sort direction. Defaults to desc."),
 });
 
 const getInputSchema = z.object({
@@ -107,9 +148,16 @@ const searchInputSchema = z.object({
   limit: z.number().int().positive().max(50).default(10),
 });
 
-export async function handleListSaved(input: unknown) {
+export async function handleList(input: unknown) {
   const parsed = listInputSchema.parse(input ?? {});
-  return listConversationsForState("saved", parsed);
+  const states = parsed.state === "all" ? undefined : [parsed.state];
+  const scansLocalSources = parsed.state === "unsaved" || parsed.state === "all";
+  const config = scansLocalSources || parsed.grep ? await loadConfig() : undefined;
+  const warnings = scansLocalSources
+    ? getScanWarningsForCommand(await scanLocalSources(config!))
+    : [];
+
+  return listConversationsForStates(states, parsed, config?.author, config, warnings);
 }
 
 export async function handleGet(input: unknown) {
@@ -444,14 +492,20 @@ export async function handleSearch(input: unknown) {
   };
 }
 
-async function listConversationsForState(
-  state: "saved",
+async function listConversationsForStates(
+  states: Array<"saved" | "unsaved"> | undefined,
   input: z.infer<typeof listInputSchema>,
+  configuredAuthor: string | undefined,
+  config: Awaited<ReturnType<typeof loadConfig>> | undefined,
+  warnings: ReturnType<typeof getScanWarningsForCommand>,
 ) {
   let conversations = await listConversations({
-    states: [state],
+    states,
     origin: input.origin,
   });
+  conversations = conversations.map((conversation) =>
+    normalizeUnsavedConversation(conversation, configuredAuthor),
+  );
   conversations = filterConversationsByMcpMetadata(conversations, input);
 
   if (input.tags && input.tags.length > 0) {
@@ -462,8 +516,7 @@ async function listConversationsForState(
   }
 
   if (input.grep) {
-    const config = await loadConfig();
-    conversations = await filterConversationsByGrep(config, input.grep, conversations);
+    conversations = await filterConversationsByGrep(config!, input.grep, conversations);
   }
 
   conversations = sortConversationsForMcpList(
@@ -487,16 +540,18 @@ async function listConversationsForState(
       project: conversation.projectName,
       originKind: conversation.originKind,
       originRef: conversation.originRef,
+      state: conversation.state,
       createdAt: conversation.createdAt,
       modifiedAt: conversation.modifiedAt,
       savedAt: conversation.savedAt,
       savedMessageCount: conversation.savedMessageCount,
+      sourceMtime: conversation.sourceMtime,
     }));
   const returnedCount = page.length;
   const nextOffset = input.offset + input.limit;
   const hasMore = nextOffset < totalCount;
 
-  return {
+  const result = {
     conversations: page,
     totalCount,
     limit: input.limit,
@@ -509,6 +564,33 @@ async function listConversationsForState(
     paginationNote: hasMore
       ? `More conversations are available. Request offset ${nextOffset} with limit ${input.limit} for the next page.`
       : undefined,
+  };
+
+  return warnings.length > 0 ? { ...result, warnings } : result;
+}
+
+function normalizeUnsavedConversation(
+  conversation: ConversationMeta,
+  configuredAuthor: string | undefined,
+): ConversationMeta {
+  if (conversation.state === "saved") {
+    return conversation;
+  }
+
+  if (configuredAuthor === undefined) {
+    throw new Error("Current configuration is required to list unsaved conversations.");
+  }
+
+  return {
+    ...conversation,
+    author: configuredAuthor,
+    tags: [],
+    modifiedAt: conversation.sourceMtime ?? conversation.modifiedAt,
+    summaryExtraction: null,
+    savedAt: null,
+    savedMessageCount: null,
+    originKind: "local",
+    originRef: null,
   };
 }
 

@@ -1126,7 +1126,7 @@ Usage: clog edit <id> [options]
   --author <name>   Set the conversation author
 ```
 
-The `--author` flag changes the author on an individual conversation. This is distinct from `clog config set author` (which changes the default for future local discoveries) and `clog rename-author` (which renames an author across all local conversations).
+The `--author` flag changes the author on an individual saved conversation. This is distinct from `clog config set author` (which changes the prospective author shown on unsaved conversations and applied at their first save) and `clog rename-author` (which renames an author across all local conversations).
 
 Tags are managed separately via `clog tag` / `clog untag`.
 
@@ -1184,7 +1184,7 @@ Local source discovery reads only the bounded metadata head of each enabled sour
 Scanning is idempotent. Each scan will:
 
 - Find new conversations not yet in the database → insert as `unsaved`
-- When inserting a new local unsaved conversation, set `author = config.author`. Later scans must not rewrite `author`; use `clog edit --author` or `clog rename-author` for explicit changes.
+- When inserting a new local unsaved conversation, set `author = config.author` as disposable scan metadata. Later scans do not rewrite the persisted cache value, but unsaved views and the unsaved-to-saved transition use the current configured author.
 - Avoid rewriting existing rows whose discovered `sourcePath` and post-discovery `source_mtime` match the stored row for the same `source + sourceId`
 - If a local source candidate has the same `(source, sourceId)` as a `git` or `file` row, leave the imported row unchanged and do not insert a duplicate local row. The imported row remains authoritative for that identity until the user removes it.
 - **Detect updated source files** for local conversations in any state. When the post-discovery `source_mtime` comparison shows that a source file's mtime has changed since the last scan:
@@ -1273,6 +1273,17 @@ Saving is a local operation in Phase 1. It:
 5. Sets `saved_at = now`
 6. Sets `modified_at = now`
 7. Sets `saved_message_count` to the number of parsed messages included in this saved version
+
+When an unsaved conversation becomes saved, clog sets `author` to the current
+`config.author` and sets `tags` to the current `config.defaultTags` after
+trimming, lowercasing, removing empty values, and deduplicating them. The
+author and tags stored on an unsaved database row are discovery-cache values,
+not curated metadata.
+
+Refreshing an already saved conversation preserves its stored author and tags.
+Changing `config.author` does not rename saved conversations, and changing
+`config.defaultTags` does not retag them. `clog rename-author` remains the
+explicit bulk author-migration command.
 
 ```bash
 # Resave saved conversations whose managed raw copies are ahead of their checkpoints
@@ -1583,7 +1594,7 @@ without prompting.
 
 `clog drain --include-imported` explicitly exports every saved local and
 imported conversation across authors and origin kinds without prompting. It
-does not include unsaved discovered conversations and may not be combined with
+does not include unsaved conversations and may not be combined with
 a positional selector or selection filter. A redundant `--yes` has no effect.
 
 With interactive stdin, bare drain resolves the saved-local conversation count
@@ -2188,7 +2199,7 @@ This follows the same principle as health checks (Section 7.3): **corrupted thin
 
 ### 5.12 The `rename-author` Command
 
-`clog rename-author <old-name> <new-name>` renames an author across all local conversations. This is the bulk migration tool for correcting or changing author names — distinct from `clog config set author` (which only affects future local discoveries) and `clog edit --author` (which changes a single conversation).
+`clog rename-author <old-name> <new-name>` renames an author across all local conversations. This is the bulk migration tool for correcting or changing author names — distinct from `clog config set author` (which controls the prospective author for unsaved conversations and their first save) and `clog edit --author` (which changes a single saved conversation).
 
 Requires confirmation:
 
@@ -2199,7 +2210,7 @@ Continue? [y/N]
 
 This command only modifies local rows (`origin_kind = 'local'`). It does not modify config or imported read-only rows.
 
-Note: `clog config set author` only changes the config value. It does NOT rename conversations in the DB. It affects only future local discoveries. Saved conversations use the stored `author` on the conversation row; `clog save` does not restamp author from config. `rename-author` is the explicit migration tool.
+Note: `clog config set author` only changes the config value. It does NOT rename saved conversations in the DB. The current value is shown prospectively for unsaved conversations and is applied when an unsaved conversation becomes saved. Refreshing an already saved conversation preserves the stored `author`; `rename-author` is the explicit migration tool.
 
 Phase 3 (§11.6) extends the confirmation prompt with additional sync context.
 
@@ -2240,9 +2251,10 @@ Phase 1 provides browsing, retrieval, and curation. Semantic search is added in 
 MCP tools that accept a conversation ID use the same resolver grammar as CLI commands (§3.3): full UUID, 4+ character prefix, or source-qualified `prefix@source` / `uuid@source`. Source-qualified IDs validate the source qualifier with the source-key syntax contract and restrict resolution to exact stored source-key matches; ambiguous unqualified prefixes return copy-pasteable `id@source` candidates.
 
 ```typescript
-// List saved conversations with optional filters
-tool: "clog_list_saved"
+// List conversations with optional state and metadata filters
+tool: "clog_list"
 input: {
+  state?: "saved" | "unsaved" | "all"; // Default saved
   tags?: string[];         // Filter by tags (OR — conversations with at least one matching tag)
   project?: string;        // Case-insensitive substring match on project
   author?: string;         // Case-insensitive substring match on author
@@ -2266,10 +2278,12 @@ returns: {
     project: string | null;
     originKind: "local" | "git" | "file";
     originRef: string | null;
+    state: "saved" | "unsaved";
     createdAt: string;
     modifiedAt: string;
     savedAt: string | null;
     savedMessageCount: number | null;
+    sourceMtime: string | null;
   }>;
   totalCount: number;
   limit: number;           // Effective page size
@@ -2430,11 +2444,29 @@ returns: {
 }
 ```
 
-`clog_list_saved` always returns explicit pagination metadata. Agents should treat `hasMore: true` as an instruction to request the
+`clog_list` defaults to `state: "saved"`, preserving the saved-library result
+population. `state: "unsaved"` returns unsaved local source conversations, and
+`state: "all"` returns saved and unsaved conversations. Unsaved and all
+requests scan every enabled local source before listing, regardless of
+`config.autoScan`; saved-only requests do not perform an on-demand scan.
+`state: "all"` broadens only lifecycle state and does not include ignored
+conversations or broaden the author or origin scope. `origin: "remote"` with
+`state: "unsaved"` returns an empty result.
+
+Before filtering, sorting, or pagination, unsaved rows are represented with
+the current `config.author`, empty tags, null summary extraction, null save
+fields, and local origin metadata. Their `modifiedAt` is `sourceMtime` when
+available and otherwise retains the stored `modifiedAt`. These values are
+normalized in memory and are not written back to the database. Saved rows keep
+their stored curation metadata. An unsaved or all request returns collapsed
+scan diagnostics in the optional top-level `warnings` array.
+
+`clog_list` always returns explicit pagination metadata. Agents should treat `hasMore: true` as an instruction to request the
 next page with `offset: nextOffset` and the same `limit` when the task requires
 the full result set. Sorting applies after all filters, and pagination applies
 after sorting. The default sort is `createdAt` descending with `id` ascending as
-the stable tiebreaker.
+the stable tiebreaker. Nullable sort fields place null values last in both sort
+directions.
 
 For MCP list tools, `project` and `author` are forgiving agent-facing filters:
 the supplied value is trimmed and matched as a case-insensitive substring
@@ -2475,7 +2507,7 @@ clog mcp setup codex
 
 `clog mcp setup` is the preferred setup path from the clog CLI. It registers the currently installed local copy of clog with an absolute Node command that imports that installation's `dist/mcp/server.js` file. It does not register an `npx` command or install packages when an MCP client starts the server. If clog is moved, reinstalled, or rebuilt in a different location, the user must run `clog mcp setup` again so Claude Code or Codex CLI points at the current server file. `clog mcp setup claude` registers Claude Code, `clog mcp setup codex` registers Codex CLI, and `clog mcp setup both` does both in sequence. If a server named `clog` already exists for a selected client, clog replaces it automatically.
 
-The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. MCP tools expose **saved** conversations only. Unsaved conversations remain local CLI-visible source rows until the user explicitly saves them.
+The server uses stdio transport (spawned per-session by the client). It reads from the same SQLite database and raw files as the CLI. `clog_list` can explicitly expose unsaved conversation metadata through `state: "unsaved"` or `state: "all"`; its default remains saved-only. Content retrieval, metadata updates, semantic search, and metadata browsing through `clog_get`, `clog_update`, `clog_search`, and `clog_browse` remain saved-only.
 
 MCP handlers that parse messages dispatch by `ConversationMeta.source`. Responses include the canonical source key, not a separate display label. List-style responses include `source` on each conversation summary object. Get-style responses include `source` on the top-level conversation object. Parsed messages preserve adapter output order.
 
@@ -2518,13 +2550,13 @@ Phase 3 (§11.5) adds: `remote` block
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `author` | string | Developer's name/handle, stamped onto new local discoveries and preserved unless explicitly edited |
+| `author` | string | Developer's name/handle, shown on unsaved conversations and applied when they become saved |
 | `sources` | object | Per-adapter configuration |
 | `sources.*.enabled` | boolean | Whether local discovery runs for this source (default `true` for built-in sources) |
 | `sources.*.paths` | string[] | Base directories to scan for conversations (defaults: `~/.claude/projects/` for Claude Code, `~/.codex/sessions/` for Codex CLI). Codex paths may point to any Codex home directory or directly to its `sessions` directory; each path is normalized to a sessions directory and discovery scans `<sessionsDir>/**/*.jsonl` |
 | `sources.*.includePaths` | string[] | If non-empty, only discover conversations whose `projectPath` values match these directories by the path-boundary rule below |
 | `sources.*.excludePaths` | string[] | Skip conversations whose `projectPath` values match these directories by the path-boundary rule below |
-| `defaultTags` | string[] | Tags automatically applied to all new discoveries |
+| `defaultTags` | string[] | Tags applied, after normalization, when an unsaved conversation becomes saved |
 | `autoScan` | boolean | If true, the MCP server runs a source scan on startup |
 
 **Source path overrides:** Source locations are configured only through `sources.<name>.paths`. `CLOG_HOME` overrides clog's data directory; there is no environment-variable override for source paths.
@@ -2881,9 +2913,9 @@ returns: {
 }
 ```
 
-`clog_search` only searches **saved** conversations, consistent with `clog_list_saved` and `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
+`clog_search` only searches **saved** conversations, consistent with the default `clog_list` population and with `clog_browse`. If search is not configured, the tool returns an error explaining how to set it up.
 
-`clog_search` uses the same MCP metadata filter semantics as `clog_list_saved`:
+`clog_search` uses the same MCP metadata filter semantics as `clog_list`:
 `project` and `author` are trimmed case-insensitive substring filters, tags are
 normalized exact OR filters, and `origin` maps `local` to `origin_kind = 'local'`
 and `remote` to `origin_kind != 'local'`.
@@ -3713,10 +3745,10 @@ The DB already tracks `indexed_at` per conversation, so tracking unindexed conve
 
 The MCP server already reads from the DB — if imported conversations are in the DB as saved, they're served automatically.
 
-Phase 3 extends the Phase 1/2 MCP tool schemas with an optional `origin` filter on `clog_list_saved` and `clog_search`:
+Phase 3 extends the Phase 1/2 MCP tool schemas with an optional `origin` filter on `clog_list` and `clog_search`:
 
 ```typescript
-// Added to clog_list_saved input in Phase 3
+// Added to clog_list input in Phase 3
 origin?: "local" | "remote";
 
 // Added to clog_search input in Phase 3
@@ -3817,7 +3849,7 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 - `src/sync/pull.ts` — apply the interchange reconciliation plan, check `clogignore` before importing, and best-effort delete vectors for deleted rows
 - `src/sync/push.ts` — write pairs through the shared writer and protect same-author saved identities across provenance kinds from retraction
 - `src/cli/status.ts` — report configured-git remote info, unindexed count, staleness warning
-- `src/mcp/server.ts` and `src/mcp/handlers.ts` — add optional `origin` filter to `clog_list_saved` and `clog_search`; include `source`, `originKind`, and `originRef` metadata
+- `src/mcp/server.ts` and `src/mcp/handlers.ts` — add optional `origin` filter to `clog_list` and `clog_search`; include `source`, `originKind`, and `originRef` metadata
 - `src/index.ts` — register new commands (remote, sync, refresh, fill)
 - `src/db/index.ts` — add provenance helpers and `originKind` / `originRef` row mapping, inserts, updates, and filters
 
@@ -3963,7 +3995,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **MCP tests** (`mcp.test.ts`):
 
-- Tool handler tests for `clog_list_saved`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`, `clog_summarization_guide`, and `clog_analysis_suggestions`
+- Tool handler tests for `clog_list`, `clog_get`, `clog_update`, `clog_browse`, `clog_search`, `clog_summarization_guide`, and `clog_analysis_suggestions`
 - Input validation and error responses
 - Filter behavior (tags, project, author, grep)
 - `source`, `summaryKind`, `extraction`, `originKind`, and `originRef` metadata in list/get/search payloads

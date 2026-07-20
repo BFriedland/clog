@@ -13,7 +13,7 @@ import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   handleAnalysisSuggestions,
   handleGet,
-  handleListSaved,
+  handleList,
   handleSummarizationGuide,
   handleUpdate,
 } from "../src/mcp/handlers.js";
@@ -445,7 +445,7 @@ describe("agent-assisted summarization", () => {
     });
   });
 
-  describe("MCP handleGet / handleListSaved", () => {
+  describe("MCP handleGet / handleList", () => {
     it("returns summaryKind and extraction on get", async () => {
       const conversation = makeSavedConversation({
         summary: "Existing",
@@ -468,7 +468,7 @@ describe("agent-assisted summarization", () => {
       });
       await insertConversation(conversation);
 
-      const result = await handleListSaved({ limit: 10 });
+      const result = await handleList({ limit: 10 });
       expect(result.conversations).toHaveLength(1);
       expect(result.conversations[0].summaryKind).toBe("generated");
       expect(result.conversations[0].extraction).toEqual({ topics: ["auth"] });

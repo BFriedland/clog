@@ -1,16 +1,26 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { buildMcpLauncherScript } from "../src/cli/mcp.js";
+import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import {
   handleBrowse,
   handleGet,
-  handleListSaved,
+  handleList,
   handleSearch,
   handleUpdate,
 } from "../src/mcp/handlers.js";
+import { createMcpServer } from "../src/mcp/create-server.js";
 import { getConversationById } from "../src/db/index.js";
 import { SearchNotConfiguredError } from "../src/search/errors.js";
 import type {
@@ -37,10 +47,18 @@ const mockedGetSearchProviders = vi.mocked(depsModule.getSearchProviders);
 
 describe("mcp handlers", () => {
   let tempDir: string;
+  let sourceDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-mcp-"));
     process.env.CLOG_HOME = tempDir;
+    sourceDir = path.join(tempDir, "claude-sources");
+    await fs.mkdir(sourceDir, { recursive: true });
+
+    const config = getDefaultConfig("current-author");
+    config.sources["claude-code"].paths = [sourceDir];
+    config.sources["codex-cli"].enabled = false;
+    await saveConfig(config);
 
     const rawDir = path.join(tempDir, "raw", "claude-code");
     await fs.mkdir(rawDir, { recursive: true });
@@ -96,9 +114,328 @@ describe("mcp handlers", () => {
   });
 
   it("lists saved conversations", async () => {
-    const result = await handleListSaved({});
+    const result = await handleList({});
     expect(result.totalCount).toBe(1);
-    expect(result.conversations[0]?.source).toBe("claude-code");
+    expect(result.conversations[0]).toMatchObject({
+      source: "claude-code",
+      state: "saved",
+      sourceMtime: null,
+    });
+  });
+
+  it("registers clog_list with the public state schema and no saved-only alias", async () => {
+    const server = createMcpServer();
+    const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain("clog_list");
+      expect(names).not.toContain("clog_list_saved");
+
+      const listTool = tools.find((tool) => tool.name === "clog_list");
+      expect(listTool?.inputSchema).toMatchObject({
+        properties: {
+          state: {
+            type: "string",
+            enum: ["saved", "unsaved", "all"],
+            default: "saved",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("starts and handshakes through the import-based MCP setup launcher", async () => {
+    const serverPath = fileURLToPath(new URL("../dist/mcp/server.js", import.meta.url));
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["-e", buildMcpLauncherScript(serverPath)],
+      env: {
+        ...getDefaultEnvironment(),
+        CLOG_HOME: tempDir,
+      },
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "clog-launcher-test-client", version: "1.0.0" });
+
+    try {
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+      expect(tools.map((tool) => tool.name)).toContain("clog_list");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects legacy and unknown list state values", async () => {
+    await expect(handleList({ state: "discovered" })).rejects.toThrow();
+    await expect(handleList({ state: "archived" })).rejects.toThrow();
+  });
+
+  it("scans on demand and lists saved, unsaved, or both lifecycle states", async () => {
+    const firstId = "a1000000-0000-0000-0000-000000000001";
+    await writeUnsavedClaudeConversation(sourceDir, firstId, {
+      title: "First unsaved conversation",
+    });
+
+    const defaultResult = await handleList({});
+    expect(defaultResult.conversations.map((conversation) => conversation.id)).not.toContain(firstId);
+
+    const unsaved = await handleList({ state: "unsaved" });
+    expect(unsaved.conversations).toHaveLength(1);
+    expect(unsaved.conversations[0]).toMatchObject({
+      id: firstId,
+      state: "unsaved",
+      author: "current-author",
+      tags: [],
+      extraction: null,
+      savedAt: null,
+      savedMessageCount: null,
+      originKind: "local",
+      originRef: null,
+    });
+    expect(unsaved.conversations[0]?.modifiedAt).toBe(unsaved.conversations[0]?.sourceMtime);
+    await expect(handleGet({ id: firstId.slice(0, 8) })).rejects.toThrow(/saved/);
+    await expect(handleUpdate({ id: firstId.slice(0, 8), title: "No write" })).rejects.toThrow(
+      /saved/,
+    );
+
+    const secondId = "a1000000-0000-0000-0000-000000000002";
+    await writeUnsavedClaudeConversation(sourceDir, secondId, {
+      title: "Created after the first scan",
+    });
+
+    const all = await handleList({ state: "all", limit: 10 });
+    expect(new Set(all.conversations.map((conversation) => conversation.state))).toEqual(
+      new Set(["saved", "unsaved"]),
+    );
+    expect(all.conversations.map((conversation) => conversation.id)).toContain(secondId);
+  });
+
+  it("normalizes unsaved metadata before filtering", async () => {
+    const id = "a2000000-0000-0000-0000-000000000001";
+    await writeUnsavedClaudeConversation(sourceDir, id, {
+      title: "Investigate payment retries",
+      projectName: "Mobile API",
+      assistantText: "The hidden transcript needle is retry-budget.",
+    });
+    await handleList({ state: "unsaved" });
+
+    const config = await loadConfig();
+    config.author = "New Current Author";
+    config.defaultTags = ["configured-tag"];
+    await saveConfig(config);
+
+    const byAuthor = await handleList({ state: "unsaved", author: "current auth" });
+    expect(byAuthor.conversations.map((conversation) => conversation.id)).toEqual([id]);
+    expect(byAuthor.conversations[0]?.tags).toEqual([]);
+
+    const byProject = await handleList({ state: "unsaved", project: "mobile" });
+    expect(byProject.conversations.map((conversation) => conversation.id)).toEqual([id]);
+
+    const byTranscript = await handleList({ state: "unsaved", grep: "retry-budget" });
+    expect(byTranscript.conversations.map((conversation) => conversation.id)).toEqual([id]);
+
+    expect((await handleList({ state: "unsaved", tags: ["configured-tag"] })).totalCount).toBe(0);
+    expect((await handleList({ state: "unsaved", origin: "remote" })).totalCount).toBe(0);
+  });
+
+  it("places unsaved savedAt values last in both sort directions", async () => {
+    await writeUnsavedClaudeConversation(
+      sourceDir,
+      "a3000000-0000-0000-0000-000000000001",
+      { title: "Unsaved sort row" },
+    );
+
+    for (const sortDirection of ["asc", "desc"] as const) {
+      const result = await handleList({
+        state: "all",
+        sortBy: "savedAt",
+        sortDirection,
+        limit: 10,
+      });
+      expect(result.conversations.at(-1)?.state).toBe("unsaved");
+    }
+  });
+
+  it("filters, stably sorts, and paginates one normalized mixed-state population", async () => {
+    const savedId = "a7000000-0000-0000-0000-000000000001";
+    const firstUnsavedId = "a8000000-0000-0000-0000-000000000001";
+    const secondUnsavedId = "a9000000-0000-0000-0000-000000000001";
+    await insertOtherSaved(savedId, { author: "current-author" });
+    await writeUnsavedClaudeConversation(sourceDir, firstUnsavedId, {
+      title: "First unsaved page row",
+    });
+    await writeUnsavedClaudeConversation(sourceDir, secondUnsavedId, {
+      title: "Second unsaved page row",
+    });
+
+    const firstPage = await handleList({
+      state: "all",
+      author: "current-author",
+      sortBy: "createdAt",
+      sortDirection: "desc",
+      limit: 2,
+    });
+    const secondPage = await handleList({
+      state: "all",
+      author: "current-author",
+      sortBy: "createdAt",
+      sortDirection: "desc",
+      limit: 2,
+      offset: firstPage.nextOffset,
+    });
+
+    expect(firstPage).toMatchObject({
+      totalCount: 3,
+      returnedCount: 2,
+      hasMore: true,
+      nextOffset: 2,
+    });
+    expect(firstPage.conversations.map(({ id, state }) => ({ id, state }))).toEqual([
+      { id: savedId, state: "saved" },
+      { id: firstUnsavedId, state: "unsaved" },
+    ]);
+    expect(firstPage.conversations[1]?.author).toBe("current-author");
+    expect(secondPage).toMatchObject({
+      totalCount: 3,
+      returnedCount: 1,
+      hasMore: false,
+    });
+    expect(secondPage.conversations.map(({ id, state }) => ({ id, state }))).toEqual([
+      { id: secondUnsavedId, state: "unsaved" },
+    ]);
+  });
+
+  it("sorts unsaved conversations by source mtime-derived modifiedAt values", async () => {
+    const olderId = "a4000000-0000-0000-0000-000000000001";
+    const newerId = "a4000000-0000-0000-0000-000000000002";
+    const olderPath = await writeUnsavedClaudeConversation(sourceDir, olderId, {
+      title: "Older modified conversation",
+    });
+    const newerPath = await writeUnsavedClaudeConversation(sourceDir, newerId, {
+      title: "Newer modified conversation",
+    });
+    const olderTimestamp = new Date("2025-12-01T12:00:00.000Z");
+    const newerTimestamp = new Date("2025-12-02T12:00:00.000Z");
+    await fs.utimes(olderPath, olderTimestamp, olderTimestamp);
+    await fs.utimes(newerPath, newerTimestamp, newerTimestamp);
+    const olderMtime = (await fs.stat(olderPath)).mtime.toISOString();
+    const newerMtime = (await fs.stat(newerPath)).mtime.toISOString();
+
+    const ascending = await handleList({
+      state: "unsaved",
+      sortBy: "modifiedAt",
+      sortDirection: "asc",
+    });
+    const descending = await handleList({
+      state: "unsaved",
+      sortBy: "modifiedAt",
+      sortDirection: "desc",
+    });
+
+    expect(
+      ascending.conversations.map(({ id, modifiedAt, sourceMtime }) => ({
+        id,
+        modifiedAt,
+        sourceMtime,
+      })),
+    ).toEqual([
+      { id: olderId, modifiedAt: olderMtime, sourceMtime: olderMtime },
+      { id: newerId, modifiedAt: newerMtime, sourceMtime: newerMtime },
+    ]);
+    expect(descending.conversations.map((conversation) => conversation.id)).toEqual([
+      newerId,
+      olderId,
+    ]);
+  });
+
+  it("falls back to stored modifiedAt when an unsaved row has no source mtime", async () => {
+    const id = "a4000000-0000-0000-0000-000000000001";
+    await insertOtherSaved(id, {
+      state: "unsaved",
+      savedAt: null,
+      savedMessageCount: null,
+      saveVersion: 0,
+      filePath: null,
+      sourcePath: path.join(tempDir, "outside-scanned-roots.jsonl"),
+      sourceMtime: null,
+      modifiedAt: "2025-12-01T12:00:00.000Z",
+    });
+
+    const result = await handleList({
+      state: "unsaved",
+      sortBy: "modifiedAt",
+      sortDirection: "asc",
+    });
+
+    expect(result.conversations[0]).toMatchObject({
+      id,
+      modifiedAt: "2025-12-01T12:00:00.000Z",
+      sourceMtime: null,
+    });
+  });
+
+  it("returns collapsed scan warnings in the top-level warnings array", async () => {
+    await writeMalformedClaudeConversation(
+      sourceDir,
+      "a5000000-0000-0000-0000-000000000001",
+    );
+    await writeMalformedClaudeConversation(
+      sourceDir,
+      "a5000000-0000-0000-0000-000000000002",
+    );
+
+    const result = await handleList({ state: "unsaved" });
+
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "malformed_jsonl",
+        message: "Skipping malformed Claude Code conversation file. (2 occurrences)",
+      }),
+    ]);
+  });
+
+  it("does not rewrite saved curation metadata during an all-state scan", async () => {
+    const id = "a6000000-0000-0000-0000-000000000001";
+    const sourcePath = await writeUnsavedClaudeConversation(sourceDir, id, {
+      title: "Scanner title that must not replace curation",
+      projectName: "scanner-project",
+    });
+    await insertOtherSaved(id, {
+      title: "Curated saved title",
+      summary: "Curated saved summary",
+      summaryKind: "curated",
+      summaryExtraction: { topics: ["curated-topic"] },
+      author: "saved-author",
+      tags: ["saved-tag"],
+      projectName: "curated-project",
+      sourcePath,
+      sourceMtime: "2025-01-01T00:00:00.000Z",
+    });
+
+    const result = await handleList({ state: "all", limit: 10 });
+    const saved = result.conversations.find((conversation) => conversation.id === id);
+
+    expect(saved).toMatchObject({
+      state: "saved",
+      title: "Curated saved title",
+      summary: "Curated saved summary",
+      extraction: { topics: ["curated-topic"] },
+      author: "saved-author",
+      tags: ["saved-tag"],
+      project: "curated-project",
+    });
   });
 
   it("gets a conversation with parsed messages", async () => {
@@ -190,7 +527,7 @@ describe("mcp handlers", () => {
     expect(authors.items).toEqual([{ name: "alice", count: 1 }]);
   });
 
-  it("filters clog_list_saved by origin", async () => {
+  it("filters clog_list by origin", async () => {
     // Add an imported row so we have one of each.
     await insertConversation({
       id: "def45678-1234-1234-1234-123456789012",
@@ -218,14 +555,14 @@ describe("mcp handlers", () => {
       originRef: "git@github.com:myorg/clog-team.git",
     });
 
-    const all = await handleListSaved({});
+    const all = await handleList({});
     expect(all.totalCount).toBe(2);
 
-    const local = await handleListSaved({ origin: "local" });
+    const local = await handleList({ origin: "local" });
     expect(local.totalCount).toBe(1);
     expect(local.conversations[0]?.title).toBe("Debug auth flow");
 
-    const remote = await handleListSaved({ origin: "remote" });
+    const remote = await handleList({ origin: "remote" });
     expect(remote.totalCount).toBe(1);
     expect(remote.conversations[0]?.title).toBe("From remote");
     expect(remote.conversations[0]).toMatchObject({
@@ -245,11 +582,11 @@ describe("mcp handlers", () => {
       tags: ["rate-limiting"],
     });
 
-    const hits = await handleListSaved({ tags: ["auth"] });
+    const hits = await handleList({ tags: ["auth"] });
     expect(hits.totalCount).toBe(1);
     expect(hits.conversations[0]?.title).toBe("Debug auth flow");
 
-    const multi = await handleListSaved({ tags: ["rate-limiting", "auth"] });
+    const multi = await handleList({ tags: ["rate-limiting", "auth"] });
     expect(multi.totalCount).toBe(2);
   });
 
@@ -260,22 +597,22 @@ describe("mcp handlers", () => {
       projectName: "Mobile API",
     });
 
-    const byProject = await handleListSaved({ project: "API" });
+    const byProject = await handleList({ project: "API" });
     expect(byProject.totalCount).toBe(2);
     expect(byProject.conversations.map((conversation) => conversation.project)).toEqual([
       "api-service",
       "Mobile API",
     ]);
 
-    const combined = await handleListSaved({ project: "mobile", author: "xand" });
+    const combined = await handleList({ project: "mobile", author: "xand" });
     expect(combined.totalCount).toBe(1);
     expect(combined.conversations[0]?.project).toBe("Mobile API");
 
-    const exactish = await handleListSaved({ project: "api-service" });
+    const exactish = await handleList({ project: "api-service" });
     expect(exactish.totalCount).toBe(1);
     expect(exactish.conversations[0]?.project).toBe("api-service");
 
-    const byAuthor = await handleListSaved({ author: "BOB" });
+    const byAuthor = await handleList({ author: "BOB" });
     expect(byAuthor.totalCount).toBe(1);
     expect(byAuthor.conversations[0]?.author).toBe("Bob Xander");
   });
@@ -288,7 +625,7 @@ describe("mcp handlers", () => {
       state: "saved",
     });
 
-    const result = await handleListSaved({ project: "mobile", author: "xand" });
+    const result = await handleList({ project: "mobile", author: "xand" });
     expect(result.totalCount).toBe(1);
     expect(result.conversations[0]?.title).toBe("Saved mobile API");
   });
@@ -299,7 +636,7 @@ describe("mcp handlers", () => {
       projectName: null,
     });
 
-    const byProject = await handleListSaved({ project: "api" });
+    const byProject = await handleList({ project: "api" });
     expect(byProject.totalCount).toBe(1);
     expect(byProject.conversations[0]?.project).toBe("api-service");
   });
@@ -310,10 +647,10 @@ describe("mcp handlers", () => {
       summary: "JWT token refresh discussion",
     });
 
-    const byTitle = await handleListSaved({ grep: "debug auth" });
+    const byTitle = await handleList({ grep: "debug auth" });
     expect(byTitle.conversations.map((c) => c.title)).toContain("Debug auth flow");
 
-    const bySummary = await handleListSaved({ grep: "jwt" });
+    const bySummary = await handleList({ grep: "jwt" });
     expect(bySummary.conversations.map((c) => c.title)).toContain("Unrelated chat");
   });
 
@@ -324,7 +661,7 @@ describe("mcp handlers", () => {
       });
     }
 
-    const first = await handleListSaved({ limit: 3, offset: 0 });
+    const first = await handleList({ limit: 3, offset: 0 });
     expect(first.conversations).toHaveLength(3);
     expect(first.totalCount).toBe(6); // the original + 5 new
     expect(first).toMatchObject({
@@ -338,7 +675,7 @@ describe("mcp handlers", () => {
     });
     expect(first.paginationNote).toContain("Request offset 3 with limit 3");
 
-    const second = await handleListSaved({ limit: 3, offset: 3 });
+    const second = await handleList({ limit: 3, offset: 3 });
     expect(second.conversations).toHaveLength(3);
     expect(second).toMatchObject({
       limit: 3,
@@ -370,7 +707,7 @@ describe("mcp handlers", () => {
       savedMessageCount: 3,
     });
 
-    const result = await handleListSaved({
+    const result = await handleList({
       author: "sort",
       sortBy: "title",
       sortDirection: "asc",
@@ -800,6 +1137,46 @@ async function insertOtherSaved(
     originRef: null,
     ...overrides,
   });
+}
+
+async function writeUnsavedClaudeConversation(
+  sourceRoot: string,
+  id: string,
+  options: {
+    title: string;
+    projectName?: string;
+    assistantText?: string;
+  },
+): Promise<string> {
+  const projectName = options.projectName ?? "api-service";
+  const sourcePath = path.join(sourceRoot, projectName, `${id}.jsonl`);
+  await writeJsonl(sourcePath, [
+    {
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: `/tmp/${projectName}`,
+      message: { role: "user", content: options.title },
+    },
+    {
+      type: "assistant",
+      timestamp: "2026-02-01T10:00:01.000Z",
+      message: {
+        id: `msg-${id}`,
+        role: "assistant",
+        content: [{ type: "text", text: options.assistantText ?? "Working on it." }],
+      },
+    },
+  ]);
+  return sourcePath;
+}
+
+async function writeMalformedClaudeConversation(
+  sourceRoot: string,
+  id: string,
+): Promise<void> {
+  const sourcePath = path.join(sourceRoot, "malformed", `${id}.jsonl`);
+  await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+  await fs.writeFile(sourcePath, "{not valid json}\n", "utf8");
 }
 
 async function insertSavedMessages(

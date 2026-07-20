@@ -143,7 +143,7 @@ This gives agents the following tools:
 
 | Tool | What it does |
 |------|-------------|
-| `clog_list_saved` | List saved conversations (filterable by origin, project, etc.) |
+| `clog_list` | List saved conversations by default, or explicitly include unsaved conversations (filterable by state, origin, project, etc.) |
 | `clog_get` | Load a saved conversation's messages |
 | `clog_update` | Edit title, summary, structured extraction, or tags on saved local conversations |
 | `clog_browse` | List tags, projects, or authors |
@@ -180,7 +180,7 @@ clog search "database migration" --project myproject --limit 5
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
-If you skip vector search setup, `clog_search` is unavailable, but agents can still use the `grep` filter on the `clog_list_saved` MCP tool for dependency-free keyword search across saved conversation titles, summaries, and message content.
+If you skip vector search setup, `clog_search` is unavailable, but agents can still use the `grep` filter on the `clog_list` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
 
 ## Team Sharing
 

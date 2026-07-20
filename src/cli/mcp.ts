@@ -225,7 +225,7 @@ function resolveMcpServerPath(): string {
   return fileURLToPath(serverUrl);
 }
 
-function buildMcpLauncherScript(serverPath: string): string {
+export function buildMcpLauncherScript(serverPath: string): string {
   const serverPathLiteral = JSON.stringify(serverPath);
 
   return [

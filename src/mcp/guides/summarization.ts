@@ -24,7 +24,7 @@ exact input shape is:
 
 \`\`\`json
 {
-  "id": "<conversation id from clog_list_saved>",
+  "id": "<conversation id from clog_list>",
   "summary": "One paragraph of prose, usually 1–3 sentences.",
   "extraction": {
     "topics": ["auth", "jwt", "race-condition"],
@@ -148,7 +148,7 @@ decide on after reading), keep going until you have written the number the
 user asked for, or until you run out of eligible candidates. Report at the
 end how many you wrote, how many you skipped, and why.
 
-\`clog_list_saved\` is paginated. When collecting candidates, start with a
+\`clog_list\` is paginated. When collecting candidates, start with a
 reasonable \`limit\` such as 20. If the response has \`hasMore: true\`, request
 the next page with \`offset: nextOffset\` and the same \`limit\` until you have
 enough candidates for the user's requested scope.
@@ -159,7 +159,7 @@ enough candidates for the user's requested scope.
   unless the user explicitly asks you to. Those have been hand-edited.
 - Imported conversations are read-only — clog rejects \`clog_update\` on them.
   When listing candidates, always pass
-  \`origin: "local"\` to \`clog_list_saved\` so imported rows are filtered out
+  \`origin: "local"\` to \`clog_list\` so imported rows are filtered out
   up front rather than discovered when a write fails.
 
 ## After summarization
