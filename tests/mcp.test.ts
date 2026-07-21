@@ -123,7 +123,7 @@ describe("mcp handlers", () => {
     });
   });
 
-  it("registers clog_list with the public state schema and no saved-only alias", async () => {
+  it("registers the public tool names and list_conversations state schema", async () => {
     const server = createMcpServer();
     const client = new Client({ name: "clog-test-client", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -136,10 +136,15 @@ describe("mcp handlers", () => {
     try {
       const { tools } = await client.listTools();
       const names = tools.map((tool) => tool.name);
-      expect(names).toContain("clog_list");
-      expect(names).not.toContain("clog_list_saved");
+      expect(names).toContain("list_conversations");
+      expect(names).toContain("get_conversation");
+      expect(names).toContain("update_conversation");
+      expect(names).toContain("search_conversations");
+      expect(names).toContain("browse_metadata");
+      expect(names).toContain("summarization_guide");
+      expect(names).toContain("analysis_suggestions");
 
-      const listTool = tools.find((tool) => tool.name === "clog_list");
+      const listTool = tools.find((tool) => tool.name === "list_conversations");
       expect(listTool?.inputSchema).toMatchObject({
         properties: {
           state: {
@@ -171,7 +176,7 @@ describe("mcp handlers", () => {
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      expect(tools.map((tool) => tool.name)).toContain("clog_list");
+      expect(tools.map((tool) => tool.name)).toContain("list_conversations");
     } finally {
       await client.close();
     }
@@ -468,7 +473,7 @@ describe("mcp handlers", () => {
     );
   });
 
-  it("includes a request-more truncation note when clog_get is truncated", async () => {
+  it("includes a request-more truncation note when get_conversation is truncated", async () => {
     const result = await handleGet({ id: "abc12345", maxMessages: 1 });
     expect(result.truncated).toBe(true);
     expect(result.truncationNote).toContain("Request head or offset/limit");
@@ -527,7 +532,7 @@ describe("mcp handlers", () => {
     expect(authors.items).toEqual([{ name: "alice", count: 1 }]);
   });
 
-  it("filters clog_list by origin", async () => {
+  it("filters list_conversations by origin", async () => {
     // Add an imported row so we have one of each.
     await insertConversation({
       id: "def45678-1234-1234-1234-123456789012",
@@ -732,10 +737,10 @@ describe("mcp handlers", () => {
   });
 
   // ============================================================
-  // clog_get edge cases
+  // get_conversation edge cases
   // ============================================================
 
-  it("clog_get defaults to the last 20 messages and reports range metadata", async () => {
+  it("get_conversation defaults to the last 20 messages and reports range metadata", async () => {
     const id = "c1000000-0000-0000-0000-000000000000";
     await insertSavedMessages(
       tempDir,
@@ -761,7 +766,7 @@ describe("mcp handlers", () => {
     expect(result.truncationNote).toContain("Showing the last 20 of 25 messages");
   });
 
-  it("clog_get keeps maxMessages as a tail-mode compatibility alias", async () => {
+  it("get_conversation keeps maxMessages as a tail-mode compatibility alias", async () => {
     const id = "c2000000-0000-0000-0000-000000000000";
     await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
 
@@ -780,7 +785,7 @@ describe("mcp handlers", () => {
     });
   });
 
-  it("clog_get supports explicit head and tail ranges", async () => {
+  it("get_conversation supports explicit head and tail ranges", async () => {
     const id = "c3000000-0000-0000-0000-000000000000";
     await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
 
@@ -811,7 +816,7 @@ describe("mcp handlers", () => {
     });
   });
 
-  it("clog_get supports arbitrary offset and limit windows", async () => {
+  it("get_conversation supports arbitrary offset and limit windows", async () => {
     const id = "c4000000-0000-0000-0000-000000000000";
     await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
 
@@ -833,7 +838,7 @@ describe("mcp handlers", () => {
     expect(result.truncationNote).toContain("Request offset 4 with limit 2");
   });
 
-  it("clog_get defaults a window limit to 20 when offset is supplied", async () => {
+  it("get_conversation defaults a window limit to 20 when offset is supplied", async () => {
     const id = "c5000000-0000-0000-0000-000000000000";
     await insertSavedMessages(
       tempDir,
@@ -862,7 +867,7 @@ describe("mcp handlers", () => {
     });
   });
 
-  it("clog_get clamps empty windows beyond the end and points back to real content", async () => {
+  it("get_conversation clamps empty windows beyond the end and points back to real content", async () => {
     const id = "c6000000-0000-0000-0000-000000000000";
     await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
 
@@ -883,7 +888,7 @@ describe("mcp handlers", () => {
     expect(result.truncationNote).toContain("Request offset 3 with limit 2");
   });
 
-  it("clog_get rejects conflicting range controls", async () => {
+  it("get_conversation rejects conflicting range controls", async () => {
     await expect(handleGet({ id: "abc12345", maxMessages: 5, head: 2 })).rejects.toThrow(
       "Choose only one message range: maxMessages, head, tail, or offset/limit.",
     );
@@ -892,17 +897,17 @@ describe("mcp handlers", () => {
     );
   });
 
-  it("clog_get rejects limit without offset", async () => {
+  it("get_conversation rejects limit without offset", async () => {
     await expect(handleGet({ id: "abc12345", limit: 2 })).rejects.toThrow(
       "limit can only be used with offset",
     );
   });
 
-  it("clog_get rejects message counts over the per-call cap", async () => {
+  it("get_conversation rejects message counts over the per-call cap", async () => {
     await expect(handleGet({ id: "abc12345", head: 201 })).rejects.toThrow();
   });
 
-  it("clog_get throws on a discovered conversation", async () => {
+  it("get_conversation throws on a discovered conversation", async () => {
     await insertOtherSaved("b6666666-6666-6666-6666-666666666666", {
       state: "unsaved",
     });
@@ -911,15 +916,15 @@ describe("mcp handlers", () => {
     );
   });
 
-  it("clog_get throws when the id is not found", async () => {
+  it("get_conversation throws when the id is not found", async () => {
     await expect(handleGet({ id: "9999eeee" })).rejects.toThrow(/No conversation matches/);
   });
 
   // ============================================================
-  // clog_update edge cases
+  // update_conversation edge cases
   // ============================================================
 
-  it("clog_update throws on a discovered conversation", async () => {
+  it("update_conversation throws on a discovered conversation", async () => {
     await insertOtherSaved("b7777777-7777-7777-7777-777777777777", {
       state: "unsaved",
     });
@@ -929,7 +934,7 @@ describe("mcp handlers", () => {
     ).rejects.toThrow(/saved/);
   });
 
-  it("clog_update refuses imported conversations (SPEC §11.1)", async () => {
+  it("update_conversation refuses imported conversations (SPEC §11.1)", async () => {
     await insertOtherSaved("bb000000-0000-0000-0000-000000000002", {
       originKind: "file",
       originRef: null,
@@ -940,7 +945,7 @@ describe("mcp handlers", () => {
     ).rejects.toThrow(/imported conversations are read-only/i);
   });
 
-  it("clog_update removeTags removes matching tags and bumps modifiedAt", async () => {
+  it("update_conversation removeTags removes matching tags and bumps modifiedAt", async () => {
     await insertOtherSaved("b8888888-8888-8888-8888-888888888888", {
       tags: ["bug", "urgent", "frontend"],
     });
@@ -953,7 +958,7 @@ describe("mcp handlers", () => {
   });
 
   // ============================================================
-  // clog_browse
+  // browse_metadata
   // ============================================================
 
   it("browses projects", async () => {
@@ -968,17 +973,17 @@ describe("mcp handlers", () => {
   });
 
   // ============================================================
-  // clog_search
+  // search_conversations
   // ============================================================
 
-  it("clog_search throws when search is not configured", async () => {
+  it("search_conversations throws when search is not configured", async () => {
     // Default mock throws SearchNotConfiguredError (see vi.mock above).
     await expect(handleSearch({ query: "auth" })).rejects.toThrow(
       /Search is not configured/,
     );
   });
 
-  it("clog_search returns empty results with indexCoverage when no conversations are searchable", async () => {
+  it("search_conversations returns empty results with indexCoverage when no conversations are searchable", async () => {
     mockedGetSearchProviders.mockResolvedValueOnce({
       embedding: makeEmbedding(),
       vectorStore: makeVectorStore([]),
@@ -1000,7 +1005,7 @@ describe("mcp handlers", () => {
     expect(result.indexCoverage.indexed).toBe(0);
   });
 
-  it("clog_search returns ranked hits scoped to searchable conversations", async () => {
+  it("search_conversations returns ranked hits scoped to searchable conversations", async () => {
     const searchableId = "abc12345-1234-1234-1234-123456789012"; // seeded in beforeEach, indexedAt set
     const hits: SearchHit[] = [
       {
@@ -1027,7 +1032,7 @@ describe("mcp handlers", () => {
     expect(result.warning).toBeUndefined();
   });
 
-  it("clog_search filters project and author by case-insensitive substrings", async () => {
+  it("search_conversations filters project and author by case-insensitive substrings", async () => {
     const otherId = "ba111111-1111-1111-1111-111111111111";
     await insertOtherSaved(otherId, {
       title: "Mobile API debug",
@@ -1070,7 +1075,7 @@ describe("mcp handlers", () => {
     });
   });
 
-  it("clog_search wraps unknown vector-store errors with a rebuild hint", async () => {
+  it("search_conversations wraps unknown vector-store errors with a rebuild hint", async () => {
     mockedGetSearchProviders.mockResolvedValueOnce({
       embedding: makeEmbedding(),
       vectorStore: {
@@ -1087,7 +1092,7 @@ describe("mcp handlers", () => {
     );
   });
 
-  it("clog_search reports the scan-cap warning when the window is exhausted", async () => {
+  it("search_conversations reports the scan-cap warning when the window is exhausted", async () => {
     const searchableId = "abc12345-1234-1234-1234-123456789012";
     // Return a full window of sub-threshold hits that never satisfy the limit.
     const hits: SearchHit[] = Array.from({ length: 5000 }, (_, i) => ({

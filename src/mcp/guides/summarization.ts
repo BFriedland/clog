@@ -19,12 +19,12 @@ This is a draft. The user expects this guide to be refined based on early use.
 
 ## What to write for each conversation
 
-For each conversation you summarize, call the \`clog_update\` MCP tool. The
+For each conversation you summarize, call the \`update_conversation\` MCP tool. The
 exact input shape is:
 
 \`\`\`json
 {
-  "id": "<conversation id from clog_list>",
+  "id": "<conversation id from list_conversations>",
   "summary": "One paragraph of prose, usually 1–3 sentences.",
   "extraction": {
     "topics": ["auth", "jwt", "race-condition"],
@@ -39,9 +39,9 @@ exact input shape is:
 
 Important: \`topics\`, \`outcome\`, \`toolsUsed\`, and \`notableMoments\` go
 **inside** \`extraction\`, not at the top level. Top-level fields outside of
-the documented input shape are rejected by \`clog_update\`. If you get a
+the documented input shape are rejected by \`update_conversation\`. If you get a
 validation error, correct the payload and retry; do not count the conversation
-as summarized until \`clog_update\` succeeds.
+as summarized until \`update_conversation\` succeeds.
 
 You can also pass:
 
@@ -122,12 +122,12 @@ nothing stands out, omit the field entirely.
 
 ## Triage long conversations before reading them in full
 
-\`clog_get\` accepts \`head\`, \`tail\`, \`offset\`/\`limit\`, and
+\`get_conversation\` accepts \`head\`, \`tail\`, \`offset\`/\`limit\`, and
 \`maxMessages\` for windowing. For conversations longer than your context
 can comfortably handle, triage before committing to a full read:
 
-1. Call \`clog_get\` with \`head: 5\` to see how the user framed the work.
-2. Call \`clog_get\` with \`tail: 5\` to see how the session ended.
+1. Call \`get_conversation\` with \`head: 5\` to see how the user framed the work.
+2. Call \`get_conversation\` with \`tail: 5\` to see how the session ended.
 3. Decide whether head + tail are enough to summarize honestly. If a clear
    thread runs from opening to final state, they often are.
 4. If the ends do not tell you enough — pivots in the middle, unexplained
@@ -142,13 +142,13 @@ make confident claims about what happened there. When in doubt, set
 ## Batch semantics
 
 When the user asks you to summarize N conversations, count only successful
-\`clog_update\` calls toward N — not inspections or failed writes. If you
+\`update_conversation\` calls toward N — not inspections or failed writes. If you
 encounter rows that should be skipped (curated, remote, or anything you
 decide on after reading), keep going until you have written the number the
 user asked for, or until you run out of eligible candidates. Report at the
 end how many you wrote, how many you skipped, and why.
 
-\`clog_list\` is paginated. When collecting candidates, start with a
+\`list_conversations\` is paginated. When collecting candidates, start with a
 reasonable \`limit\` such as 20. If the response has \`hasMore: true\`, request
 the next page with \`offset: nextOffset\` and the same \`limit\` until you have
 enough candidates for the user's requested scope.
@@ -157,15 +157,15 @@ enough candidates for the user's requested scope.
 
 - Do not re-summarize conversations whose \`summaryKind\` is \`curated\`
   unless the user explicitly asks you to. Those have been hand-edited.
-- Imported conversations are read-only — clog rejects \`clog_update\` on them.
+- Imported conversations are read-only — clog rejects \`update_conversation\` on them.
   When listing candidates, always pass
-  \`origin: "local"\` to \`clog_list\` so imported rows are filtered out
+  \`origin: "local"\` to \`list_conversations\` so imported rows are filtered out
   up front rather than discovered when a write fails.
 
 ## After summarization
 
 When you have finished a batch, tell the user how many you summarized and
 which projects they covered. Then offer to help them explore — you can read
-\`clog_analysis_suggestions\` (MCP tool) for opinionated analyses to run, or
+\`analysis_suggestions\` (MCP tool) for opinionated analyses to run, or
 let the user drive.
 `;

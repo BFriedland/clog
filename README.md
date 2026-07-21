@@ -143,13 +143,13 @@ This gives agents the following tools:
 
 | Tool | What it does |
 |------|-------------|
-| `clog_list` | List saved conversations by default, or explicitly include unsaved conversations (filterable by state, origin, project, etc.) |
-| `clog_get` | Load a saved conversation's messages |
-| `clog_update` | Edit title, summary, structured extraction, or tags on saved local conversations |
-| `clog_browse` | List tags, projects, or authors |
-| `clog_search` | Semantic search (requires `clog search --init`) |
-| `clog_summarization_guide` | Read before summarizing — explains why summaries help, the extraction shape, and the quality bar |
-| `clog_analysis_suggestions` | Opinionated library of analyses an agent can offer the user |
+| `list_conversations` | List saved conversations by default, or explicitly include unsaved conversations (filterable by state, origin, project, etc.) |
+| `get_conversation` | Load a saved conversation's messages |
+| `update_conversation` | Edit title, summary, structured extraction, or tags on saved local conversations |
+| `browse_metadata` | List tags, projects, or authors |
+| `search_conversations` | Semantic search (requires `clog search --init`) |
+| `summarization_guide` | Read before summarizing — explains why summaries help, the extraction shape, and the quality bar |
+| `analysis_suggestions` | Opinionated library of analyses an agent can offer the user |
 
 ## Agent-Assisted Summarization
 
@@ -161,7 +161,7 @@ clog talk             # opens your agent and primes it with the current clog sta
 clog summarize        # opens your agent with a summarization-focused intro
 ```
 
-The agent reads the `clog_summarization_guide` MCP tool, then works through unsummarized conversations and calls `clog_update` with a prose `summary` plus a structured `extraction` (topics, outcome, tools used, notable moments). User-edited summaries (`clog edit --summary`) are marked `curated` and are not overwritten.
+The agent reads the `summarization_guide` MCP tool, then works through unsummarized conversations and calls `update_conversation` with a prose `summary` plus a structured `extraction` (topics, outcome, tools used, notable moments). User-edited summaries (`clog edit --summary`) are marked `curated` and are not overwritten.
 
 ## Semantic Search
 
@@ -180,7 +180,7 @@ clog search "database migration" --project myproject --limit 5
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
-If you skip vector search setup, `clog_search` is unavailable, but agents can still use the `grep` filter on the `clog_list` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
+If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
 
 ## Team Sharing
 

@@ -40,7 +40,7 @@ const summaryOutcomeSchema = z.enum([
 //     clog version that added a new field. Unknown keys are silently stripped
 //     so older clogs keep importing remote conversations across version skew.
 //   - summaryExtractionInputSchema is strict. It's used on the agent-write
-//     path (MCP clog_update) so an LLM that invents or misspells a field
+//     path (MCP update_conversation) so an LLM that invents or misspells a field
 //     gets a hard error instead of silent data loss.
 export const summaryExtractionSchema = z.object({
   topics: z.array(z.string()).optional(),

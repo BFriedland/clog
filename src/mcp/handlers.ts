@@ -167,7 +167,7 @@ export async function handleGet(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "unsaved") {
-    throw new Error("clog_get only works on saved conversations.");
+    throw new Error("get_conversation only works on saved conversations.");
   }
 
   const messages = await parseConversationMessages(config, conversation);
@@ -299,10 +299,10 @@ export async function handleUpdate(input: unknown) {
   const conversation = await resolveConversationByInput(parsed.id);
 
   if (conversation.state === "unsaved") {
-    throw new Error("clog_update only works on saved conversations.");
+    throw new Error("update_conversation only works on saved conversations.");
   }
 
-  requireLocalConversation(conversation, "clog_update");
+  requireLocalConversation(conversation, "update_conversation");
 
   const addTags = normalizeTags(parsed.addTags ?? []);
   const removeTags = new Set(normalizeTags(parsed.removeTags ?? []));
@@ -376,7 +376,7 @@ export async function handleUpdate(input: unknown) {
     )
       ? await maybeReindexUpdatedConversation(nextConversation)
       : nextConversation;
-  await updateLocalConversation(finalConversation, { command: "clog_update" });
+  await updateLocalConversation(finalConversation, { command: "update_conversation" });
 
   return {
     conversation: summarizeConversation(finalConversation),

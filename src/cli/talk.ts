@@ -130,11 +130,11 @@ function buildTalkPrompt(state: ClogState): string {
     "",
     "Ask the user whether they would like to:",
     state.unsummarizedSaved > 0
-      ? `  1. Summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries. Explain briefly that summaries are optional metadata that help future agents scan the library, filter by topic/outcome/tools, and choose which transcripts to read. If picked, read \`clog_summarization_guide\` first, then list candidates with \`clog_list({ origin: "local" })\` so imported read-only rows stay out of the batch, then call \`clog_get\` and \`clog_update\` per conversation.`
+      ? `  1. Summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries. Explain briefly that summaries are optional metadata that help future agents scan the library, filter by topic/outcome/tools, and choose which transcripts to read. If picked, read \`summarization_guide\` first, then list candidates with \`list_conversations({ origin: "local" })\` so imported read-only rows stay out of the batch, then call \`get_conversation\` and \`update_conversation\` per conversation.`
       : "",
     state.unsummarizedSaved > 0
-      ? "  2. Explore their existing saved conversations. If picked, call `clog_analysis_suggestions` for opinionated starting points, or follow the user's lead."
-      : "  1. Explore their saved conversations. If picked, call `clog_analysis_suggestions` for opinionated starting points, or follow the user's lead.",
+      ? "  2. Explore their existing saved conversations. If picked, call `analysis_suggestions` for opinionated starting points, or follow the user's lead."
+      : "  1. Explore their saved conversations. If picked, call `analysis_suggestions` for opinionated starting points, or follow the user's lead.",
     state.unsummarizedSaved > 0
       ? "  3. Do something else they have in mind."
       : "  2. Do something else they have in mind.",
@@ -158,15 +158,15 @@ function buildSummarizePrompt(state: ClogState): string {
       ? `- Projects with unsummarized work: ${formatProjectList(state.unsummarizedProjects)}`
       : "",
     "",
-    "Start by calling the `clog_summarization_guide` MCP tool. It explains the extraction shape and quality bar. Then:",
+    "Start by calling the `summarization_guide` MCP tool. It explains the extraction shape and quality bar. Then:",
     "",
     state.unsummarizedSaved > 0
-      ? `1. Explain briefly that summaries are recommended because they help future agents scan the library, group conversations by topic/outcome/tools, and avoid loading irrelevant transcripts. Then ask the user to confirm whether they want you to summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries now, and on what scope (all, a specific project, a count like "the most recent 10"). Wait for their answer before starting — summarizing requires reading transcripts and costs time and tokens. When you do begin, list candidates with \`clog_list({ origin: "local" })\` so imported read-only rows are excluded from the batch, then call \`clog_get\` and \`clog_update\` per conversation.`
+      ? `1. Explain briefly that summaries are recommended because they help future agents scan the library, group conversations by topic/outcome/tools, and avoid loading irrelevant transcripts. Then ask the user to confirm whether they want you to summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries now, and on what scope (all, a specific project, a count like "the most recent 10"). Wait for their answer before starting — summarizing requires reading transcripts and costs time and tokens. When you do begin, list candidates with \`list_conversations({ origin: "local" })\` so imported read-only rows are excluded from the batch, then call \`get_conversation\` and \`update_conversation\` per conversation.`
       : "1. Tell the user there are no conversations without structured summaries and ask whether they want to explore their existing summaries instead.",
     "2. After each conversation you summarize, report progress.",
-    "3. When done, tell the user how many you summarized and which projects you covered. Offer to help them explore (`clog_analysis_suggestions` is available).",
+    "3. When done, tell the user how many you summarized and which projects you covered. Offer to help them explore (`analysis_suggestions` is available).",
     "",
-    "Do not summarize conversations with `summaryKind: \"curated\"`. Imported conversations are read-only and `clog_update` will reject them — filter them out with `origin: \"local\"` rather than discovering this at write time.",
+    "Do not summarize conversations with `summaryKind: \"curated\"`. Imported conversations are read-only and `update_conversation` will reject them — filter them out with `origin: \"local\"` rather than discovering this at write time.",
   ]
     .filter(Boolean)
     .join("\n");

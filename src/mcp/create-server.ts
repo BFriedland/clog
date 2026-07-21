@@ -20,7 +20,7 @@ export function createMcpServer(): McpServer {
   });
 
   server.registerTool(
-    "clog_list",
+    "list_conversations",
     {
       description:
         "List conversations by state (saved, unsaved, or all) with optional metadata filters. Results are paginated; use limit and offset, then follow hasMore/nextOffset in the response.",
@@ -30,7 +30,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_get",
+    "get_conversation",
     {
       description: "Get saved conversation content.",
       inputSchema: {
@@ -46,7 +46,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_update",
+    "update_conversation",
     {
       description:
         "Update saved conversation metadata. For summarization work, pass `summary` and `extraction` together. Default summaryKind is 'generated'; pass 'curated' only when the user directs a specific edit.",
@@ -56,7 +56,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_summarization_guide",
+    "summarization_guide",
     {
       description:
         "Read this before summarizing clog conversations. Returns the markdown guide describing the extraction shape and quality guidelines.",
@@ -70,7 +70,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_analysis_suggestions",
+    "analysis_suggestions",
     {
       description:
         "Returns an opinionated library of analyses to offer the user when helping them explore their saved conversations.",
@@ -84,7 +84,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_search",
+    "search_conversations",
     {
       description: "Semantic search across saved conversations.",
       inputSchema: {
@@ -109,7 +109,7 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
-    "clog_browse",
+    "browse_metadata",
     {
       description: "Browse saved tags, projects, or authors.",
       inputSchema: {

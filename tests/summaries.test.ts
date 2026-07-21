@@ -314,7 +314,7 @@ describe("agent-assisted summarization", () => {
       // validation turns the prose warnings into runtime errors so misbehaving
       // agents see the failure instead of silently dropping data.
 
-      it("rejects extraction fields placed at the top level of clog_update", async () => {
+      it("rejects extraction fields placed at the top level of update_conversation", async () => {
         const conversation = makeSavedConversation();
         await insertConversation(conversation);
 
