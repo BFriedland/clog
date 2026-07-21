@@ -113,7 +113,7 @@ async function printPostPullIndexNudge(stats: PullStats): Promise<void> {
   }
 
   const unindexed = (
-    await listConversations({ states: ["saved"], indexed: false })
+    await listConversations({ indexed: false })
   ).length;
 
   if (unindexed === 0) {

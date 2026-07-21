@@ -4,13 +4,13 @@ import { resolveConversationSelectors } from "../src/cli/selectors.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 
 describe("resolveConversationSelectors", () => {
-  it("matches source-qualified selectors by exact source key", () => {
+  it("matches source-qualified selectors by exact source key", async () => {
     const conversation = makeConversation({
       id: "a1234567-1234-1234-1234-123456789012",
       source: "future.agent",
     });
 
-    const resolved = resolveConversationSelectors({
+    const resolved = await resolveConversationSelectors({
       commandName: "test",
       tokens: ["a123@future.agent"],
       idCandidates: [conversation],
@@ -20,52 +20,52 @@ describe("resolveConversationSelectors", () => {
     expect(resolved).toEqual([conversation]);
   });
 
-  it("rejects invalid source-qualified selector source keys", () => {
+  it("rejects invalid source-qualified selector source keys", async () => {
     const conversation = makeConversation({
       id: "a1234567-1234-1234-1234-123456789012",
       source: "future.agent",
     });
 
-    expect(() =>
+    await expect(
       resolveConversationSelectors({
         commandName: "test",
         tokens: ["a123@Future.Agent"],
         idCandidates: [conversation],
         projectCandidates: [],
       }),
-    ).toThrow(/Invalid source-qualified conversation ID/);
+    ).rejects.toThrow(/Invalid source-qualified conversation ID/);
   });
 
-  it("rejects source-qualified selectors with extra separators", () => {
+  it("rejects source-qualified selectors with extra separators", async () => {
     const conversation = makeConversation({
       id: "a1234567-1234-1234-1234-123456789012",
       source: "future.agent",
     });
 
-    expect(() =>
+    await expect(
       resolveConversationSelectors({
         commandName: "test",
         tokens: ["a123@extra@future.agent"],
         idCandidates: [conversation],
         projectCandidates: [],
       }),
-    ).toThrow(/Invalid source-qualified conversation ID/);
+    ).rejects.toThrow(/Invalid source-qualified conversation ID/);
   });
 
-  it("reports no-match for non-matching source-qualified ID prefixes", () => {
+  it("reports no-match for non-matching source-qualified ID prefixes", async () => {
     const conversation = makeConversation({
       id: "a1234567-1234-1234-1234-123456789012",
       source: "future.agent",
     });
 
-    expect(() =>
+    await expect(
       resolveConversationSelectors({
         commandName: "test",
         tokens: ["zzzz@future.agent"],
         idCandidates: [conversation],
         projectCandidates: [],
       }),
-    ).toThrow(/No conversation or project matches/);
+    ).rejects.toThrow(/No conversation or project matches/);
   });
 });
 

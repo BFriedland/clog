@@ -51,8 +51,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Help me debug this");
 
-    await insertConversation(makeDiscoveredConversation({ sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
     let conv = await getConversationById(convId);
     expect(conv?.state).toBe("saved");
@@ -83,8 +81,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Copy me");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const expectedRawPath = getRawConversationPath("claude-code", convId);
@@ -99,13 +95,6 @@ describe("workflow", () => {
     const convId = "b1b1b1b1-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Save with the current author");
-    await insertConversation(makeDiscoveredConversation({
-      id: convId,
-      sourceId: convId,
-      sourcePath,
-      author: "author-at-discovery",
-    }));
-
     const config = getDefaultConfig("author-at-save");
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
@@ -120,13 +109,6 @@ describe("workflow", () => {
     const convId = "b2b2b2b2-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Save with the current default tags");
-    await insertConversation(makeDiscoveredConversation({
-      id: convId,
-      sourceId: convId,
-      sourcePath,
-      tags: ["tag-at-discovery"],
-    }));
-
     const config = getDefaultConfig("testuser");
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
@@ -142,12 +124,6 @@ describe("workflow", () => {
     const convId = "b3b3b3b3-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Refresh without restamping metadata");
-    await insertConversation(makeDiscoveredConversation({
-      id: convId,
-      sourceId: convId,
-      sourcePath,
-    }));
-
     const initialConfig = getDefaultConfig("stored-author");
     initialConfig.sources["claude-code"].paths = [sourceDir];
     initialConfig.sources["codex-cli"].enabled = false;
@@ -174,8 +150,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "v1");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
@@ -194,8 +168,6 @@ describe("workflow", () => {
     const convId = "11111111-2222-3333-4444-555555555555";
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
-
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
     await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
@@ -235,8 +207,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial prompt");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
@@ -267,8 +237,6 @@ describe("workflow", () => {
       const convId = "abababab-1234-5678-9abc-def012345678";
       const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
       await writeClaudeJsonl(sourcePath, "Initial prompt");
-
-      await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
       vi.setSystemTime(new Date("2030-01-01T10:00:00.000Z"));
       await runBuiltCommand(buildSaveCommand, [convId]);
@@ -330,8 +298,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Unchanged");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
@@ -360,8 +326,6 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Initial");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildSaveCommand, [convId]);
     await runBuiltCommand(buildSaveCommand, [convId]);
 
@@ -385,17 +349,15 @@ describe("workflow", () => {
     expect(resaved?.savedAt).not.toBe(firstSave?.savedAt);
   });
 
-  it("exclude → unexclude round-trip updates clogignore without removing current DB rows", async () => {
+  it("exclude → unexclude updates clogignore without creating an unsaved database row", async () => {
     const convId = "44444444-5555-6666-7777-888888888888";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Exclude me");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     await runBuiltCommand(buildExcludeCommand, [convId]);
 
     const afterExclude = await getConversationById(convId);
-    expect(afterExclude).not.toBeNull();
+    expect(afterExclude).toBeNull();
 
     const clogIgnoreContent = await fs.readFile(getClogIgnorePath(), "utf8");
     expect(clogIgnoreContent).toContain(convId);
@@ -406,25 +368,21 @@ describe("workflow", () => {
     expect(afterUnexclude).not.toContain(convId);
   });
 
-  it("exclude suggests rerunning remove with the same literal rule text", async () => {
+  it("exclude does not suggest removing an ephemeral unsaved conversation", async () => {
     const convId = "44444444-5555-6666-7777-999999999999";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Exclude guidance");
 
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
-
     const { stdout } = await runBuiltCommand(buildExcludeCommand, [convId]);
 
-    expect(stdout).toContain("currently in clog's database match this rule");
-    expect(stdout).toContain(`Use 'clog remove ${convId}'`);
+    expect(stdout).not.toContain("currently in clog's database match this rule");
+    expect(stdout).not.toContain(`Use 'clog remove ${convId}'`);
   });
 
   it("exclude rejects project selector syntax", async () => {
     const convId = "55555555-6666-7777-8888-999999999999";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Exclude rejects project selector");
-
-    await insertConversation(makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }));
 
     await expect(runBuiltCommand(buildExcludeCommand, ["project:myapp"])).rejects.toThrow(
       /does not accept project selectors/i,
@@ -507,18 +465,14 @@ describe("workflow", () => {
     await expect(getConversationById(convId)).resolves.not.toBeNull();
   });
 
-  it("remove leaves discovered rows untouched and reports no matches", async () => {
+  it("remove reports no database match for an ephemeral unsaved conversation", async () => {
     const convId = "66666666-7777-8888-9999-eeeeeeeeeeee";
     const sourcePath = path.join(sourceDir, `${convId}.jsonl`);
     await writeClaudeJsonl(sourcePath, "Discovered should survive remove");
-    await insertConversation(
-      makeDiscoveredConversation({ id: convId, sourceId: convId, sourcePath }),
-    );
-
     const { stdout } = await runBuiltCommand(buildRemoveCommand, [convId, "--yes"]);
 
     expect(stdout).toContain("No saved conversations in clog's database match those rules.");
-    await expect(getConversationById(convId)).resolves.not.toBeNull();
+    await expect(getConversationById(convId)).resolves.toBeNull();
   });
 
   it("remove --dry-run previews matches without deleting them", async () => {

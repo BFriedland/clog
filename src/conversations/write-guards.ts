@@ -1,7 +1,7 @@
 import type { ConversationMeta } from "../models/conversation.js";
 import { ClogError } from "../utils/errors.js";
 
-export type LocalConversation = ConversationMeta & {
+export type LocalConversation<T extends ConversationMeta = ConversationMeta> = T & {
   originKind: "local";
   originRef: null;
 };
@@ -24,15 +24,15 @@ export function isLocallyWritable(
   return conversation.originKind === "local" && conversation.originRef === null;
 }
 
-export function requireLocalConversation(
-  conversation: ConversationMeta,
+export function requireLocalConversation<T extends ConversationMeta>(
+  conversation: T,
   action: string,
-): LocalConversation {
+): LocalConversation<T> {
   if (!isLocallyWritable(conversation)) {
     throwImportedReadOnlyError(conversation, action);
   }
 
-  return conversation as LocalConversation;
+  return conversation as LocalConversation<T>;
 }
 
 export function requireGitConversationForRemote(

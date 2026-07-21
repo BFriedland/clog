@@ -33,9 +33,9 @@ export async function markConversationIndexStale(
   };
 }
 
-export async function maybeReindexUpdatedConversation(
-  conversation: ConversationMeta,
-): Promise<ConversationMeta> {
+export async function maybeReindexUpdatedConversation<T extends ConversationMeta>(
+  conversation: T,
+): Promise<T> {
   if (conversation.state !== "saved") {
     return conversation;
   }
@@ -52,12 +52,12 @@ export async function maybeReindexUpdatedConversation(
     return {
       ...conversation,
       indexedAt: nowIso(),
-    };
+    } as T;
   } catch {
     return {
       ...conversation,
       indexedAt: null,
-    };
+    } as T;
   }
 }
 

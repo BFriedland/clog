@@ -96,18 +96,40 @@ describe("git reconciliation planner", () => {
     expect(plan.deletedRowIds).toEqual([]);
   });
 
-  it.each([
-    {
-      label: "local unsaved",
-      owner: conversation({
-        id: "b1111111-1111-1111-1111-111111111111",
-        state: "unsaved",
-        originKind: "local",
-        originRef: null,
-      }),
+  it("skips a git insert when a local scan candidate owns the identity", () => {
+    const incoming = pair({
+      id: "b1111111-1111-1111-1111-111111111111",
+      author: "bob",
+      title: "Incoming copy",
+    });
+    const plan = planGitReconciliation({
+      scan: scanOf(incoming),
+      existingRows: [],
+      localCandidates: [{
+        source: incoming.source,
+        sourceId: incoming.id,
+        sourcePath: "/source/conversation.jsonl",
+        sourceMtime: "2026-02-01T10:00:00.000Z",
+        metadata: {
+          title: "Local source copy",
+          summary: "",
+          projectName: "api-service",
+          projectPath: "/tmp/api-service",
+          createdAt: "2026-02-01T10:00:00.000Z",
+          slug: null,
+        },
+      }],
+      remoteUrl: REMOTE_URL,
+    });
+
+    expect(plan.actions[0]).toMatchObject({
+      kind: "skip",
       reason: "local_unsaved_owner",
-      message: "local unsaved copy",
-    },
+      message: expect.stringContaining("local unsaved source copy"),
+    });
+  });
+
+  it.each([
     {
       label: "local saved",
       owner: conversation({

@@ -5,6 +5,11 @@ import { Command } from "commander";
 import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import { listConversationsInDb, withDb } from "../db/index.js";
+import { scanLocalSources } from "./scan.js";
+import {
+  getScanWarningsForCommand,
+  renderWarnings,
+} from "./common.js";
 import {
   isFillWriteAction,
   planFill,
@@ -118,11 +123,17 @@ async function runPreparedFillCommand(
   const dryRun = options.dryRun === true;
   const allowPartial = options.allowPartial === true;
   const showAllErrors = options.showAllErrors === true;
+  const localScan = await scanLocalSources(config);
+  renderWarnings(getScanWarningsForCommand(localScan));
 
   const execution = await withDb(async (db) => {
     let plan = planFill({
       candidates,
       existingRows: listConversationsInDb(db),
+      localCandidates: localScan.candidates,
+      incompleteSources: localScan.sourceStatuses
+        .filter((status) => !status.complete)
+        .map((status) => status.source),
       mode,
       author,
       importTime,
@@ -287,7 +298,7 @@ function summarizePlannedActions(plan: FillPlan): FillStats {
   for (const action of plan.actions) {
     if (action.kind === "insert") {
       stats.newCount += 1;
-    } else if (action.kind === "update" || action.kind === "restore_unsaved") {
+    } else if (action.kind === "update") {
       stats.updatedCount += 1;
     } else if (action.kind === "unchanged") {
       stats.unchangedCount += 1;

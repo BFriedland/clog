@@ -33,7 +33,6 @@ export function getDefaultConfig(author = ""): Config {
       "codex-cli": defaultSourceConfig("codex-cli"),
     },
     defaultTags: [],
-    autoScan: false,
     search: null,
   });
 }

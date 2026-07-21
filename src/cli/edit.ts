@@ -1,6 +1,6 @@
 import { Command } from "commander";
 
-import type { ConversationMeta } from "../models/conversation.js";
+import type { SavedConversationMeta } from "../models/conversation.js";
 import { nowIso } from "../utils/time.js";
 import { updateLocalConversation } from "../db/index.js";
 import { maybeReindexUpdatedConversation } from "../search/coherence.js";
@@ -32,7 +32,7 @@ export function buildEditCommand(): Command {
       }
       const summaryProvided = options.summary !== undefined;
       const nextSummary = options.summary ?? conversation.summary;
-      const updated: ConversationMeta = {
+      const updated: SavedConversationMeta = {
         ...conversation,
         title: options.title ?? conversation.title,
         summary: nextSummary,
@@ -66,7 +66,7 @@ export function buildEditCommand(): Command {
         return;
       }
 
-      let nextConversation: ConversationMeta = {
+      let nextConversation: SavedConversationMeta = {
         ...updated,
         modifiedAt: nowIso(),
       };

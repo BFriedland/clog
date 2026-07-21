@@ -1,9 +1,13 @@
 import chalk from "chalk";
 import { Command } from "commander";
 
-import { getEnabledAdapters } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
+import {
+  listConversationView,
+  type LocalScanSnapshot,
+} from "../conversations/view.js";
 import { gitOriginFilter, listConversations } from "../db/index.js";
+import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
 import {
   conversationMetadataMatchesGrep,
@@ -15,13 +19,7 @@ import {
   type DisplayColumnKey,
   type DisplayRow,
 } from "./common.js";
-import type { Config } from "../config/schema.js";
 import { scanLocalSources } from "./scan.js";
-import {
-  conversationMatchesAnyClogIgnoreRule,
-  pathMatchesBoundary,
-  readClogIgnoreRules,
-} from "./clogignore.js";
 import { ClogError } from "../utils/errors.js";
 
 export function buildListCommand(): Command {
@@ -38,10 +36,14 @@ export function buildListCommand(): Command {
     .option("--all", "Include unsaved and ignored conversations, plus imported conversations from other authors")
     .action(async (options) => {
       const config = await loadConfig();
-      const scanResult = await scanLocalSources(config);
-      renderWarnings(getScanWarningsForCommand(scanResult));
       const columns = parseColumnsOption(options.columns);
       const stateFilter = parseStateFilter(options.state);
+      const scanResult = options.all || stateFilter === "unsaved"
+        ? await scanLocalSources(config)
+        : undefined;
+      if (scanResult) {
+        renderWarnings(getScanWarningsForCommand(scanResult));
+      }
       const hasFilters = Boolean(
         options.state ||
           options.project ||
@@ -64,7 +66,7 @@ export function buildListCommand(): Command {
           ? { author: authorName }
           : null;
 
-      let conversations = await listConversations({
+      let conversations: ConversationMeta[] = await listConversationView({
         states: stateFilter
           ? [stateFilter]
           : options.all
@@ -75,7 +77,7 @@ export function buildListCommand(): Command {
         tag: options.tag,
         origin: originFilter,
         curatedDefault,
-      });
+      }, scanResult);
 
       if (options.grep) {
         conversations = await filterConversationsByGrep(config, options.grep, conversations);
@@ -105,7 +107,7 @@ export function buildListCommand(): Command {
           }
         }
       } else {
-        const ignoredRows = await discoverIgnoredDisplayRows(config, options);
+        const ignoredRows = discoverIgnoredDisplayRows(scanResult!, options);
         const displayRows: DisplayRow[] = [
           ...conversations.map((conversation) => ({
             id: conversation.id,
@@ -141,8 +143,8 @@ export function buildListCommand(): Command {
   return command;
 }
 
-async function discoverIgnoredDisplayRows(
-  config: Config,
+function discoverIgnoredDisplayRows(
+  scanSnapshot: LocalScanSnapshot,
   options: {
     state?: string;
     project?: string;
@@ -151,7 +153,7 @@ async function discoverIgnoredDisplayRows(
     grep?: string;
     origin?: string;
   },
-): Promise<DisplayRow[]> {
+): DisplayRow[] {
   if (options.state) {
     return [];
   }
@@ -164,29 +166,9 @@ async function discoverIgnoredDisplayRows(
     return [];
   }
 
-  const clogIgnoreRules = await readClogIgnoreRules();
-
   const rows: DisplayRow[] = [];
 
-  for (const adapter of getEnabledAdapters(config)) {
-    for await (const discovered of adapter.discover()) {
-      if (!discovered.metadata.projectPath) {
-        continue;
-      }
-
-      if (!passesConfigPathFilters(adapter.name, config, discovered.metadata.projectPath)) {
-        continue;
-      }
-
-      if (!conversationMatchesAnyClogIgnoreRule({
-        sourceId: discovered.sourceId,
-        projectName: discovered.metadata.projectName,
-        projectPath: discovered.metadata.projectPath,
-        sourcePath: discovered.sourcePath,
-      }, clogIgnoreRules)) {
-        continue;
-      }
-
+  for (const discovered of scanSnapshot.ignoredCandidates) {
       if (
         options.project &&
         discovered.metadata.projectName?.toLowerCase() !== options.project.toLowerCase()
@@ -211,37 +193,15 @@ async function discoverIgnoredDisplayRows(
         id: discovered.sourceId,
         createdAt: discovered.metadata.createdAt,
         state: "ignored",
-        source: adapter.name,
+        source: discovered.source,
         projectName: discovered.metadata.projectName,
         author: null,
         title: discovered.metadata.title,
         dim: true,
       });
-    }
   }
 
   return rows;
-}
-
-function passesConfigPathFilters(source: string, config: Config, projectPath: string): boolean {
-  const sourceConfig = config.sources[source as keyof Config["sources"]];
-
-  if (!sourceConfig) {
-    return true;
-  }
-
-  if (
-    sourceConfig.includePaths.length > 0 &&
-    !sourceConfig.includePaths.some((entry) => pathMatchesBoundary(projectPath, entry))
-  ) {
-    return false;
-  }
-
-  if (sourceConfig.excludePaths.some((entry) => pathMatchesBoundary(projectPath, entry))) {
-    return false;
-  }
-
-  return true;
 }
 
 function compareDisplayRows(left: DisplayRow, right: DisplayRow): number {

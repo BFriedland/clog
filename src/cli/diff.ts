@@ -1,6 +1,11 @@
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
+import {
+  attachCurrentSourceCandidate,
+  findScanCandidateForConversation,
+  type LocalDiscoveryCandidate,
+} from "../conversations/view.js";
 import { isLocallyWritable } from "../conversations/write-guards.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { ClogError } from "../utils/errors.js";
@@ -8,11 +13,14 @@ import { listConversations } from "../db/index.js";
 import {
   applyHeadTail,
   getSaveCandidate,
+  getScanWarningsForCommand,
   parseConversationMessages,
   parseConversationMessagesFromPath,
   renderMessages,
+  renderWarnings,
   resolveManyConversationsOrFail,
 } from "./common.js";
+import { scanLocalSources } from "./scan.js";
 
 export function buildDiffCommand(): Command {
   return new Command("diff")
@@ -24,18 +32,29 @@ export function buildDiffCommand(): Command {
     .option("--last <n>", "Show the last N new messages")
     .action(async (ids: string[], options) => {
       const config = await loadConfig();
+      const scanSnapshot = await scanLocalSources(config);
+      renderWarnings(getScanWarningsForCommand(scanSnapshot));
       const conversations =
         ids.length > 0
           ? await resolveManyConversationsOrFail(ids)
-          : await listConversations({ states: ["saved"], origin: "local" });
+          : await listConversations({ origin: "local" });
 
       const head = parseCount(options.head ?? options.first);
       const tail = parseCount(options.tail ?? options.last);
 
-      for (const conversation of conversations) {
+      for (const storedConversation of conversations) {
+        const liveCandidate = findScanCandidateForConversation(
+          storedConversation,
+          scanSnapshot,
+        );
+        const conversation = attachCurrentSourceCandidate(storedConversation, scanSnapshot);
         validateDiffTarget(conversation);
 
-        const messages = await loadDiffCandidateMessages(config, conversation);
+        const messages = await loadDiffCandidateMessages(
+          config,
+          conversation,
+          liveCandidate,
+        );
         const diffMessages = messages.slice(conversation.savedMessageCount ?? 0);
 
         if (
@@ -96,8 +115,9 @@ function validateDiffTarget(conversation: ConversationMeta): void {
 async function loadDiffCandidateMessages(
   config: Awaited<ReturnType<typeof loadConfig>>,
   conversation: Awaited<ReturnType<typeof resolveManyConversationsOrFail>>[number],
+  liveCandidate: LocalDiscoveryCandidate | null,
 ) {
-  const candidate = await getSaveCandidate(conversation);
+  const candidate = await getSaveCandidate(conversation, liveCandidate);
 
   if (candidate.path === conversation.filePath) {
     return parseConversationMessages(config, conversation);

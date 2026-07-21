@@ -1,4 +1,5 @@
 import type { ConversationMeta } from "../../src/models/conversation.js";
+import { savedConversationMetaSchema } from "../../src/models/conversation.js";
 import { withDb } from "../../src/db/index.js";
 import {
   unsafeDeleteConversationInDb,
@@ -10,7 +11,8 @@ import {
 export async function insertConversation(
   conversation: ConversationMeta,
 ): Promise<void> {
-  await withDb((db) => unsafeInsertConversationInDb(db, conversation), {
+  const saved = savedConversationMetaSchema.parse(conversation);
+  await withDb((db) => unsafeInsertConversationInDb(db, saved), {
     mode: "write",
   });
 }
@@ -18,7 +20,8 @@ export async function insertConversation(
 export async function updateConversation(
   conversation: ConversationMeta,
 ): Promise<void> {
-  await withDb((db) => unsafeUpdateConversationInDb(db, conversation), {
+  const saved = savedConversationMetaSchema.parse(conversation);
+  await withDb((db) => unsafeUpdateConversationInDb(db, saved), {
     mode: "write",
   });
 }
@@ -26,7 +29,8 @@ export async function updateConversation(
 export async function guardedLocalUpdateConversation(
   conversation: ConversationMeta,
 ): Promise<number> {
-  return withDb((db) => unsafeUpdateLocalConversationInDb(db, conversation), {
+  const saved = savedConversationMetaSchema.parse(conversation);
+  return withDb((db) => unsafeUpdateLocalConversationInDb(db, saved), {
     mode: "write",
   });
 }

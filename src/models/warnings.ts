@@ -5,6 +5,7 @@ export type ClogWarningCode =
   | "path_filter_without_project"
   | "unsupported_source"
   | "missing_source_file"
+  | "source_discovery_incomplete"
   | PairWarningCode;
 
 type PairWarningCode =

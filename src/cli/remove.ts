@@ -31,7 +31,7 @@ export function buildRemoveCommand(): Command {
     .action(async (rules: string[], options: RemoveOptions) => {
       assertValidLiteralRules(rules);
 
-      const matches = (await listConversations({ states: ["saved"] })).filter((conversation) =>
+      const matches = (await listConversations()).filter((conversation) =>
         conversationMatchesAnyClogIgnoreRule(conversation, rules),
       );
 

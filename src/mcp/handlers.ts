@@ -2,10 +2,13 @@ import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
 import {
+  listConversationView,
+  resolveConversationView,
+  type LocalScanSnapshot,
+} from "../conversations/view.js";
+import {
   browseValues,
-  getConversationById,
   listConversations,
-  resolveConversationId,
   updateLocalConversation,
 } from "../db/index.js";
 import {
@@ -153,18 +156,25 @@ export async function handleList(input: unknown) {
   const states = parsed.state === "all" ? undefined : [parsed.state];
   const scansLocalSources = parsed.state === "unsaved" || parsed.state === "all";
   const config = scansLocalSources || parsed.grep ? await loadConfig() : undefined;
-  const warnings = scansLocalSources
-    ? getScanWarningsForCommand(await scanLocalSources(config!))
-    : [];
+  const scanSnapshot = scansLocalSources ? await scanLocalSources(config!) : undefined;
+  const warnings = scanSnapshot ? getScanWarningsForCommand(scanSnapshot) : [];
 
-  return listConversationsForStates(states, parsed, config?.author, config, warnings);
+  return listConversationsForStates(
+    states,
+    parsed,
+    config,
+    warnings,
+    scanSnapshot,
+  );
 }
 
 export async function handleGet(input: unknown) {
   const parsed = getInputSchema.parse(input);
   validateRangeControls(parsed);
   const config = await loadConfig();
-  const conversation = await resolveConversationByInput(parsed.id);
+  const scanSnapshot = await scanLocalSources(config);
+  const warnings = getScanWarningsForCommand(scanSnapshot);
+  const conversation = await resolveConversationByInput(parsed.id, scanSnapshot);
 
   if (conversation.state === "unsaved") {
     throw new Error("get_conversation only works on saved conversations.");
@@ -194,6 +204,7 @@ export async function handleGet(input: unknown) {
     range,
     truncated,
     truncationNote: truncated ? buildTruncationNote(selected, messages.length) : undefined,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -296,7 +307,10 @@ function buildTruncationNote(selected: SelectedRange, totalMessages: number): st
 
 export async function handleUpdate(input: unknown) {
   const parsed = updateInputSchema.parse(input);
-  const conversation = await resolveConversationByInput(parsed.id);
+  const config = await loadConfig();
+  const scanSnapshot = await scanLocalSources(config);
+  const warnings = getScanWarningsForCommand(scanSnapshot);
+  const conversation = await resolveConversationByInput(parsed.id, scanSnapshot);
 
   if (conversation.state === "unsaved") {
     throw new Error("update_conversation only works on saved conversations.");
@@ -361,7 +375,10 @@ export async function handleUpdate(input: unknown) {
     JSON.stringify(updated.tags) !== JSON.stringify(conversation.tags);
 
   if (!changed) {
-    return { conversation: summarizeConversation(conversation) };
+    return {
+      conversation: summarizeConversation(conversation),
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
   }
 
   const nextConversation = {
@@ -380,6 +397,7 @@ export async function handleUpdate(input: unknown) {
 
   return {
     conversation: summarizeConversation(finalConversation),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -400,7 +418,6 @@ export async function handleSearch(input: unknown) {
   const parsed = searchInputSchema.parse(input);
   const { embedding, vectorStore } = await requireSearchProviders();
   let saved = await listConversations({
-    states: ["saved"],
     origin: parsed.origin,
   });
   saved = filterConversationsByMcpMetadata(saved, parsed);
@@ -495,17 +512,14 @@ export async function handleSearch(input: unknown) {
 async function listConversationsForStates(
   states: Array<"saved" | "unsaved"> | undefined,
   input: z.infer<typeof listInputSchema>,
-  configuredAuthor: string | undefined,
   config: Awaited<ReturnType<typeof loadConfig>> | undefined,
   warnings: ReturnType<typeof getScanWarningsForCommand>,
+  scanSnapshot?: LocalScanSnapshot,
 ) {
-  let conversations = await listConversations({
+  let conversations: ConversationMeta[] = await listConversationView({
     states,
     origin: input.origin,
-  });
-  conversations = conversations.map((conversation) =>
-    normalizeUnsavedConversation(conversation, configuredAuthor),
-  );
+  }, scanSnapshot);
   conversations = filterConversationsByMcpMetadata(conversations, input);
 
   if (input.tags && input.tags.length > 0) {
@@ -567,31 +581,6 @@ async function listConversationsForStates(
   };
 
   return warnings.length > 0 ? { ...result, warnings } : result;
-}
-
-function normalizeUnsavedConversation(
-  conversation: ConversationMeta,
-  configuredAuthor: string | undefined,
-): ConversationMeta {
-  if (conversation.state === "saved") {
-    return conversation;
-  }
-
-  if (configuredAuthor === undefined) {
-    throw new Error("Current configuration is required to list unsaved conversations.");
-  }
-
-  return {
-    ...conversation,
-    author: configuredAuthor,
-    tags: [],
-    modifiedAt: conversation.sourceMtime ?? conversation.modifiedAt,
-    summaryExtraction: null,
-    savedAt: null,
-    savedMessageCount: null,
-    originKind: "local",
-    originRef: null,
-  };
 }
 
 function sortConversationsForMcpList(
@@ -677,10 +666,10 @@ function compareNullableText(
   return sortDirection === "asc" ? compared : -compared;
 }
 
-function filterConversationsByMcpMetadata(
-  conversations: ConversationMeta[],
+function filterConversationsByMcpMetadata<T extends ConversationMeta>(
+  conversations: T[],
   input: { project?: string; author?: string },
-): ConversationMeta[] {
+): T[] {
   const project = normalizeFilterText(input.project);
   const author = normalizeFilterText(input.author);
 
@@ -706,14 +695,11 @@ function normalizeFilterText(value: string | undefined): string | null {
   return normalized ? normalized : null;
 }
 
-async function resolveConversationByInput(input: string): Promise<ConversationMeta> {
-  const resolved = await resolveConversationId(input);
-  const conversation = await getConversationById(resolved.id);
-  if (!conversation) {
-    throw new Error(`Conversation "${input}" not found.`);
-  }
-
-  return conversation;
+async function resolveConversationByInput(
+  input: string,
+  scanSnapshot: LocalScanSnapshot,
+): Promise<ConversationMeta> {
+  return resolveConversationView(input, { scanSnapshot });
 }
 
 function normalizeTags(tags: string[]): string[] {

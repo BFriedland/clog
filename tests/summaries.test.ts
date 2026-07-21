@@ -122,8 +122,9 @@ describe("agent-assisted summarization", () => {
           db.run("INSERT INTO schema_version (version) VALUES (?)", [4]);
           db.run(
             `INSERT INTO conversations (id, source_id, source, title, summary, author,
-              created_at, discovered_at, modified_at, state, save_version, source_path)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              created_at, discovered_at, modified_at, state, saved_at,
+              saved_message_count, save_version, source_path)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               "11111111-1234-1234-1234-123456789012",
               "src1",
@@ -135,14 +136,17 @@ describe("agent-assisted summarization", () => {
               "2026-01-01T00:00:00.000Z",
               "2026-01-01T00:00:00.000Z",
               "saved",
+              "2026-01-01T00:00:00.000Z",
+              1,
               1,
               "/tmp/x",
             ],
           );
           db.run(
             `INSERT INTO conversations (id, source_id, source, title, summary, author,
-              created_at, discovered_at, modified_at, state, save_version, source_path)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              created_at, discovered_at, modified_at, state, saved_at,
+              saved_message_count, save_version, source_path)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               "22222222-1234-1234-1234-123456789012",
               "src2",
@@ -154,6 +158,8 @@ describe("agent-assisted summarization", () => {
               "2026-01-01T00:00:00.000Z",
               "2026-01-01T00:00:00.000Z",
               "saved",
+              "2026-01-01T00:00:00.000Z",
+              1,
               1,
               "/tmp/x",
             ],
@@ -189,7 +195,7 @@ describe("agent-assisted summarization", () => {
       expect(populated?.summaryExtraction).toBeNull();
       expect(blank?.summaryKind).toBe("none");
       expect(blank?.summaryExtraction).toBeNull();
-      expect(CURRENT_SCHEMA_VERSION).toBe(8);
+      expect(CURRENT_SCHEMA_VERSION).toBe(9);
     });
   });
 

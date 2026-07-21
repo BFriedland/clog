@@ -11,7 +11,7 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById } from "../src/db/index.js";
 import { writePair, type PairMetadata } from "../src/interchange/pairs.js";
-import { getRawConversationPath } from "../src/utils/paths.js";
+import { getClogDbPath, getRawConversationPath } from "../src/utils/paths.js";
 import { captureOutputWithError } from "./helpers/output.js";
 
 describe("clog save: restored-overwrite guard", () => {
@@ -38,14 +38,10 @@ describe("clog save: restored-overwrite guard", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // Regression guard for an implicit cross-file coupling. `clog save` runs a scan
-  // that re-attaches a live sourcePath to a `fill --own` row but leaves projectPath
-  // null (src/cli/scan.ts saved-row branch). That null projectPath is the only
-  // signal isLikelyRestoredLocalConversation keys on, so it is what keeps the
-  // confirmRestoredOverwriteIfNeeded guard firing after a scan. If a future change
-  // "completes" re-attachment by also setting projectPath, the guard would silently
-  // stop firing and a non-interactive save would overwrite restored content; this
-  // test would then fail, which is the intended stop-and-think signal.
+  // Regression guard for the in-memory source attachment used by `clog save`.
+  // A `fill --own` row keeps projectPath null while the command temporarily uses
+  // the matching scan candidate's live sourcePath. That combination triggers the
+  // overwrite confirmation without persisting the live path during discovery.
   it("does not overwrite a restored row with a diverged live source without confirmation", async () => {
     const id = "cc111111-1111-1111-1111-111111111111";
 
@@ -56,6 +52,9 @@ describe("clog save: restored-overwrite guard", () => {
       jsonl: makeClaudeJsonl(1),
     });
     await runBuilt(buildFillCommand, [pairDir, "--own"]);
+    const beforeRow = await getConversationById(id);
+    const beforeRaw = await fs.readFile(getRawConversationPath("claude-code", id));
+    const beforeDb = await fs.readFile(getClogDbPath());
 
     // The original source still exists locally and has since been continued.
     await fs.mkdir(path.join(sourceDir, "proj"), { recursive: true });
@@ -65,7 +64,7 @@ describe("clog save: restored-overwrite guard", () => {
       "utf8",
     );
 
-    // Non-interactive `clog save <id>` scans (re-attaching sourcePath) then hits the guard.
+    // Non-interactive `clog save <id>` attaches sourcePath in memory and then hits the guard.
     const result = await runBuilt(buildSaveCommand, [id]);
 
     expect(result.error).toBeNull();
@@ -73,10 +72,9 @@ describe("clog save: restored-overwrite guard", () => {
     expect(result.stdout).toContain("Saved 0 conversation(s).");
 
     const row = await getConversationById(id);
-    expect(row?.savedMessageCount).toBe(1); // not overwritten with the 2-message source
-    expect(row?.projectPath).toBeNull(); // scan re-attached sourcePath but not projectPath
-    const rawCopy = await fs.readFile(getRawConversationPath("claude-code", id), "utf8");
-    expect(rawCopy).not.toContain("Message 1");
+    expect(row).toEqual(beforeRow);
+    await expect(fs.readFile(getRawConversationPath("claude-code", id))).resolves.toEqual(beforeRaw);
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(beforeDb);
   });
 });
 

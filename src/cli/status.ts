@@ -2,6 +2,11 @@ import chalk from "chalk";
 import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
+import {
+  attachCurrentSourceCandidate,
+  findScanCandidateForConversation,
+  listConversationView,
+} from "../conversations/view.js";
 import { gitOriginFilter, listConversations } from "../db/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { checkStaleness } from "../sync/staleness.js";
@@ -44,15 +49,23 @@ export function buildStatusCommand(): Command {
           verbose: options.verboseWarnings === true,
         }),
       );
-      const saved = await listConversations({ states: ["saved"], origin: "local" });
-      const unsaved = await listConversations({ states: ["unsaved"], origin: "local" });
+      const saved = (
+        await listConversationView({ states: ["saved"], origin: "local" })
+      ).map((conversation) => attachCurrentSourceCandidate(conversation, scanResult));
+      const unsaved = await listConversationView(
+        { states: ["unsaved"], origin: "local" },
+        scanResult,
+      );
       const readySaved: ConversationMeta[] = [];
       const sourceAheadSaved: ConversationMeta[] = [];
       const cleanSaved: ConversationMeta[] = [];
       const showConversations = options.conversations === true || options.source === true;
 
       for (const conversation of saved) {
-        const kind = await classifySavedDelta(conversation);
+        const kind = await classifySavedDelta(
+          conversation,
+          findScanCandidateForConversation(conversation, scanResult),
+        );
         if (kind === "ready") {
           readySaved.push(conversation);
         } else if (kind === "source_ahead") {
@@ -127,8 +140,8 @@ export function buildStatusCommand(): Command {
       }
 
       const { counts } = scanResult;
-      if (counts.filtered || counts.ignored || counts.pruned || counts.undiscoverable) {
-        const parts = `${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore, ${counts.pruned} pruned`;
+      if (counts.filtered || counts.ignored || counts.undiscoverable) {
+        const parts = `${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore`;
         const undiscoverableCount = counts.undiscoverable
           ? `, ${counts.undiscoverable} undiscoverable`
           : "";
@@ -167,7 +180,7 @@ async function renderSearchSection(
   }
 
   const unindexed = (
-    await listConversations({ states: ["saved"], indexed: false })
+    await listConversations({ indexed: false })
   ).length;
 
   if (unindexed === 0) {

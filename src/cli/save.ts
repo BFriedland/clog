@@ -3,15 +3,28 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
+  attachCurrentSourceCandidate,
+  findScanCandidateForConversation,
+  isSourceDiscoveryComplete,
+  listConversationView,
+  resolveConversationView,
+  type LocalScanSnapshot,
+} from "../conversations/view.js";
+import {
+  insertFirstSavedConversation,
   listConversations,
   listConversationsNeedingIndex,
-  removeConversationCopy,
   saveLocalConversation,
 } from "../db/index.js";
-import { isUnsummarized, type ConversationMeta } from "../models/conversation.js";
+import {
+  isUnsummarized,
+  type ConversationMeta,
+  type SavedConversationMeta,
+} from "../models/conversation.js";
 import { maybeAutoIndexConversations } from "../search/coherence.js";
 import { searchAvailable } from "../search/deps.js";
-import { UsageError } from "../utils/errors.js";
+import { ClogError, UsageError } from "../utils/errors.js";
+import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { nowIso } from "../utils/time.js";
 import {
   assertNoneRemote,
@@ -24,7 +37,6 @@ import {
   pathsIdentifySameManagedCopy,
   parseConversationMessagesFromPath,
   renderWarnings,
-  SourceFileMissingError,
 } from "./common.js";
 import {
   collectAllSaveTargets,
@@ -48,14 +60,25 @@ export function buildSaveCommand(): Command {
       }
 
       const config = await loadConfig();
-      const scanResult = await scanLocalSources(config);
-      renderWarnings(getScanWarningsForCommand(scanResult));
+      const scanResult = options.all || selectors.length > 0
+        ? await scanLocalSources(config)
+        : undefined;
+      if (scanResult) {
+        renderWarnings(getScanWarningsForCommand(scanResult));
+      }
 
-      const conversations = options.all
-        ? await collectAllSaveTargets()
+      const selection = options.all
+        ? {
+            conversations: await collectAllSaveTargets(scanResult!),
+            directSavedIds: new Set<string>(),
+          }
         : selectors.length > 0
-          ? await resolveSaveSelectors(selectors)
-          : await collectBareSaveTargets();
+          ? await resolveSaveSelectors(selectors, scanResult!)
+          : {
+              conversations: await collectBareSaveTargets(),
+              directSavedIds: new Set<string>(),
+            };
+      const { conversations, directSavedIds } = selection;
 
       if (conversations.length === 0) {
         process.stdout.write('No conversations need saving. Use "clog save <id>" or "clog save <project>" to save unsaved conversations.\n');
@@ -68,11 +91,56 @@ export function buildSaveCommand(): Command {
       const savedConversations: ConversationMeta[] = [];
       const showProgress = process.stdout.isTTY && conversations.length > 1;
 
-      for (const [index, conversation] of conversations.entries()) {
-        try {
-          const candidate = await getSaveCandidate(conversation);
+      for (const [index, originalConversation] of conversations.entries()) {
+        const liveCandidate = scanResult
+          ? findScanCandidateForConversation(originalConversation, scanResult)
+          : undefined;
+        const conversation = scanResult
+          ? attachCurrentSourceCandidate(originalConversation, scanResult)
+          : originalConversation;
+
+        if (
+          conversation.state === "saved" &&
+          directSavedIds.has(conversation.id) &&
+          liveCandidate == null
+        ) {
+          throwDirectSavedSourceUnavailable(conversation, scanResult!);
+        }
+
+        if (conversation.state === "unsaved") {
+          const rawPath = defaultSaveFilePath(conversation);
+          const saved = await insertFirstSavedConversation(
+            conversation,
+            async (): Promise<SavedConversationMeta> => {
+              await ensureRawCopy(conversation);
+              const messages = await parseConversationMessagesFromPath(
+                config,
+                conversation.source,
+                rawPath,
+              );
+              const timestamp = nowIso();
+              return {
+                ...conversation,
+                author: config.author,
+                tags: normalizeTags(config.defaultTags),
+                discoveredAt: timestamp,
+                filePath: rawPath,
+                state: "saved",
+                saveVersion: 1,
+                savedAt: timestamp,
+                modifiedAt: timestamp,
+                savedMessageCount: messages.length,
+                indexedAt: null,
+              };
+            },
+          );
+          savedConversations.push(saved);
+        } else {
+          const candidate = liveCandidate === undefined
+            ? await getSaveCandidate(conversation)
+            : await getSaveCandidate(conversation, liveCandidate);
           const rawPath =
-            conversation.state === "unsaved" || !conversation.filePath
+            !conversation.filePath
               ? defaultSaveFilePath(conversation)
               : conversation.filePath;
 
@@ -91,19 +159,9 @@ export function buildSaveCommand(): Command {
             parsePath,
           );
           const timestamp = nowIso();
-          const configuredMetadata =
-            conversation.state === "unsaved"
-              ? {
-                  author: config.author,
-                  tags: normalizeTags(config.defaultTags),
-                }
-              : {};
-
-          const savedConversation = {
+          const savedConversation: SavedConversationMeta = {
             ...conversation,
-            ...configuredMetadata,
             filePath: rawPath,
-            state: "saved" as const,
             saveVersion: conversation.saveVersion + 1,
             savedAt: timestamp,
             modifiedAt: timestamp,
@@ -115,11 +173,6 @@ export function buildSaveCommand(): Command {
             command: "clog save",
           });
           savedConversations.push(saved);
-        } catch (error) {
-          if (await skipMissingDiscoveredSource(error, conversation)) {
-            continue;
-          }
-          throw error;
         }
 
         if (showProgress) {
@@ -140,15 +193,13 @@ export function buildSaveCommand(): Command {
     });
 }
 
-// CR-05/06: a save that would replace filled/restored content with a live
-// local source version must confirm before overwriting the managed copy. This is
-// reachable today — the scan at the top of `clog save` re-attaches a live
-// sourcePath to a restored `fill --own` row (leaving projectPath null), so a
-// continued source makes sourcePath and filePath diverge and trips this branch.
-// Off a TTY, confirm() returns false, so we skip rather than overwrite. Completing
-// re-attachment per CR-05 (also setting projectPath) would make
-// isLikelyRestoredLocalConversation false and disable this guard; the coupling is
-// pinned by tests/save-restored-overwrite.test.ts.
+// A save that would replace filled/restored content with a live local source
+// version must confirm before overwriting the managed copy. The command attaches
+// the matching scan candidate's sourcePath to the saved row in memory while the
+// restored row keeps its null projectPath, so a continued source makes
+// sourcePath and filePath diverge and reaches this guard without a scan write.
+// Off a TTY, confirm() returns false and leaves both the row and managed copy
+// unchanged. tests/save-restored-overwrite.test.ts pins this coupling.
 async function confirmRestoredOverwriteIfNeeded(
   conversation: ConversationMeta,
   candidate: { shouldRefreshRawCopy: boolean },
@@ -223,37 +274,72 @@ async function printSaveIndexingOutcome(
 
 async function resolveSaveSelectors(
   selectors: string[],
-): Promise<ConversationMeta[]> {
-  const projectTargets = await collectProjectSaveTargets();
+  scanSnapshot: LocalScanSnapshot,
+): Promise<{ conversations: ConversationMeta[]; directSavedIds: Set<string> }> {
+  const projectTargets = await collectProjectSaveTargets(scanSnapshot);
   const projectTargetIds = new Set(projectTargets.map((conversation) => conversation.id));
+  const idCandidates = await listConversationView(
+    { states: ["saved", "unsaved"] },
+    scanSnapshot,
+  );
+  const projectCandidates = await listConversationView(
+    { states: ["saved", "unsaved"], origin: "local" },
+    scanSnapshot,
+  );
 
-  return resolveConversationSelectors({
-    commandName: "clog save",
-    tokens: selectors,
-    idCandidates: await listConversations(),
-    projectCandidates: await listConversations({ origin: "local" }),
-    projectSelectionFilter: (conversation) => projectTargetIds.has(conversation.id),
-  });
-}
-
-async function skipMissingDiscoveredSource(
-  error: unknown,
-  conversation: ConversationMeta,
-): Promise<boolean> {
-  if (!(error instanceof SourceFileMissingError) || conversation.state !== "unsaved") {
-    return false;
+  const directSavedIds = new Set<string>();
+  for (const token of selectors) {
+    if (token.startsWith("project:")) {
+      continue;
+    }
+    const parsed = parseSourceQualifiedId(token.trim());
+    if (!parsed.ok) {
+      continue;
+    }
+    const projectMatches = projectCandidates.filter(
+      (conversation) =>
+        conversation.projectName?.toLowerCase() === token.trim().toLowerCase(),
+    );
+    if (projectMatches.length === 0) {
+      const resolved = await resolveConversationView(token, {
+        states: ["saved", "unsaved"],
+        scanSnapshot,
+      });
+      if (resolved.state === "saved") {
+        directSavedIds.add(resolved.id);
+      }
+    }
   }
 
-  await removeConversationCopy(conversation, { command: "clog save" });
-  process.stderr.write(
-    `warning: skipped ${conversation.id.slice(0, 8)} because its source file is missing; removed stale unsaved row from clog's database (path=${conversation.sourcePath})\n`,
+  const conversations = await resolveConversationSelectors({
+    commandName: "clog save",
+    tokens: selectors,
+    idCandidates,
+    projectCandidates,
+    projectSelectionFilter: (conversation) => projectTargetIds.has(conversation.id),
+  });
+
+  return { conversations, directSavedIds };
+}
+
+function throwDirectSavedSourceUnavailable(
+  conversation: ConversationMeta,
+  scanSnapshot: LocalScanSnapshot,
+): never {
+  const shortId = conversation.id.slice(0, 8);
+  if (!isSourceDiscoveryComplete(conversation.source, scanSnapshot)) {
+    throw new ClogError(
+      `Could not determine whether the live source for conversation ${shortId} is available because ${conversation.source} discovery did not complete. Retry after checking the source directory.`,
+    );
+  }
+
+  throw new ClogError(
+    `The live source for conversation ${shortId} is unavailable or disabled. The saved copy was left unchanged. Restore or enable the ${conversation.source} source and run 'clog save ${shortId}' again, or use 'clog show ${shortId}' to inspect the saved copy.`,
   );
-  return true;
 }
 
 export async function maybePrintSummarizationHint(): Promise<void> {
   const saved = await listConversations({
-    states: ["saved"],
     origin: "local",
   });
 

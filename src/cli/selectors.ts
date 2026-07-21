@@ -10,16 +10,17 @@ export interface SelectorResolutionOptions {
   projectSelectionFilter?: (conversation: ConversationMeta) => boolean;
   rejectExplicitProjectSelector?: boolean;
   rejectExplicitProjectSelectorHint?: string;
+  resolveIdCandidate?: (token: string) => Promise<ConversationMeta>;
 }
 
-export function resolveConversationSelectors(
+export async function resolveConversationSelectors(
   options: SelectorResolutionOptions,
-): ConversationMeta[] {
+): Promise<ConversationMeta[]> {
   const resolved: ConversationMeta[] = [];
   const seen = new Set<string>();
 
   for (const token of options.tokens) {
-    const selection = resolveSelectorToken(token, options);
+    const selection = await resolveSelectorToken(token, options);
     for (const conversation of selection) {
       if (seen.has(conversation.id)) {
         continue;
@@ -32,10 +33,10 @@ export function resolveConversationSelectors(
   return resolved;
 }
 
-function resolveSelectorToken(
+async function resolveSelectorToken(
   token: string,
   options: SelectorResolutionOptions,
-): ConversationMeta[] {
+): Promise<ConversationMeta[]> {
   const explicitProjectName = parseExplicitProjectSelector(token);
   if (explicitProjectName != null) {
     if (options.rejectExplicitProjectSelector) {
@@ -60,6 +61,21 @@ function resolveSelectorToken(
   }
 
   if (projectMatches.length > 0) {
+    if (
+      idMatches.length === 0 &&
+      options.resolveIdCandidate &&
+      looksLikeConversationSelector(token)
+    ) {
+      const possibleId = await resolveOptionalIdCandidate(
+        token,
+        options.resolveIdCandidate,
+      );
+      if (possibleId) {
+        throw new UsageError(
+          `Selector "${token}" is ambiguous: it matches both a conversation ID and project "${token}". Use a fuller/source-qualified conversation ID or "project:${token}" to disambiguate.`,
+        );
+      }
+    }
     return filterProjectMatches(projectMatches, options);
   }
 
@@ -74,13 +90,43 @@ function resolveSelectorToken(
     if (idMatches.length > 1) {
       throw new UsageError(buildAmbiguousConversationIdMessage(token, idMatches));
     }
+    if (options.resolveIdCandidate) {
+      return [await options.resolveIdCandidate(token)];
+    }
     return [idMatches[0]];
+  }
+
+  if (options.resolveIdCandidate && looksLikeConversationSelector(token)) {
+    const possibleId = await resolveOptionalIdCandidate(
+      token,
+      options.resolveIdCandidate,
+    );
+    if (possibleId) {
+      return [possibleId];
+    }
   }
 
   const noMatchLabel = looksLikeConversationSelector(token) ? "conversation" : "conversation or project";
   throw new ClogError(
     `No ${noMatchLabel} matches "${token}". Run 'clog list' or 'clog status' to inspect available conversations and projects.`,
   );
+}
+
+async function resolveOptionalIdCandidate(
+  token: string,
+  resolveIdCandidate: NonNullable<SelectorResolutionOptions["resolveIdCandidate"]>,
+): Promise<ConversationMeta | null> {
+  try {
+    return await resolveIdCandidate(token);
+  } catch (error) {
+    if (
+      error instanceof ClogError &&
+      error.message === `No conversation matches "${token}".`
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function parseExplicitProjectSelector(token: string): string | null {

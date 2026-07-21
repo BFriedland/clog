@@ -3,8 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 
-import { glob } from "glob";
-
 import type { Config } from "../config/schema.js";
 import type { Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
@@ -14,6 +12,7 @@ import {
   type DiscoverOptions,
   type DiscoveredConversation,
   type SourceAdapter,
+  globSourceFiles,
 } from "./adapter.js";
 
 interface CodexLine {
@@ -72,12 +71,12 @@ export class CodexCliAdapter implements SourceAdapter {
   constructor(private readonly config: Config) {}
 
   async *discover(options: DiscoverOptions = {}): AsyncIterable<DiscoveredConversation> {
-    for (const sessionsDir of await this.getSessionsDirs(options.onWarning)) {
-      const filePaths = await glob("**/*.jsonl", {
-        cwd: sessionsDir,
-        absolute: true,
-        nodir: true,
-      });
+    for (const sessionsDir of await this.getSessionsDirs(options)) {
+      const filePaths = await globSourceFiles(
+        "**/*.jsonl",
+        sessionsDir,
+        options.onIncomplete,
+      );
 
       for (const filePath of filePaths.sort()) {
         if (!path.basename(filePath).startsWith("rollout-")) {
@@ -272,9 +271,7 @@ export class CodexCliAdapter implements SourceAdapter {
     return this.config.sources["codex-cli"].paths.map(normalizeUserPath);
   }
 
-  private async getSessionsDirs(
-    onWarning?: (warning: ClogWarning) => void,
-  ): Promise<string[]> {
+  private async getSessionsDirs(options: DiscoverOptions): Promise<string[]> {
     const sessionsDirs: string[] = [];
 
     for (const configuredPath of this.watchPaths()) {
@@ -289,7 +286,8 @@ export class CodexCliAdapter implements SourceAdapter {
         }
         sessionsDirs.push(normalized);
       } catch {
-        onWarning?.({
+        options.onIncomplete?.();
+        options.onWarning?.({
           code: "missing_source_file",
           message: "Configured Codex sessions directory is missing or unreadable.",
           source: this.name,

@@ -13,9 +13,10 @@ import {
 } from "../conversations/write-guards.js";
 import {
   type ConversationMeta,
-  conversationMetaSchema,
-  type ConversationState,
   type OriginKind,
+  type SavedConversationMeta,
+  savedConversationMetaSchema,
+  type UnsavedConversationView,
   parseSummaryExtraction,
 } from "../models/conversation.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
@@ -23,7 +24,10 @@ import { ClogError } from "../utils/errors.js";
 import { getClogDbPath, getDbLockPath } from "../utils/paths.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { ensureCurrentSchema } from "./schema.js";
-import { unsafeUpdateLocalConversationInDb } from "./unsafe-conversations.js";
+import {
+  unsafeInsertConversationInDb,
+  unsafeUpdateLocalConversationInDb,
+} from "./unsafe-conversations.js";
 
 type DbCallback<T> = (db: Database) => Promise<T> | T;
 const require = createRequire(import.meta.url);
@@ -48,7 +52,6 @@ export type OriginFilter =
   | { kind: OriginKind; ref?: string | null };
 
 export interface ListConversationFilters {
-  states?: ConversationState[];
   projectName?: string;
   author?: string;
   tag?: string;
@@ -140,21 +143,21 @@ export async function withDb<T>(
 
 export async function getConversationById(
   id: string,
-): Promise<ConversationMeta | null> {
+): Promise<SavedConversationMeta | null> {
   return withDb((db) => getConversationByIdInDb(db, id), { mode: "read" });
 }
 
 export function getConversationByIdInDb(
   db: Database,
   id: string,
-): ConversationMeta | null {
+): SavedConversationMeta | null {
   const result = db.exec("SELECT * FROM conversations WHERE id = ?", [id]);
   return firstConversation(result);
 }
 
 export async function listConversations(
   filters: ListConversationFilters = {},
-): Promise<ConversationMeta[]> {
+): Promise<SavedConversationMeta[]> {
   return withDb((db) => listConversationsInDb(db, filters), { mode: "read" });
 }
 
@@ -164,7 +167,7 @@ export async function browseValues(
   return withDb((db) => {
     if (field === "tags_json") {
       const conversations = resultToConversations(
-        db.exec("SELECT * FROM conversations WHERE state = 'saved'"),
+        db.exec("SELECT * FROM conversations"),
       );
       const counts = new Map<string, number>();
 
@@ -183,7 +186,7 @@ export async function browseValues(
       `
         SELECT ${field} AS name, COUNT(*) AS count
         FROM conversations
-        WHERE state = 'saved' AND ${field} IS NOT NULL AND ${field} != ''
+        WHERE ${field} IS NOT NULL AND ${field} != ''
         GROUP BY ${field}
         ORDER BY ${field} ASC
       `,
@@ -285,26 +288,26 @@ export function gitOriginFilter(remoteUrl: string): OriginFilter {
 }
 
 export async function updateLocalConversation(
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
   options: { command: string },
-): Promise<LocalConversation> {
+): Promise<LocalConversation<SavedConversationMeta>> {
   return withDb((db) => updateLocalConversationInDb(db, conversation, options), {
     mode: "write",
   });
 }
 
 export async function saveLocalConversation(
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
   options: { command: string },
-): Promise<LocalConversation> {
+): Promise<LocalConversation<SavedConversationMeta>> {
   return updateLocalConversation(conversation, options);
 }
 
 export function updateLocalConversationInDb(
   db: Database,
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
   options: { command: string },
-): LocalConversation {
+): LocalConversation<SavedConversationMeta> {
   const requested = requireLocalConversation(conversation, options.command);
   const current = getConversationByIdInDb(db, conversation.id);
   if (!current) {
@@ -323,6 +326,61 @@ export function updateLocalConversationInDb(
   }
 
   return requireLocalConversation(updated, options.command);
+}
+
+export async function insertFirstSavedConversation(
+  unsaved: UnsavedConversationView,
+  prepareSavedConversation: () => Promise<SavedConversationMeta>,
+): Promise<LocalConversation<SavedConversationMeta>> {
+  return withDb(async (db) => {
+    const owner = getConversationBySourceIdentityInDb(
+      db,
+      unsaved.source,
+      unsaved.sourceId,
+    );
+    if (owner) {
+      throwFirstSaveIdentityCollision(unsaved, owner);
+    }
+
+    const saved = savedConversationMetaSchema.parse(
+      await prepareSavedConversation(),
+    );
+    if (saved.source !== unsaved.source || saved.sourceId !== unsaved.sourceId) {
+      throw new ClogError("First save changed the conversation's source identity.");
+    }
+
+    try {
+      unsafeInsertConversationInDb(db, saved);
+    } catch (error) {
+      const racedOwner = getConversationBySourceIdentityInDb(
+        db,
+        unsaved.source,
+        unsaved.sourceId,
+      );
+      if (racedOwner) {
+        throwFirstSaveIdentityCollision(unsaved, racedOwner);
+      }
+      throw error;
+    }
+
+    return requireLocalConversation(saved, "clog save");
+  }, { mode: "write" });
+}
+
+function throwFirstSaveIdentityCollision(
+  unsaved: UnsavedConversationView,
+  owner: SavedConversationMeta,
+): never {
+  const shortId = unsaved.id.slice(0, 8);
+  if (owner.originKind === "local") {
+    throw new ClogError(
+      `Conversation ${shortId} was saved by another clog process. No additional change was made. Run 'clog save ${shortId}' again to refresh the saved conversation.`,
+    );
+  }
+
+  throw new ClogError(
+    `Conversation ${shortId} was imported by another clog process before it could be saved. Inspect the saved copy with 'clog show ${shortId}'. If the local source conversation is the copy you want, run 'clog remove ${shortId}' and retry the save.`,
+  );
 }
 
 export async function renameLocalAuthor(
@@ -511,14 +569,9 @@ export function removeGitConversationsForRemoteInDb(
 export function listConversationsInDb(
   db: Database,
   filters: ListConversationFilters = {},
-): ConversationMeta[] {
+): SavedConversationMeta[] {
   const whereParts: string[] = [];
   const params: unknown[] = [];
-
-  if (filters.states && filters.states.length > 0) {
-    whereParts.push(`state IN (${filters.states.map(() => "?").join(", ")})`);
-    params.push(...filters.states);
-  }
 
   if (filters.projectName) {
     whereParts.push("LOWER(COALESCE(project_name, '')) = LOWER(?)");
@@ -573,7 +626,7 @@ export function getConversationBySourceIdentityInDb(
   db: Database,
   source: string,
   sourceId: string,
-): ConversationMeta | null {
+): SavedConversationMeta | null {
   const result = db.exec(
     "SELECT * FROM conversations WHERE source = ? AND source_id = ? LIMIT 1",
     [source, sourceId],
@@ -587,8 +640,7 @@ export async function listConversationsNeedingIndex(): Promise<ConversationMeta[
       `
         SELECT *
         FROM conversations
-        WHERE state = 'saved'
-          AND (
+        WHERE (
             indexed_at IS NULL
             OR saved_at IS NULL
             OR indexed_at < saved_at
@@ -612,7 +664,7 @@ export async function setConversationIndexedAt(
 
 export async function clearSavedIndexedAt(): Promise<void> {
   await withDb((db) => {
-    db.run("UPDATE conversations SET indexed_at = NULL WHERE state = 'saved'");
+    db.run("UPDATE conversations SET indexed_at = NULL");
   }, { mode: "write" });
 }
 
@@ -667,12 +719,12 @@ function normalizeSummaryKindFromRow(
 
 function firstConversation(
   result: QueryExecResult[],
-): ConversationMeta | null {
+): SavedConversationMeta | null {
   const conversations = resultToConversations(result);
   return conversations[0] ?? null;
 }
 
-function resultToConversations(result: QueryExecResult[]): ConversationMeta[] {
+function resultToConversations(result: QueryExecResult[]): SavedConversationMeta[] {
   if (result.length === 0) {
     return [];
   }
@@ -692,9 +744,9 @@ function rowsFromResult(result?: QueryExecResult): Array<Record<string, unknown>
   );
 }
 
-function rowToConversation(row: Record<string, unknown>): ConversationMeta {
+function rowToConversation(row: Record<string, unknown>): SavedConversationMeta {
   const summaryText = String(row.summary ?? "");
-  return conversationMetaSchema.parse({
+  return savedConversationMetaSchema.parse({
     id: String(row.id),
     sourceId: String(row.source_id),
     source: String(row.source),
@@ -710,7 +762,7 @@ function rowToConversation(row: Record<string, unknown>): ConversationMeta {
     createdAt: String(row.created_at),
     discoveredAt: String(row.discovered_at),
     modifiedAt: String(row.modified_at),
-    state: String(row.state) as ConversationState,
+    state: "saved",
     savedAt: nullableString(row.saved_at),
     savedMessageCount: nullableInteger(row.saved_message_count),
     saveVersion: Number(row.save_version),

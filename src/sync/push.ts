@@ -41,7 +41,6 @@ export async function collectSameAuthorSavedIdentities(
 ): Promise<Set<string>> {
   return withDb((db) => {
     const saved = listConversationsInDb(db, {
-      states: ["saved"],
       author,
     });
     return new Set(saved.map((c) => `${c.source}\0${c.sourceId}`));
@@ -57,7 +56,6 @@ export async function exportAuthorToCheckout(
   const ownSavedRows = await withDb(
     (db) =>
       listConversationsInDb(db, {
-        states: ["saved"],
         author,
         origin: "local",
       }),

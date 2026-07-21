@@ -6,12 +6,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Database } from "sql.js";
 
 import {
   browseValues,
   clearSavedIndexedAt,
   getConversationById,
   getConversationBySourceIdentityInDb,
+  insertFirstSavedConversation,
   listConversations,
   listConversationsNeedingIndex,
   resolveConversationId,
@@ -82,6 +84,35 @@ describe("db", () => {
     const dbPath = path.join(tempDir, "clog.db");
     await expect(fs.stat(dbPath)).resolves.toBeTruthy();
     expect(writeSpy).toHaveBeenCalledOnce();
+  });
+
+  it("creates a saved-only schema with unconditional checkpoint constraints", async () => {
+    const columns = await withDb((db) => {
+      const result = db.exec("PRAGMA table_info(conversations)");
+      return result[0]?.values.map((row) => ({
+        name: String(row[1]),
+        notNull: Number(row[3]),
+      })) ?? [];
+    }, { mode: "read" });
+
+    expect(columns.some((column) => column.name === "state")).toBe(false);
+    expect(columns).toEqual(expect.arrayContaining([
+      { name: "saved_at", notNull: 1 },
+      { name: "saved_message_count", notNull: 1 },
+      { name: "save_version", notNull: 1 },
+    ]));
+
+    const conversation = makeConversation();
+    await insertConversation(conversation);
+    for (const sql of [
+      "UPDATE conversations SET saved_at = NULL",
+      "UPDATE conversations SET saved_message_count = NULL",
+      "UPDATE conversations SET saved_message_count = -1",
+      "UPDATE conversations SET save_version = NULL",
+      "UPDATE conversations SET save_version = 0",
+    ]) {
+      await expect(withDb((db) => db.exec(sql), { mode: "write" })).rejects.toThrow();
+    }
   });
 
   it("does not flush current-schema read access", async () => {
@@ -191,7 +222,7 @@ describe("db", () => {
     await expect(getConversationById(conversation.id)).resolves.toEqual(updated);
   });
 
-  it("lists conversations with state and project filters", async () => {
+  it("lists saved conversations with project filters", async () => {
     await insertConversation(makeConversation());
     await insertConversation(
       makeConversation({
@@ -202,8 +233,8 @@ describe("db", () => {
       }),
     );
 
-    const saved = await listConversations({ states: ["saved"] });
-    expect(saved).toHaveLength(1);
+    const saved = await listConversations();
+    expect(saved).toHaveLength(2);
 
     const byProject = await listConversations({ projectName: "api-service" });
     expect(byProject).toHaveLength(2);
@@ -361,7 +392,6 @@ describe("db", () => {
     );
 
     const curated = await listConversations({
-      states: ["saved"],
       curatedDefault: { author: "alice" },
     });
     expect(curated).toHaveLength(2);
@@ -463,45 +493,9 @@ describe("db", () => {
     expect(loaded?.originRef).toBe("git@example.com:repo.git");
   });
 
-  it("renames the legacy 'discovered' state to 'unsaved' on migration", async () => {
+  it("drops legacy discovered rows, preserves valid saved rows, and removes state", async () => {
     await withDb((db) => {
-      db.exec(`
-        DROP TABLE conversations;
-        DROP TABLE schema_version;
-        CREATE TABLE schema_version (version INTEGER NOT NULL);
-        INSERT INTO schema_version (version) VALUES (7);
-        CREATE TABLE conversations (
-          id TEXT PRIMARY KEY,
-          source_id TEXT NOT NULL,
-          source TEXT NOT NULL,
-          title TEXT NOT NULL,
-          summary TEXT DEFAULT '',
-          summary_kind TEXT NOT NULL DEFAULT 'none'
-            CHECK(summary_kind IN ('none','imported','generated','curated')),
-          summary_extraction TEXT,
-          author TEXT NOT NULL,
-          project_name TEXT,
-          project_path TEXT,
-          tags_json TEXT DEFAULT '[]',
-          slug TEXT,
-          created_at TEXT NOT NULL,
-          discovered_at TEXT NOT NULL,
-          modified_at TEXT NOT NULL,
-          state TEXT NOT NULL DEFAULT 'discovered'
-            CHECK(state IN ('discovered','saved')),
-          saved_at TEXT,
-          saved_message_count INTEGER,
-          save_version INTEGER DEFAULT 0,
-          source_path TEXT NOT NULL,
-          file_path TEXT,
-          source_mtime TEXT,
-          indexed_at TEXT,
-          origin_kind TEXT NOT NULL DEFAULT 'local'
-            CHECK(origin_kind IN ('local','git','file')),
-          origin_ref TEXT,
-          UNIQUE(source, source_id)
-        );
-      `);
+      installLegacyV7Schema(db);
       db.run(
         `INSERT INTO conversations (id, source_id, source, title, author,
           created_at, discovered_at, modified_at, state, save_version, source_path,
@@ -523,12 +517,136 @@ describe("db", () => {
           null,
         ],
       );
+      db.run(
+        `INSERT INTO conversations (
+          id, source_id, source, title, summary, summary_kind, author,
+          project_name, project_path, tags_json, created_at, discovered_at,
+          modified_at, state, saved_at, saved_message_count, save_version,
+          source_path, file_path, source_mtime, origin_kind, origin_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "f5555555-1234-1234-1234-123456789012",
+          "f5555555-1234-1234-1234-123456789012",
+          "claude-code",
+          "Legacy saved row",
+          "Preserve me",
+          "curated",
+          "alice",
+          "api-service",
+          "/tmp/api-service",
+          '["important"]',
+          "2026-02-01T09:00:00.000Z",
+          "2026-02-01T09:30:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "saved",
+          "2026-02-01T10:00:00.000Z",
+          7,
+          3,
+          "/tmp/source.jsonl",
+          "/tmp/raw.jsonl",
+          "2026-02-01T09:59:00.000Z",
+          "local",
+          null,
+        ],
+      );
     }, { mode: "write" });
 
     await withDb(() => undefined, { mode: "read" });
 
     const loaded = await getConversationById("f4444444-1234-1234-1234-123456789012");
-    expect(loaded?.state).toBe("unsaved");
+    expect(loaded).toBeNull();
+    await expect(getConversationById("f5555555-1234-1234-1234-123456789012")).resolves.toMatchObject({
+      state: "saved",
+      title: "Legacy saved row",
+      summary: "Preserve me",
+      tags: ["important"],
+      savedAt: "2026-02-01T10:00:00.000Z",
+      savedMessageCount: 7,
+      saveVersion: 3,
+    });
+    const columnNames = await withDb((db) => {
+      const result = db.exec("PRAGMA table_info(conversations)");
+      return result[0]?.values.map((row) => String(row[1])) ?? [];
+    }, { mode: "read" });
+    expect(columnNames).not.toContain("state");
+
+    for (const sql of [
+      "UPDATE conversations SET saved_at = NULL",
+      "UPDATE conversations SET saved_message_count = NULL",
+      "UPDATE conversations SET saved_message_count = -1",
+      "UPDATE conversations SET save_version = NULL",
+      "UPDATE conversations SET save_version = 0",
+    ]) {
+      await expect(withDb((db) => db.exec(sql), { mode: "write" })).rejects.toThrow();
+    }
+  });
+
+  it("rejects corrupt saved checkpoints without replacing the legacy database", async () => {
+    await withDb((db) => {
+      installLegacyV7Schema(db);
+      db.run(
+        `INSERT INTO conversations (
+          id, source_id, source, title, author, created_at, discovered_at,
+          modified_at, state, saved_at, saved_message_count, save_version,
+          source_path, origin_kind, origin_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "f6666666-1234-1234-1234-123456789012",
+          "f6666666-1234-1234-1234-123456789012",
+          "claude-code",
+          "Corrupt saved row",
+          "alice",
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "2026-02-01T10:00:00.000Z",
+          "saved",
+          null,
+          null,
+          0,
+          "/tmp/source.jsonl",
+          "local",
+          null,
+        ],
+      );
+    }, { mode: "write" });
+    const dbPath = path.join(tempDir, "clog.db");
+    const before = await fs.readFile(dbPath);
+
+    await expect(withDb(() => undefined, { mode: "read" })).rejects.toThrow(
+      /invalid save checkpoints/i,
+    );
+    await expect(fs.readFile(dbPath)).resolves.toEqual(before);
+  });
+
+  it("reports first-save identity collisions before preparing managed content", async () => {
+    const unsaved = {
+      ...makeConversation(),
+      state: "unsaved" as const,
+      savedAt: null,
+      savedMessageCount: null,
+      saveVersion: 0 as const,
+      filePath: null,
+    };
+    const managedPath = path.join(tempDir, "raw", `${unsaved.id}.jsonl`);
+
+    for (const owner of [
+      makeConversation(),
+      makeConversation({ originKind: "file", originRef: null }),
+    ]) {
+      await insertConversation(owner);
+      const prepare = vi.fn(async () => {
+        await fs.mkdir(path.dirname(managedPath), { recursive: true });
+        await fs.writeFile(managedPath, "losing bytes");
+        return owner;
+      });
+
+      await expect(insertFirstSavedConversation(unsaved, prepare)).rejects.toThrow(
+        owner.originKind === "local" ? /saved by another clog process/i : /imported by another clog process/i,
+      );
+      expect(prepare).not.toHaveBeenCalled();
+      await expect(fs.stat(managedPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await deleteConversation(owner.id);
+    }
   });
 
   it("enforces origin_kind and origin_ref constraints", async () => {
@@ -539,10 +657,10 @@ describe("db", () => {
             INSERT INTO conversations (
               id, source_id, source, title, summary, summary_kind, summary_extraction,
               author, project_name, project_path, tags_json, slug, created_at,
-              discovered_at, modified_at, state, saved_at, saved_message_count,
+              discovered_at, modified_at, saved_at, saved_message_count,
               save_version, source_path, file_path, source_mtime, indexed_at,
               origin_kind, origin_ref
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             "e3333333-1234-1234-1234-123456789012",
@@ -560,7 +678,6 @@ describe("db", () => {
             "2026-02-01T10:00:00.000Z",
             "2026-02-01T10:00:00.000Z",
             "2026-02-01T10:00:00.000Z",
-            "saved",
             "2026-02-01T10:00:00.000Z",
             1,
             1,
@@ -585,8 +702,7 @@ describe("db", () => {
   // listConversations filters (the ones not covered above)
   // ============================================================
 
-  it("lists conversations across multiple states at once", async () => {
-    await insertConversation(makeConversation({ state: "unsaved" }));
+  it("lists only persisted saved conversations", async () => {
     await insertConversation(
       makeConversation({
         id: "a2345678-1234-1234-1234-123456789012",
@@ -602,7 +718,7 @@ describe("db", () => {
       }),
     );
 
-    const curated = await listConversations({ states: ["saved"] });
+    const curated = await listConversations();
     expect(curated).toHaveLength(2);
     expect(new Set(curated.map((c) => c.state))).toEqual(new Set(["saved"]));
   });
@@ -623,11 +739,11 @@ describe("db", () => {
       }),
     );
 
-    const indexed = await listConversations({ states: ["saved"], indexed: true });
+    const indexed = await listConversations({ indexed: true });
     expect(indexed).toHaveLength(1);
     expect(indexed[0]?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
 
-    const unindexed = await listConversations({ states: ["saved"], indexed: false });
+    const unindexed = await listConversations({ indexed: false });
     expect(unindexed).toHaveLength(1);
     expect(unindexed[0]?.indexedAt).toBeNull();
   });
@@ -645,7 +761,7 @@ describe("db", () => {
       }),
     );
 
-    const all = await listConversations({ states: ["saved"], curatedDefault: null });
+    const all = await listConversations({ curatedDefault: null });
     expect(all).toHaveLength(2);
   });
 
@@ -764,17 +880,6 @@ describe("db", () => {
         indexedAt: "2026-02-01T10:00:01.000Z",
       }),
     );
-    // Discovered + null → excluded (only saved is searchable)
-    await insertConversation(
-      makeConversation({
-        id: "d2222222-1234-1234-1234-123456789012",
-        sourceId: "d2222222-1234-1234-1234-123456789012",
-        state: "unsaved",
-        createdAt: "2026-02-01T06:00:00.000Z",
-        indexedAt: null,
-      }),
-    );
-
     const needing = await listConversationsNeedingIndex();
     expect(needing.map((conversation) => conversation.id)).toEqual([
       "a1234567-1234-1234-1234-123456789012",
@@ -782,28 +887,17 @@ describe("db", () => {
     ]);
   });
 
-  it("clearSavedIndexedAt bulk-clears only saved rows", async () => {
+  it("clearSavedIndexedAt bulk-clears every persisted row", async () => {
     await insertConversation(
       makeConversation({
         state: "saved",
         indexedAt: "2026-02-01T10:00:00.000Z",
       }),
     );
-    await insertConversation(
-      makeConversation({
-        id: "d3333333-1234-1234-1234-123456789012",
-        sourceId: "d3333333-1234-1234-1234-123456789012",
-        state: "unsaved",
-        indexedAt: "2026-02-01T10:00:00.000Z",
-      }),
-    );
-
     await clearSavedIndexedAt();
 
     const saved = await getConversationById("a1234567-1234-1234-1234-123456789012");
-    const discovered = await getConversationById("d3333333-1234-1234-1234-123456789012");
     expect(saved?.indexedAt).toBeNull();
-    expect(discovered?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
   });
 });
 
@@ -835,10 +929,10 @@ function baseConversation() {
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "unsaved" as const,
-    savedAt: null,
-    savedMessageCount: null,
-    saveVersion: 0,
+    state: "saved" as const,
+    savedAt: timestamp,
+    savedMessageCount: 0,
+    saveVersion: 1,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: null,
@@ -846,4 +940,44 @@ function baseConversation() {
     originKind: "local" as const,
     originRef: null,
   };
+}
+
+function installLegacyV7Schema(db: Database): void {
+  db.exec(`
+    DROP TABLE conversations;
+    DROP TABLE schema_version;
+    CREATE TABLE schema_version (version INTEGER NOT NULL);
+    INSERT INTO schema_version (version) VALUES (7);
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      summary_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(summary_kind IN ('none','imported','generated','curated')),
+      summary_extraction TEXT,
+      author TEXT NOT NULL,
+      project_name TEXT,
+      project_path TEXT,
+      tags_json TEXT DEFAULT '[]',
+      slug TEXT,
+      created_at TEXT NOT NULL,
+      discovered_at TEXT NOT NULL,
+      modified_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'discovered'
+        CHECK(state IN ('discovered','saved')),
+      saved_at TEXT,
+      saved_message_count INTEGER,
+      save_version INTEGER DEFAULT 0,
+      source_path TEXT NOT NULL,
+      file_path TEXT,
+      source_mtime TEXT,
+      indexed_at TEXT,
+      origin_kind TEXT NOT NULL DEFAULT 'local'
+        CHECK(origin_kind IN ('local','git','file')),
+      origin_ref TEXT,
+      UNIQUE(source, source_id)
+    );
+  `);
 }

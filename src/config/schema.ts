@@ -32,7 +32,6 @@ export const configSchema = z.object({
   author: z.string().default(""),
   sources: z.object(sourceEntries),
   defaultTags: z.array(z.string()).default([]),
-  autoScan: z.boolean().default(false),
   search: SearchConfigSchema,
   remote: remoteConfigSchema,
 });

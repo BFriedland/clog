@@ -2,7 +2,17 @@ import { Command, type ErrorOptions } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import type { ConversationMeta } from "../models/conversation.js";
-import { applyHeadTail, formatForSingleLine, parseConversationMessages, renderMessages, resolveConversationOrFail, resolveContentPath } from "./common.js";
+import {
+  applyHeadTail,
+  formatForSingleLine,
+  getScanWarningsForCommand,
+  parseConversationMessages,
+  renderMessages,
+  renderWarnings,
+  resolveContentPath,
+} from "./common.js";
+import { resolveConversationView } from "../conversations/view.js";
+import { scanLocalSources } from "./scan.js";
 import { UsageError } from "../utils/errors.js";
 import {
   buildConversationExport,
@@ -43,8 +53,16 @@ export function buildShowCommand(): Command {
     .option("--first, --head <n>", "Render the first N parsed messages")
     .option("--last, --tail <n>", "Render the last N parsed messages")
     .action(async (id: string, options: ShowOptions) => {
+      if (id.startsWith("project:")) {
+        throw new UsageError(
+          `This command only accepts conversation IDs. Project selectors like "${id}" are not allowed here.`,
+        );
+      }
       const { format, head, tail } = validateShowOptions(options);
-      const conversation = await resolveConversationOrFail(id);
+      const config = await loadConfig();
+      const scanSnapshot = await scanLocalSources(config);
+      renderWarnings(getScanWarningsForCommand(scanSnapshot));
+      const conversation = await resolveConversationView(id, { scanSnapshot });
 
       if (options.path) {
         process.stdout.write(`${resolveContentPath(conversation)}\n`);
@@ -56,7 +74,6 @@ export function buildShowCommand(): Command {
         return;
       }
 
-      const config = await loadConfig();
       const messages = await parseConversationMessages(config, conversation);
       const limited = applyHeadTail(messages, { head, tail });
 

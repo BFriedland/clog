@@ -12,7 +12,7 @@ import {
   unsafeUpdateConversationInDb,
 } from "../db/unsafe-conversations.js";
 import type { FillWriteAction } from "../interchange/fill.js";
-import type { ConversationMeta } from "../models/conversation.js";
+import type { SavedConversationMeta } from "../models/conversation.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { ClogError } from "../utils/errors.js";
 import type { PreparedFillInput } from "./fill-input.js";
@@ -21,7 +21,7 @@ export async function applyFillWriteAction(
   db: Database,
   action: FillWriteAction,
   input?: PreparedFillInput,
-): Promise<ConversationMeta> {
+): Promise<SavedConversationMeta> {
   const writeKind = action.kind === "insert" ? "insert" : "update";
 
   validateFillWriteTargetInDb(db, writeKind, action.conversation);
@@ -50,7 +50,7 @@ export async function applyFillWriteAction(
 function validateFillWriteTargetInDb(
   db: Database,
   kind: "insert" | "update",
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
 ): void {
   if (conversation.originKind === "file") {
     const fileConversation = requireFileConversation(conversation, "clog fill");
@@ -84,7 +84,7 @@ function validateFillWriteTargetInDb(
 function applyFileImportWriteInDb(
   db: Database,
   kind: "insert" | "update",
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
 ): void {
   const fileConversation = requireFileConversation(conversation, "clog fill");
   if (kind === "insert") {
@@ -103,7 +103,7 @@ function applyFileImportWriteInDb(
 function applyLocalFillWriteInDb(
   db: Database,
   kind: "insert" | "update",
-  conversation: ConversationMeta,
+  conversation: SavedConversationMeta,
 ): void {
   const localConversation = requireLocalConversation(conversation, "clog fill --own");
   if (kind === "insert") {

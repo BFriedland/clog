@@ -6,7 +6,11 @@ import { Command, Option } from "commander";
 import { isSourceParseSupported } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
-import { listConversations } from "../db/index.js";
+import {
+  listConversationView,
+  resolveConversationView,
+  type LocalScanSnapshot,
+} from "../conversations/view.js";
 import {
   createDeterministicPairArchive,
   validateArchiveEntryName,
@@ -41,7 +45,6 @@ interface DrainOptions {
   force?: boolean;
   includeImported?: boolean;
   yes?: boolean;
-  refresh?: boolean;
   showAllErrors?: boolean;
   state?: string;
   project?: string;
@@ -75,7 +78,6 @@ export function buildDrainCommand(): Command {
       "--yes",
       "Export saved local conversations without prompting when no selector or filter is supplied",
     )
-    .option("--refresh", "Refresh local discovery before resolving the export set")
     .option("--show-all-errors", "Show every per-conversation export failure")
     .option("-p, --project <name>", "Exact project metadata filter")
     .option("-a, --author <name>", "Exact author metadata filter")
@@ -106,13 +108,15 @@ async function runDrainCommand(
   }
 
   const config = await loadConfig();
-  if (options.refresh) {
-    const scanResult = await scanLocalSources(config);
+  const needsUnsavedView = selectors.length > 0 || hasFilterOptions(options);
+  const scanResult = needsUnsavedView ? await scanLocalSources(config) : undefined;
+  if (scanResult) {
     renderWarnings(getScanWarningsForCommand(scanResult));
   }
 
   const resolved = await resolveDrainConversations(selectors, options, {
     bare,
+    scanSnapshot: scanResult,
   });
   if (resolved.conversations.length === 0) {
     if (resolved.skippedUnsaved > 0) {
@@ -261,27 +265,36 @@ interface ResolvedDrainConversations {
 async function resolveDrainConversations(
   selectors: string[],
   options: DrainOptions,
-  context: { bare: boolean },
+  context: { bare: boolean; scanSnapshot?: LocalScanSnapshot },
 ): Promise<ResolvedDrainConversations> {
   if (context.bare || options.includeImported) {
     const origin = context.bare ? ("local" as const) : undefined;
-    const conversations = await listConversations({ states: ["saved"], origin });
-    const unsaved = await listConversations({ states: ["unsaved"], origin });
+    const conversations = await listConversationView({ states: ["saved"], origin });
     return {
       conversations: dedupeAndSortConversations(conversations),
-      skippedUnsaved: unsaved.length,
+      skippedUnsaved: 0,
     };
   }
 
   const hasFilters = hasFilterOptions(options);
+  const viewFilters = {
+    projectName: trimmed(options.project),
+    author: trimmed(options.author),
+    tag: trimmed(options.tag),
+    origin: parseOriginFilter(options.origin),
+  };
   const filteredConversations = hasFilters
-    ? await listConversations({
-        projectName: trimmed(options.project),
-        author: trimmed(options.author),
-        tag: trimmed(options.tag),
-        origin: parseOriginFilter(options.origin),
-      })
+    ? await listConversationView({
+        states: ["saved", "unsaved"],
+        ...viewFilters,
+      }, context.scanSnapshot!)
     : null;
+  const resolverStates = filtersExcludeUnsavedViews(
+    viewFilters,
+    context.scanSnapshot!,
+  )
+    ? (["saved"] as const)
+    : (["saved", "unsaved"] as const);
 
   const droppedUnsaved = new Set<string>();
   const projectSelectionFilter = (conversation: ConversationMeta): boolean => {
@@ -293,12 +306,25 @@ async function resolveDrainConversations(
   };
 
   const explicitConversations = selectors.length > 0
-    ? resolveConversationSelectors({
+    ? await resolveConversationSelectors({
         commandName: "clog drain",
         tokens: selectors,
-        idCandidates: filteredConversations ?? (await listConversations()),
-        projectCandidates: await collectProjectDrainTargets(filteredConversations),
+        idCandidates:
+          filteredConversations ??
+          (await listConversationView(
+            { states: ["saved", "unsaved"] },
+            context.scanSnapshot!,
+          )),
+        projectCandidates: await collectProjectDrainTargets(
+          filteredConversations,
+          context.scanSnapshot,
+        ),
         projectSelectionFilter,
+        resolveIdCandidate: (token) => resolveConversationView(token, {
+          states: [...resolverStates],
+          scanSnapshot: context.scanSnapshot,
+          filters: hasFilters ? viewFilters : undefined,
+        }),
       })
     : null;
 
@@ -316,6 +342,21 @@ async function resolveDrainConversations(
   const keptIds = new Set(deduped.map((conversation) => conversation.id));
   const skippedUnsaved = [...droppedUnsaved].filter((id) => !keptIds.has(id)).length;
   return { conversations: deduped, skippedUnsaved };
+}
+
+function filtersExcludeUnsavedViews(
+  filters: {
+    author?: string;
+    tag?: string;
+    origin?: "local" | "remote";
+  },
+  scanSnapshot: LocalScanSnapshot,
+): boolean {
+  return (
+    filters.origin === "remote" ||
+    filters.tag !== undefined ||
+    (filters.author !== undefined && filters.author !== scanSnapshot.author)
+  );
 }
 
 async function assertPairDestinationBeforeConfirmation(

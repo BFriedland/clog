@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const conversationStateSchema = z.enum([
+export const conversationStateSchema = z.enum([
   "unsaved",
   "saved",
 ]);
@@ -81,7 +81,7 @@ export const messageSchema = z.object({
 
 export type Message = z.infer<typeof messageSchema>;
 
-export const conversationMetaSchema = z.object({
+const conversationMetaBaseShape = {
   id: z.string(),
   sourceId: z.string(),
   source: z.string(),
@@ -97,19 +97,38 @@ export const conversationMetaSchema = z.object({
   createdAt: z.string(),
   discoveredAt: z.string(),
   modifiedAt: z.string(),
-  state: conversationStateSchema,
-  savedAt: z.string().nullable(),
-  savedMessageCount: z.number().int().nonnegative().nullable(),
-  saveVersion: z.number().int().nonnegative(),
   sourcePath: z.string(),
   filePath: z.string().nullable(),
   sourceMtime: z.string().nullable(),
   indexedAt: z.string().nullable(),
   originKind: originKindSchema,
   originRef: z.string().nullable(),
+};
+
+export const savedConversationMetaSchema = z.object({
+  ...conversationMetaBaseShape,
+  state: z.literal("saved"),
+  savedAt: z.string(),
+  savedMessageCount: z.number().int().nonnegative(),
+  saveVersion: z.number().int().positive(),
 });
 
+export const unsavedConversationViewSchema = z.object({
+  ...conversationMetaBaseShape,
+  state: z.literal("unsaved"),
+  savedAt: z.null(),
+  savedMessageCount: z.null(),
+  saveVersion: z.literal(0),
+});
+
+export const conversationMetaSchema = z.discriminatedUnion("state", [
+  savedConversationMetaSchema,
+  unsavedConversationViewSchema,
+]);
+
 export type ConversationMeta = z.infer<typeof conversationMetaSchema>;
+export type SavedConversationMeta = z.infer<typeof savedConversationMetaSchema>;
+export type UnsavedConversationView = z.infer<typeof unsavedConversationViewSchema>;
 
 export function summaryKindForDiscoveredSummary(summary: string): SummaryKind {
   return summary.trim() ? "imported" : "none";

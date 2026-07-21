@@ -4,813 +4,755 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
+import * as adapterRegistry from "../src/adapters/registry.js";
+import type { SourceAdapter } from "../src/adapters/adapter.js";
+import { buildDrainCommand } from "../src/cli/drain.js";
+import { buildListCommand } from "../src/cli/list.js";
+import { buildSaveCommand } from "../src/cli/save.js";
+import { scanLocalSources } from "../src/cli/scan.js";
+import { buildShowCommand } from "../src/cli/show.js";
+import { buildStatusCommand } from "../src/cli/status.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
-import { getConversationById, listConversations } from "../src/db/index.js";
-import * as dbModule from "../src/db/index.js";
-import { getScanWarningsForCommand } from "../src/cli/common.js";
-import { scanLocalSources, type ScanResult } from "../src/cli/scan.js";
-import type { ClogWarning } from "../src/models/warnings.js";
+import {
+  buildDiscoveredConversation,
+  listConversationView,
+  resolveConversationView,
+} from "../src/conversations/view.js";
+import { conversationStateSchema, unsavedConversationViewSchema } from "../src/models/conversation.js";
+import { getConversationById } from "../src/db/index.js";
+import { handleList } from "../src/mcp/handlers.js";
+import { getClogDbPath } from "../src/utils/paths.js";
 import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
+import { captureOutput } from "./helpers/output.js";
 
-describe("scan", () => {
+describe("ephemeral local source scans", () => {
   let tempDir: string;
+  let sourceRoot: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-scan-"));
     process.env.CLOG_HOME = path.join(tempDir, ".clog");
+    sourceRoot = path.join(tempDir, "claude");
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     delete process.env.CLOG_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("applies clogignore and config filtering in order", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-    config.sources["claude-code"].includePaths = ["/Users/alice/work"];
-    config.sources["claude-code"].excludePaths = ["/Users/alice/work/private"];
-    await saveConfig(config);
+  it("returns unsaved candidates without creating or writing the database", async () => {
+    const id = "11111111-1111-1111-1111-111111111111";
+    await writeClaudeConversation(id, "/Users/alice/work/app", "Investigate auth");
+    const config = scanConfig();
 
-    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
-    await fs.writeFile(
-      path.join(process.env.CLOG_HOME!, "clogignore"),
-      [
-        "11111111-1111-1111-1111-111111111111",
-        "/Users/alice/work/ignored/*",
-      ].join("\n"),
-      "utf8",
-    );
+    const snapshot = await scanLocalSources(config);
 
-    await writeClaudeConversation(claudeRoot, "11111111-1111-1111-1111-111111111111", "/Users/alice/work/app");
-    await writeClaudeConversation(claudeRoot, "22222222-2222-2222-2222-222222222222", "/Users/alice/work/private");
-    await writeClaudeConversation(claudeRoot, "33333333-3333-3333-3333-333333333333", "/Users/alice/work/ignored/repo");
-    await writeClaudeConversation(claudeRoot, "44444444-4444-4444-4444-444444444444", "/Users/alice/work/public");
-
-    const result = await scanLocalSources(config);
-    const conversations = await listConversations();
-
-    expect(result.counts.filtered).toBe(1);
-    expect(result.counts.ignored).toBe(2);
-    expect(conversations).toHaveLength(1);
-    expect(conversations[0]?.id).toBe("44444444-4444-4444-4444-444444444444");
+    expect(snapshot.candidates.map((candidate) => candidate.sourceId)).toEqual([id]);
+    expect(snapshot.sourceStatuses).toEqual([{ source: "claude-code", complete: true }]);
+    await expect(fs.stat(getClogDbPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("runs the scan database phase in a single withDb critical section", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
+  it("marks real adapters incomplete when configured source roots are unavailable", async () => {
+    const claudeConfig = scanConfig();
+    claudeConfig.sources["claude-code"].paths = [path.join(tempDir, "missing-claude")];
+    const claudeSnapshot = await scanLocalSources(claudeConfig);
 
-    await writeClaudeConversation(claudeRoot, "61616161-6161-6161-6161-616161616161", "/Users/alice/work/a");
-    await writeClaudeConversation(claudeRoot, "62626262-6262-6262-6262-626262626262", "/Users/alice/work/b");
-    await writeClaudeConversation(claudeRoot, "63636363-6363-6363-6363-636363636363", "/Users/alice/work/c");
+    expect(claudeSnapshot.sourceStatuses).toEqual([
+      { source: "claude-code", complete: false },
+    ]);
+    expect(claudeSnapshot.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_discovery_incomplete",
+        source: "claude-code",
+      }),
+    ]));
+    await expect(
+      resolveConversationView("aaaa@claude-code", { scanSnapshot: claudeSnapshot }),
+    ).rejects.toThrow(/could not determine/i);
 
-    // Local scan gathers filesystem candidates before opening the DB. Once it
-    // enters the database phase, every discovered-row write should share one
-    // acquire/load/apply/flush/release cycle for the whole scan batch.
-    const withDbSpy = vi.spyOn(dbModule, "withDb");
-    const result = await scanLocalSources(config);
-    const withDbCalls = withDbSpy.mock.calls.length;
-    withDbSpy.mockRestore();
+    const codexConfig = getDefaultConfig("alice");
+    codexConfig.sources["claude-code"].enabled = false;
+    codexConfig.sources["codex-cli"].paths = [path.join(tempDir, "missing-codex")];
+    const codexSnapshot = await scanLocalSources(codexConfig);
 
-    expect(result.counts.discovered).toBe(3);
-    expect(withDbCalls).toBe(1);
+    expect(codexSnapshot.sourceStatuses).toEqual([
+      { source: "codex-cli", complete: false },
+    ]);
+    expect(codexSnapshot.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_discovery_incomplete",
+        source: "codex-cli",
+      }),
+    ]));
   });
 
-  it("treats ~/ path rules in clogignore as home-expanded project-path matches", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-    await saveConfig(config);
+  it("marks real adapter discovery incomplete when directory traversal is denied", async () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) {
+      return;
+    }
 
-    const fakeHome = path.join(tempDir, "home", "alice");
-    const originalHome = process.env.HOME;
-    process.env.HOME = fakeHome;
+    const unreadableRoot = path.join(tempDir, "unreadable-claude-root");
+    await fs.mkdir(unreadableRoot, { recursive: true });
+    await fs.chmod(unreadableRoot, 0o000);
 
     try {
-      await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
-      await fs.writeFile(
-        path.join(process.env.CLOG_HOME!, "clogignore"),
-        "~/personal/\n",
-        "utf8",
-      );
+      await expect(fs.stat(unreadableRoot)).resolves.toMatchObject({});
+      await expect(fs.readdir(unreadableRoot)).rejects.toMatchObject({ code: "EACCES" });
 
-      await writeClaudeConversation(
-        claudeRoot,
-        "12121212-1212-1212-1212-121212121212",
-        path.join(fakeHome, "personal", "app"),
-      );
-      await writeClaudeConversation(
-        claudeRoot,
-        "13131313-1313-1313-1313-131313131313",
-        path.join(fakeHome, "work", "app"),
-      );
+      const config = scanConfig();
+      config.sources["claude-code"].paths = [unreadableRoot];
+      const snapshot = await scanLocalSources(config);
 
-      const result = await scanLocalSources(config);
-      const conversations = await listConversations();
-
-      expect(result.counts.ignored).toBe(1);
-      expect(conversations).toHaveLength(1);
-      expect(conversations[0]?.id).toBe("13131313-1313-1313-1313-131313131313");
+      expect(snapshot.sourceStatuses).toEqual([
+        { source: "claude-code", complete: false },
+      ]);
+      expect(snapshot.warnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "source_discovery_incomplete",
+          source: "claude-code",
+        }),
+      ]));
     } finally {
-      if (originalHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = originalHome;
-      }
+      await fs.chmod(unreadableRoot, 0o700);
+    }
+
+    const readableRoot = path.join(tempDir, "claude-with-unreadable-project");
+    const unreadableProject = path.join(readableRoot, "project");
+    await fs.mkdir(unreadableProject, { recursive: true });
+    await fs.chmod(unreadableProject, 0o000);
+
+    try {
+      const config = scanConfig();
+      config.sources["claude-code"].paths = [readableRoot];
+      const snapshot = await scanLocalSources(config);
+
+      expect(snapshot.sourceStatuses).toEqual([
+        { source: "claude-code", complete: false },
+      ]);
+    } finally {
+      await fs.chmod(unreadableProject, 0o700);
     }
   });
 
-  it("updates discovered metadata when source content grows", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
+  it("applies clogignore before config filtering and retains ignored display candidates", async () => {
+    const ignoredId = "22222222-2222-2222-2222-222222222222";
+    const filteredId = "33333333-3333-3333-3333-333333333333";
+    const includedId = "44444444-4444-4444-4444-444444444444";
+    await writeClaudeConversation(ignoredId, "/Users/alice/work/ignored");
+    await writeClaudeConversation(filteredId, "/Users/alice/private/app");
+    await writeClaudeConversation(includedId, "/Users/alice/work/public");
+    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+    await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), `${ignoredId}\n`);
+    const config = scanConfig();
+    config.sources["claude-code"].includePaths = ["/Users/alice/work"];
 
-    const id = "55555555-5555-5555-5555-555555555555";
-    await writeClaudeConversation(claudeRoot, id, "/Users/alice/work/app", "Initial title");
-    await scanLocalSources(config);
+    const snapshot = await scanLocalSources(config);
 
-    await writeClaudeConversation(
-      claudeRoot,
-      id,
-      "/Users/alice/work/app",
-      "Updated title from source",
-      "Updated summary",
-    );
-
-    await scanLocalSources(config);
-
-    const updated = await getConversationById(id);
-    expect(updated?.title).toBe("Updated title from source");
-    expect(updated?.summary).toBe("Updated summary");
+    expect(snapshot.counts).toMatchObject({ discovered: 1, filtered: 1, ignored: 1 });
+    expect(snapshot.candidates[0]?.sourceId).toBe(includedId);
+    expect(snapshot.ignoredCandidates[0]?.sourceId).toBe(ignoredId);
   });
 
-  it("does not let local discovery mutate imported rows with the same source identity", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const gitId = "51515151-5151-5151-5151-515151515151";
-    const fileId = "52525252-5252-5252-5252-525252525252";
-    await insertConversation(makeSavedImportedConversation(gitId, {
-      originKind: "git",
-      originRef: "git@example.com:team/repo.git",
-      sourcePath: "/tmp/remote-checkout/git.jsonl",
-      filePath: "/tmp/remote-checkout/git.jsonl",
-    }));
-    await insertConversation(makeSavedImportedConversation(fileId, {
-      originKind: "file",
-      originRef: null,
-      sourcePath: "/tmp/imports/file.jsonl",
-      filePath: "/tmp/imports/file.jsonl",
-    }));
-
-    await writeClaudeConversation(claudeRoot, gitId, "/Users/alice/work/app", "Local git collision");
-    await writeClaudeConversation(claudeRoot, fileId, "/Users/alice/work/app", "Local file collision");
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.discovered).toBe(0);
-    expect(result.counts.updated).toBe(0);
-    const gitRow = await getConversationById(gitId);
-    const fileRow = await getConversationById(fileId);
-    expect(gitRow).toMatchObject({
-      title: "Imported 51515151",
-      sourcePath: "/tmp/remote-checkout/git.jsonl",
-      filePath: "/tmp/remote-checkout/git.jsonl",
-      originKind: "git",
-      originRef: "git@example.com:team/repo.git",
-    });
-    expect(fileRow).toMatchObject({
-      title: "Imported 52525252",
-      sourcePath: "/tmp/imports/file.jsonl",
-      filePath: "/tmp/imports/file.jsonl",
-      originKind: "file",
-      originRef: null,
-    });
-  });
-
-  it("prunes stale discovered entries when source files disappear", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "66666666-6666-6666-6666-666666666666";
-    const filePath = await writeClaudeConversation(claudeRoot, id, "/Users/alice/work/app");
-
-    await scanLocalSources(config);
-    await fs.rm(filePath);
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.pruned).toBe(1);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  // ============================================================
-  // Rescan and cross-source behavior (SPEC §5.5)
-  // ============================================================
-
-  it("re-scans report zero work when nothing on disk has changed", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "77777777-7777-7777-7777-777777777777";
-    await writeClaudeConversation(claudeRoot, id, "/Users/alice/work/app");
-
-    const firstScan = await scanLocalSources(config);
-    expect(firstScan.counts.discovered).toBe(1);
-
-    const firstConversation = await getConversationById(id);
-    expect(firstConversation?.modifiedAt).toBeTruthy();
-
-    const secondScan = await scanLocalSources(config);
-    expect(secondScan.counts.discovered).toBe(0);
-    expect(secondScan.counts.updated).toBe(0);
-    expect(secondScan.counts.pruned).toBe(0);
-
-    // The discovered row is untouched, so modifiedAt is preserved byte-for-byte.
-    const secondConversation = await getConversationById(id);
-    expect(secondConversation?.modifiedAt).toBe(firstConversation?.modifiedAt);
-  });
-
-  it("updates sourcePath and projectPath when a discovered file moves to a new project dir", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "88888888-8888-8888-8888-888888888888";
-    const originalPath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
-    await writeJsonl(originalPath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        cwd: "/Users/alice/project",
-        message: { role: "user", content: "Start" },
-      },
-    ]);
-
-    await scanLocalSources(config);
-    const beforeMove = await getConversationById(id);
-    expect(beforeMove?.projectName).toBe("project");
-
-    // Move the file to a renamed project directory AND update its cwd to match.
-    const movedPath = path.join(claudeRoot, "-Users-alice-project-renamed", `${id}.jsonl`);
-    await fs.mkdir(path.dirname(movedPath), { recursive: true });
-    await writeJsonl(movedPath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        cwd: "/Users/alice/project-renamed",
-        message: { role: "user", content: "Start" },
-      },
-    ]);
-    await fs.rm(originalPath);
-
-    await scanLocalSources(config);
-    const afterMove = await getConversationById(id);
-    expect(afterMove?.sourcePath).toBe(movedPath);
-    expect(afterMove?.projectPath).toBe("/Users/alice/project-renamed");
-    expect(afterMove?.projectName).toBe("project-renamed");
-  });
-
-  it("discovers conversations across both enabled built-in adapters", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const codexRoot = path.join(tempDir, ".codex");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].paths = [codexRoot];
-
-    const claudeId = "aaaa1111-1111-1111-1111-111111111111";
-    const codexId = "bbbb2222-2222-2222-2222-222222222222";
-    await writeClaudeConversation(claudeRoot, claudeId, "/Users/alice/work/claude-proj");
-    await writeCodexConversation(codexRoot, codexId, "/Users/alice/work/codex-proj");
-
-    const result = await scanLocalSources(config);
-    expect(result.counts.discovered).toBe(2);
-
-    const claude = await getConversationById(claudeId);
-    const codex = await getConversationById(codexId);
-    expect(claude?.source).toBe("claude-code");
-    expect(codex?.source).toBe("codex-cli");
-  });
-
-  it("prunes only conversations whose source directory still matches (per-source isolation)", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const codexRoot = path.join(tempDir, ".codex");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].paths = [codexRoot];
-
-    const claudeId = "cccc3333-3333-3333-3333-333333333333";
-    const codexId = "dddd4444-4444-4444-4444-444444444444";
-    const claudePath = await writeClaudeConversation(claudeRoot, claudeId, "/Users/alice/work/claude-proj");
-    await writeCodexConversation(codexRoot, codexId, "/Users/alice/work/codex-proj");
-
-    await scanLocalSources(config);
-
-    // Remove only the claude source file.
-    await fs.rm(claudePath);
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.pruned).toBe(1);
-    await expect(getConversationById(claudeId)).resolves.toBeNull();
-    // Codex conversation survives because its source is a separate watched root.
-    await expect(getConversationById(codexId)).resolves.not.toBeNull();
-  });
-
-  it("fails closed on a Claude file whose cwd metadata is missing (SPEC §5.5)", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "eeee5555-5555-5555-5555-555555555555";
-    const filePath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
-    // Intentionally no `cwd` anywhere in the file → projectPath cannot be determined.
-    await writeJsonl(filePath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        message: { role: "user", content: "Project unknown" },
-      },
-    ]);
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.discovered).toBe(0);
-    expect(result.counts.undiscoverable).toBe(1);
-    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
-      false,
-    );
-    expect(result.undiscoverable).toEqual([
-      {
-        source: "claude-code",
-        path: filePath,
-      },
-    ]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("treats a Claude file with first cwd beyond the metadata line bound as undiscoverable", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "efef5555-5555-5555-5555-555555555555";
-    const filePath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
-    await writeJsonl(filePath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        message: { role: "user", content: "Project known too late" },
-      },
-      ...metadataPadding(SCAN_METADATA_MAX_LINES - 1),
-      {
-        type: "user",
-        cwd: "/Users/alice/project",
-        message: { role: "user", content: "Late cwd" },
-      },
-    ]);
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.discovered).toBe(0);
-    expect(result.counts.undiscoverable).toBe(1);
-    expect(result.undiscoverable).toEqual([
-      {
-        source: "claude-code",
-        path: filePath,
-      },
-    ]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("fails closed on a Codex file whose cwd metadata is missing (SPEC §5.5)", async () => {
-    const codexRoot = path.join(tempDir, ".codex");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].enabled = false;
-    config.sources["codex-cli"].paths = [codexRoot];
-
-    const id = "ffff6666-6666-6666-6666-666666666666";
-    await writeJsonl(
-      path.join(
-        codexRoot,
-        "sessions",
-        "2026",
-        "02",
-        "01",
-        `rollout-2026-02-01T10-00-00-${id}.jsonl`,
-      ),
-      [
-        {
-          type: "session_meta",
-          payload: {
-            id,
-            timestamp: "2026-02-01T09:59:59.000Z",
-          },
-        },
-      ],
-    );
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.discovered).toBe(0);
-    expect(result.counts.undiscoverable).toBe(1);
-    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
-      false,
-    );
-    expect(result.undiscoverable).toEqual([
-      {
-        source: "codex-cli",
-        path: path.join(
-          codexRoot,
-          "sessions",
-          "2026",
-          "02",
-          "01",
-          `rollout-2026-02-01T10-00-00-${id}.jsonl`,
-        ),
-      },
-    ]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("treats a Codex file with only late cwd beyond the metadata line bound as undiscoverable", async () => {
-    const codexRoot = path.join(tempDir, ".codex");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].enabled = false;
-    config.sources["codex-cli"].paths = [codexRoot];
-
-    const id = "fefe6666-6666-6666-6666-666666666666";
-    const filePath = path.join(
-      codexRoot,
-      "sessions",
-      "2026",
-      "02",
-      "01",
-      `rollout-2026-02-01T10-00-00-${id}.jsonl`,
-    );
-    await writeJsonl(filePath, [
-      {
-        type: "session_meta",
-        payload: {
-          id,
-          timestamp: "2026-02-01T09:59:59.000Z",
-        },
-      },
-      {
-        type: "event_msg",
-        payload: {
-          type: "user_message",
-          message: "Project known too late",
-        },
-      },
-      ...metadataPadding(SCAN_METADATA_MAX_LINES - 2),
-      {
-        type: "session_meta",
-        payload: {
-          cwd: "/Users/alice/project",
-        },
-      },
-    ]);
-
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.discovered).toBe(0);
-    expect(result.counts.undiscoverable).toBe(1);
-    expect(result.undiscoverable).toEqual([
-      {
-        source: "codex-cli",
-        path: filePath,
-      },
-    ]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("counts a previously discovered conversation that loses cwd as undiscoverable, not pruned", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
-    config.sources["codex-cli"].enabled = false;
-
-    const id = "99999999-9999-9999-9999-999999999999";
-    const filePath = path.join(claudeRoot, "-Users-alice-project", `${id}.jsonl`);
-    await writeJsonl(filePath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        cwd: "/Users/alice/project",
-        message: { role: "user", content: "Project known" },
-      },
-    ]);
-
-    const firstScan = await scanLocalSources(config);
-    expect(firstScan.counts.discovered).toBe(1);
-    await expect(getConversationById(id)).resolves.not.toBeNull();
-
-    await writeJsonl(filePath, [
-      {
-        type: "user",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        message: { role: "user", content: "Project unknown now" },
-      },
-    ]);
-
-    const secondScan = await scanLocalSources(config);
-
-    expect(secondScan.counts.undiscoverable).toBe(1);
-    expect(secondScan.counts.pruned).toBe(0);
-    expect(secondScan.undiscoverable).toEqual([
-      {
-        source: "claude-code",
-        path: filePath,
-      },
-    ]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("treats clogignore ID rules as ignored before undiscoverable", async () => {
-    const codexRoot = path.join(tempDir, ".codex");
-    const config = getDefaultConfig("alice");
-    config.sources["claude-code"].enabled = false;
-    config.sources["codex-cli"].paths = [codexRoot];
-    await saveConfig(config);
-
-    const id = "abab7777-7777-7777-7777-777777777777";
+  it("keeps ignored display candidates inside the configured project-path scope", async () => {
+    const includedId = "24444444-4444-4444-4444-444444444444";
+    const excludedId = "25555555-5555-5555-5555-555555555555";
+    const unknownPathId = "26666666-6666-6666-6666-666666666666";
+    await writeClaudeConversation(includedId, "/Users/alice/work/included");
+    await writeClaudeConversation(excludedId, "/Users/alice/private/excluded");
+    await writeJsonl(path.join(sourceRoot, "project", `${unknownPathId}.jsonl`), [{
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      message: { role: "user", content: "No project path" },
+    }]);
     await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
     await fs.writeFile(
       path.join(process.env.CLOG_HOME!, "clogignore"),
-      `${id}\n`,
-      "utf8",
+      `${includedId}\n${excludedId}\n${unknownPathId}\n`,
     );
+    const config = scanConfig();
+    config.sources["claude-code"].includePaths = ["/Users/alice/work"];
 
-    await writeJsonl(
-      path.join(
-        codexRoot,
-        "sessions",
-        "2026",
-        "02",
-        "01",
-        `rollout-2026-02-01T10-00-00-${id}.jsonl`,
-      ),
-      [
-        {
-          type: "session_meta",
-          payload: {
-            id,
-            timestamp: "2026-02-01T09:59:59.000Z",
-          },
+    const snapshot = await scanLocalSources(config);
+
+    expect(snapshot.counts.ignored).toBe(3);
+    expect(snapshot.ignoredCandidates.map((candidate) => candidate.sourceId)).toEqual([
+      includedId,
+    ]);
+  });
+
+  it("sorts conversation views by timestamp instant and puts invalid timestamps last", async () => {
+    const laterId = "27777777-7777-7777-7777-777777777777";
+    const earlierId = "28888888-8888-8888-8888-888888888888";
+    const invalidId = "29999999-9999-9999-9999-999999999999";
+    await insertConversation(savedConversation(laterId, "/tmp/later.jsonl", {
+      createdAt: "2025-12-31T23:00:00.000Z",
+    }));
+    await insertConversation(savedConversation(invalidId, "/tmp/invalid.jsonl", {
+      createdAt: "not-a-timestamp",
+    }));
+    const snapshot = {
+      scanTime: "2026-02-01T10:00:00.000Z",
+      author: "alice",
+      candidates: [{
+        source: "claude-code",
+        sourceId: earlierId,
+        sourcePath: "/tmp/earlier.jsonl",
+        sourceMtime: "2026-02-01T10:00:00.000Z",
+        metadata: {
+          title: "Earlier despite its date spelling",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-01-01T00:30:00.000+02:00",
         },
-      ],
+      }],
+      ignoredCandidates: [],
+      sourceStatuses: [{ source: "claude-code", complete: true }],
+    };
+
+    const conversations = await listConversationView(
+      { states: ["saved", "unsaved"] },
+      snapshot,
     );
 
-    const result = await scanLocalSources(config);
-
-    expect(result.counts.ignored).toBe(1);
-    expect(result.counts.undiscoverable).toBe(0);
-    expect(result.warnings.some((warning) => warning.code === "path_filter_without_project")).toBe(
-      false,
-    );
-    expect(result.undiscoverable).toEqual([]);
-    await expect(getConversationById(id)).resolves.toBeNull();
-  });
-
-  it("collapses repeated aggregatable warnings via getScanWarningsForCommand", () => {
-    const scanResult = buildScanResultWithWarnings([
-      {
-        code: "source_id_mismatch",
-        message: "Codex session ID does not match filename.",
-        source: "codex-cli",
-        path: "/tmp/rollout-1.jsonl",
-      },
-      {
-        code: "source_id_mismatch",
-        message: "Codex session ID does not match filename.",
-        source: "codex-cli",
-        path: "/tmp/rollout-2.jsonl",
-      },
-    ]);
-
-    const warnings = getScanWarningsForCommand(scanResult);
-
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.message).toContain("(2 occurrences)");
-    expect(warnings[0]?.guidance).toBe(
-      'Run "clog status --verbose-warnings" for the full list',
-    );
-    expect(warnings[0]?.source).toBeUndefined();
-    expect(warnings[0]?.path).toBeUndefined();
-  });
-
-  it("keeps recovery guidance when repeated aggregatable warnings collapse", () => {
-    const scanResult = buildScanResultWithWarnings([
-      {
-        code: "malformed_jsonl",
-        message: "Skipping malformed Codex CLI session file.",
-        source: "codex-cli",
-        path: "/tmp/broken-1.jsonl",
-        guidance: "Fix the JSONL or remove the malformed file.",
-      },
-      {
-        code: "malformed_jsonl",
-        message: "Skipping malformed Codex CLI session file.",
-        source: "codex-cli",
-        path: "/tmp/broken-2.jsonl",
-        guidance: "Fix the JSONL or remove the malformed file.",
-      },
-    ]);
-
-    const warnings = getScanWarningsForCommand(scanResult);
-
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.message).toContain("(2 occurrences)");
-    expect(warnings[0]?.guidance).toBe(
-      'Fix the JSONL or remove the malformed file. Run "clog status --verbose-warnings" for the full list',
-    );
-    expect(warnings[0]?.path).toBeUndefined();
-  });
-
-  it("preserves individual aggregatable warnings when verbose is requested", () => {
-    const scanResult = buildScanResultWithWarnings([
-      {
-        code: "source_id_mismatch",
-        message: "Codex session ID does not match filename.",
-        source: "codex-cli",
-        path: "/tmp/rollout-1.jsonl",
-      },
-      {
-        code: "source_id_mismatch",
-        message: "Codex session ID does not match filename.",
-        source: "codex-cli",
-        path: "/tmp/rollout-2.jsonl",
-      },
-    ]);
-
-    const warnings = getScanWarningsForCommand(scanResult, { verbose: true });
-
-    expect(warnings).toHaveLength(2);
-    expect(warnings.every((warning) => warning.message === "Codex session ID does not match filename.")).toBe(true);
-    expect(warnings.map((warning) => warning.path)).toEqual([
-      "/tmp/rollout-1.jsonl",
-      "/tmp/rollout-2.jsonl",
+    expect(conversations.map((conversation) => conversation.id)).toEqual([
+      laterId,
+      earlierId,
+      invalidId,
     ]);
   });
 
-  it("keeps same-code warnings with different messages separate when collapsing", () => {
-    // missing_source_id has two distinct messages from the Codex adapter
-    // (payload.id present but not a UUID, vs. payload.id absent). They share
-    // a code and source but describe different underlying conditions, so
-    // collapsing them into one summary would hide one of the conditions.
-    const scanResult = buildScanResultWithWarnings([
-      {
-        code: "missing_source_id",
-        message: "Codex session_meta payload.id is not a valid UUID.",
-        source: "codex-cli",
-        path: "/tmp/rollout-1.jsonl",
-      },
-      {
-        code: "missing_source_id",
-        message: "Codex session_meta payload.id is not a valid UUID.",
-        source: "codex-cli",
-        path: "/tmp/rollout-2.jsonl",
-      },
-      {
-        code: "missing_source_id",
-        message: "Skipping Codex session because no valid UUID-shaped session ID was found.",
-        source: "codex-cli",
-        path: "/tmp/rollout-3.jsonl",
-      },
-    ]);
+  it("builds prospective unsaved metadata from current config and source mtime", async () => {
+    const id = "55555555-5555-5555-5555-555555555555";
+    await writeClaudeConversation(id, "/Users/alice/work/app");
+    const config = scanConfig();
+    config.author = "current-author";
+    config.defaultTags = ["should-not-appear"];
+    const snapshot = await scanLocalSources(config);
 
-    const warnings = getScanWarningsForCommand(scanResult);
+    const [conversation] = await listConversationView(
+      { states: ["unsaved"] },
+      snapshot,
+    );
 
-    expect(warnings).toHaveLength(2);
-    const invalidUuid = warnings.find((w) =>
-      w.message.startsWith("Codex session_meta payload.id is not a valid UUID."),
-    );
-    const missingUuid = warnings.find((w) =>
-      w.message.startsWith("Skipping Codex session because no valid UUID-shaped session ID"),
-    );
-    expect(invalidUuid?.message).toContain("(2 occurrences)");
-    expect(missingUuid?.message).not.toContain("occurrences");
+    expect(conversation).toMatchObject({
+      id,
+      state: "unsaved",
+      author: "current-author",
+      tags: [],
+      savedAt: null,
+      savedMessageCount: null,
+      saveVersion: 0,
+    });
+    expect(conversation?.modifiedAt).toBe(conversation?.sourceMtime);
+    expect(unsavedConversationViewSchema.parse(conversation)).toEqual(conversation);
+    expect(conversationStateSchema.options).toEqual(["unsaved", "saved"]);
+    expect(buildDiscoveredConversation(
+      snapshot.candidates[0]!,
+      snapshot.author,
+      snapshot.scanTime,
+    )).toEqual(conversation);
   });
 
-  it("never collapses non-aggregatable codes even when they repeat", () => {
-    // Regression guard: if a non-aggregatable warning ever sneaks into a
-    // ScanResult, it must pass through unchanged. Collapsing it would point
-    // users at a verbose-warnings flag on a command that cannot reproduce it.
-    const scanResult = buildScanResultWithWarnings([
-      {
-        code: "pair_invalid_metadata",
-        message: "Remote metadata is invalid.",
-        source: "claude-code",
-        path: "/remote/a.meta.json",
-      },
-      {
-        code: "pair_invalid_metadata",
-        message: "Remote metadata is invalid.",
-        source: "claude-code",
-        path: "/remote/b.meta.json",
-      },
-    ]);
+  it("lets a saved database row suppress the matching scan identity", async () => {
+    const id = "66666666-6666-6666-6666-666666666666";
+    const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
+    await insertConversation(savedConversation(id, sourcePath));
+    const snapshot = await scanLocalSources(scanConfig());
 
-    const warnings = getScanWarningsForCommand(scanResult);
+    const all = await listConversationView(
+      { states: ["saved", "unsaved"] },
+      snapshot,
+    );
 
-    expect(warnings).toHaveLength(2);
-    expect(warnings.every((warning) => !warning.message.includes("occurrences"))).toBe(true);
-    expect(warnings.every((warning) => warning.guidance === undefined)).toBe(true);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.state).toBe("saved");
+    await expect(resolveConversationView(id, { scanSnapshot: snapshot })).resolves.toMatchObject({
+      state: "saved",
+    });
   });
 
-  it("aggregates malformed-file warnings across multiple bad files", async () => {
-    const claudeRoot = path.join(tempDir, "claude");
+  it("reports ambiguity when a saved row and a distinct scan conversation share a prefix", async () => {
+    const savedId = "c0de1111-1111-1111-1111-111111111111";
+    const unsavedId = "c0de2222-2222-2222-2222-222222222222";
+    await insertConversation(savedConversation(savedId, "/managed/saved.jsonl"));
+    await writeClaudeConversation(unsavedId, "/Users/alice/work/app");
+    const snapshot = await scanLocalSources(scanConfig());
+
+    await expect(
+      resolveConversationView("c0de", { scanSnapshot: snapshot }),
+    ).rejects.toThrow(/ambiguous/i);
+  });
+
+  it("drops a deleted or disabled source conversation from the next unsaved view", async () => {
+    const id = "77777777-7777-7777-7777-777777777777";
+    const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
+    const config = scanConfig();
+    expect((await scanLocalSources(config)).candidates).toHaveLength(1);
+
+    await fs.unlink(sourcePath);
+    expect((await scanLocalSources(config)).candidates).toHaveLength(0);
+
+    await writeClaudeConversation(id, "/Users/alice/work/app");
+    config.sources["claude-code"].enabled = false;
+    expect((await scanLocalSources(config)).candidates).toHaveLength(0);
+  });
+
+  it("retains yielded candidates and marks an adapter incomplete when discovery throws", async () => {
+    const adapter: SourceAdapter = {
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        const sourcePath = await writeClaudeConversation(
+          "88888888-8888-8888-8888-888888888888",
+          "/Users/alice/work/app",
+        );
+        yield {
+          sourceId: "88888888-8888-8888-8888-888888888888",
+          sourcePath,
+          metadata: {
+            title: "Retained",
+            summary: "",
+            projectName: "app",
+            projectPath: "/Users/alice/work/app",
+            slug: null,
+            createdAt: "2026-02-01T10:00:00.000Z",
+          },
+        };
+        throw new Error("source unavailable");
+      },
+    };
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([adapter]);
+
+    const snapshot = await scanLocalSources(scanConfig());
+
+    expect(snapshot.candidates).toHaveLength(1);
+    expect(snapshot.sourceStatuses).toEqual([{ source: "claude-code", complete: false }]);
+    expect(snapshot.warnings).toContainEqual(expect.objectContaining({
+      code: "source_discovery_incomplete",
+      source: "claude-code",
+    }));
+    await expect(
+      resolveConversationView("9999@claude-code", { scanSnapshot: snapshot }),
+    ).rejects.toThrow(/could not determine/i);
+    await expect(
+      resolveConversationView("88888888@claude-code", { scanSnapshot: snapshot }),
+    ).rejects.toThrow(/could not determine/i);
+  });
+
+  it("keeps broad partial results but only exempts exact identities from completed sources", async () => {
+    const healthyId = "a1111111-1111-1111-1111-111111111111";
+    const partialId = "b2222222-2222-2222-2222-222222222222";
+    const healthyPath = await writeClaudeConversation(healthyId, "/Users/alice/work/healthy");
+    const partialPath = await writeClaudeConversation(partialId, "/Users/alice/work/partial");
+    const metadata = (title: string, projectPath: string) => ({
+      title,
+      summary: "",
+      projectName: path.basename(projectPath),
+      projectPath,
+      slug: null,
+      createdAt: "2026-02-01T10:00:00.000Z",
+    });
+    const healthy: SourceAdapter = {
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        yield {
+          sourceId: healthyId,
+          sourcePath: healthyPath,
+          metadata: metadata("Healthy", "/Users/alice/work/healthy"),
+        };
+      },
+    };
+    const incomplete: SourceAdapter = {
+      name: "codex-cli",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        yield {
+          sourceId: partialId,
+          sourcePath: partialPath,
+          metadata: metadata("Partial", "/Users/alice/work/partial"),
+        };
+        throw new Error("partial failure");
+      },
+    };
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([healthy, incomplete]);
+
+    const snapshot = await scanLocalSources(scanConfig());
+    const broad = await listConversationView({ states: ["unsaved"] }, snapshot);
+
+    expect(broad.map((conversation) => conversation.id)).toEqual([healthyId, partialId]);
+    await expect(
+      resolveConversationView(`${healthyId}@claude-code`, { scanSnapshot: snapshot }),
+    ).resolves.toMatchObject({ id: healthyId });
+    await expect(
+      resolveConversationView(healthyId, { scanSnapshot: snapshot }),
+    ).rejects.toThrow(/could not determine/i);
+    await expect(
+      resolveConversationView("a111", { scanSnapshot: snapshot }),
+    ).rejects.toThrow(/could not determine/i);
+  });
+
+  it("keeps partial results and incomplete-source warnings in broad CLI and MCP views", async () => {
+    const healthyId = "b3111111-1111-1111-1111-111111111111";
+    const partialId = "b3222222-2222-2222-2222-222222222222";
+    const healthyPath = await writeClaudeConversation(healthyId, "/Users/alice/work/healthy");
+    const partialPath = await writeClaudeConversation(partialId, "/Users/alice/work/partial");
+    const discovered = (sourceId: string, sourcePath: string, projectName: string) => ({
+      sourceId,
+      sourcePath,
+      metadata: {
+        title: `${projectName} conversation`,
+        summary: "",
+        projectName,
+        projectPath: `/Users/alice/work/${projectName}`,
+        slug: null,
+        createdAt: "2026-02-01T10:00:00.000Z",
+      },
+    });
+    const healthy: SourceAdapter = {
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        yield discovered(healthyId, healthyPath, "healthy");
+      },
+    };
+    const incomplete: SourceAdapter = {
+      name: "codex-cli",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        yield discovered(partialId, partialPath, "partial");
+        throw new Error("partial failure");
+      },
+    };
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([healthy, incomplete]);
+    await saveConfig(scanConfig());
+
+    const cli = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+    expect(cli.stdout).toContain(healthyId.slice(0, 8));
+    expect(cli.stdout).toContain(partialId.slice(0, 8));
+    expect(cli.stderr).toContain("Discovery did not complete for codex-cli");
+
+    const mcp = await handleList({ state: "all", limit: 100 });
+    expect(mcp.conversations.map((conversation) => conversation.id)).toEqual(
+      expect.arrayContaining([healthyId, partialId]),
+    );
+    expect(mcp.warnings).toContainEqual(expect.objectContaining({
+      code: "source_discovery_incomplete",
+      source: "codex-cli",
+    }));
+  });
+
+  it("runs each adapter discovery once when list --all also renders ignored rows", async () => {
+    const includedId = "c3333333-3333-3333-3333-333333333333";
+    const ignoredId = "d4444444-4444-4444-4444-444444444444";
+    const includedPath = await writeClaudeConversation(includedId, "/Users/alice/work/app");
+    const ignoredPath = await writeClaudeConversation(ignoredId, "/Users/alice/work/app");
+    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+    await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), `${ignoredId}\n`);
+    const discover = vi.fn(async function* () {
+      for (const [sourceId, sourcePath] of [
+        [includedId, includedPath],
+        [ignoredId, ignoredPath],
+      ] as const) {
+        yield {
+          sourceId,
+          sourcePath,
+          metadata: {
+            title: sourceId === includedId ? "Included" : "Ignored",
+            summary: "",
+            projectName: "app",
+            projectPath: "/Users/alice/work/app",
+            slug: null,
+            createdAt: "2026-02-01T10:00:00.000Z",
+          },
+        };
+      }
+    });
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      discover,
+    }]);
+    await saveConfig(scanConfig());
+
+    const output = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+
+    expect(discover).toHaveBeenCalledOnce();
+    expect(output.stdout).toContain("Included");
+    expect(output.stdout).toContain("Ignored");
+  });
+
+  it("does not discover local sources for the default saved-only list", async () => {
+    const discover = vi.fn(async function* () {
+      throw new Error("saved-only list must not scan");
+    });
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      discover,
+    }]);
+    await saveConfig(scanConfig());
+    await insertConversation(savedConversation(
+      "e5555555-5555-5555-5555-555555555555",
+      "/managed/conversation.jsonl",
+    ));
+
+    await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("leaves the current-schema database byte-identical after scan-backed reads", async () => {
+    const id = "f6666666-6666-6666-6666-666666666666";
+    const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
+    await saveConfig(scanConfig());
+    await insertConversation(savedConversation(id, sourcePath));
+    const before = await fs.readFile(getClogDbPath());
+
+    for (const [build, args] of [
+      [buildListCommand, ["--all"]],
+      [buildStatusCommand, []],
+      [buildShowCommand, [id]],
+      [buildDrainCommand, [id, "--output", path.join(tempDir, "read-only.zip")]],
+    ] as const) {
+      await captureOutput(async () => {
+        const command = build();
+        command.exitOverride();
+        await command.parseAsync([...args], { from: "user" });
+      });
+    }
+    await handleList({ state: "all" });
+
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
+  });
+
+  it("uses a moved live source for status and persists the repaired path only when saving", async () => {
+    const id = "f6777777-7777-7777-7777-777777777777";
+    const currentSourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+      "Current live content",
+    );
+    const rawPath = path.join(process.env.CLOG_HOME!, "raw", "claude-code", `${id}.jsonl`);
+    await writeJsonl(rawPath, [{
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: "/Users/alice/work/app",
+      message: { role: "user", content: "Older saved content" },
+    }]);
+    const staleSourcePath = path.join(tempDir, "old-location", `${id}.jsonl`);
+    await insertConversation({
+      ...savedConversation(id, staleSourcePath),
+      filePath: rawPath,
+    });
+    await saveConfig(scanConfig());
+
+    const status = await captureOutput(async () => {
+      const command = buildStatusCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+    expect(status.stdout).toContain("Saved conversations whose source files changed:");
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      sourcePath: staleSourcePath,
+      saveVersion: 1,
+    });
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([id], { from: "user" });
+    });
+
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      sourcePath: currentSourcePath,
+      saveVersion: 2,
+    });
+    await expect(fs.readFile(rawPath)).resolves.toEqual(await fs.readFile(currentSourcePath));
+  });
+
+  it("leaves a direct saved target unchanged when its source adapter is incomplete", async () => {
+    const id = "f6888888-8888-8888-8888-888888888888";
+    const rawPath = path.join(process.env.CLOG_HOME!, "raw", "claude-code", `${id}.jsonl`);
+    await writeJsonl(rawPath, [{
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: "/Users/alice/work/app",
+      message: { role: "user", content: "Saved content" },
+    }]);
+    await insertConversation({
+      ...savedConversation(id, path.join(tempDir, "missing-source.jsonl")),
+      filePath: rawPath,
+    });
+    const incomplete: SourceAdapter = {
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      async *discover() {
+        throw new Error("adapter unavailable");
+      },
+    };
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([incomplete]);
+    await saveConfig(scanConfig());
+    const beforeRow = await getConversationById(id);
+    const beforeRaw = await fs.readFile(rawPath);
+    const beforeDb = await fs.readFile(getClogDbPath());
+
+    await expect(captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([id], { from: "user" });
+    })).rejects.toThrow(/could not determine/i);
+
+    await expect(getConversationById(id)).resolves.toEqual(beforeRow);
+    await expect(fs.readFile(rawPath)).resolves.toEqual(beforeRaw);
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(beforeDb);
+  });
+
+  it("shares one adapter discovery pass across save --all", async () => {
+    const id = "a7777777-7777-7777-7777-777777777777";
+    const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
+    const discover = vi.fn(async function* () {
+      yield {
+        sourceId: id,
+        sourcePath,
+        metadata: {
+          title: "Save once",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-01T10:00:00.000Z",
+        },
+      };
+    });
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      discover,
+    }]);
+    const config = scanConfig();
+    config.author = "current-save-author";
+    config.defaultTags = [" Current ", "current", "Release"];
+    await saveConfig(config);
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+
+    expect(discover).toHaveBeenCalledOnce();
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      state: "saved",
+      author: "current-save-author",
+      tags: ["current", "release"],
+    });
+  });
+
+  it("does not discover local sources for bare save", async () => {
+    const discover = vi.fn(async function* () {
+      throw new Error("bare save must not scan");
+    });
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      discover,
+    }]);
+    await saveConfig(scanConfig());
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("never changes an existing saved row while scanning", async () => {
+    const id = "99999999-9999-9999-9999-999999999999";
+    const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
+    const saved = savedConversation(id, sourcePath);
+    await insertConversation(saved);
+    await writeClaudeConversation(id, "/Users/alice/work/app", "Changed source title");
+
+    await scanLocalSources(scanConfig());
+
+    await expect(getConversationById(id)).resolves.toEqual(saved);
+  });
+
+  function scanConfig() {
     const config = getDefaultConfig("alice");
-    config.sources["claude-code"].paths = [claudeRoot];
+    config.sources["claude-code"].paths = [sourceRoot];
     config.sources["codex-cli"].enabled = false;
+    return config;
+  }
 
-    const badDir = path.join(claudeRoot, "-Users-alice-broken");
-    await fs.mkdir(badDir, { recursive: true });
-    await fs.writeFile(
-      path.join(badDir, "ffff6666-6666-6666-6666-666666666666.jsonl"),
-      "{not: valid json",
-      "utf8",
-    );
-    await fs.writeFile(
-      path.join(badDir, "gggg7777-7777-7777-7777-777777777777.jsonl"),
-      "also broken {",
-      "utf8",
-    );
-
-    // A valid conversation in another project — scan should still include it.
-    const goodId = "hhhh8888-8888-8888-8888-888888888888";
-    await writeClaudeConversation(claudeRoot, goodId, "/Users/alice/project", "Good one");
-
-    const result = await scanLocalSources(config);
-
-    const malformed = result.warnings.filter((warning) => warning.code === "malformed_jsonl");
-    expect(malformed).toHaveLength(2);
-    // The good row still gets inserted.
-    await expect(getConversationById(goodId)).resolves.not.toBeNull();
-  });
+  async function writeClaudeConversation(
+    id: string,
+    cwd: string,
+    title = "Test conversation",
+  ): Promise<string> {
+    const filePath = path.join(sourceRoot, "project", `${id}.jsonl`);
+    await writeJsonl(filePath, [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd,
+        message: { role: "user", content: title },
+      },
+    ]);
+    return filePath;
+  }
 });
 
-function metadataPadding(count: number): unknown[] {
-  return Array.from({ length: count }, (_entry, index) => ({
-    type: "progress",
-    message: `padding ${index}`,
-  }));
-}
-
-function buildScanResultWithWarnings(warnings: ClogWarning[]): ScanResult {
-  return {
-    warnings,
-    undiscoverable: [],
-    counts: {
-      discovered: 0,
-      updated: 0,
-      pruned: 0,
-      filtered: 0,
-      ignored: 0,
-      undiscoverable: 0,
-    },
-  };
-}
-
-function makeSavedImportedConversation(
+function savedConversation(
   id: string,
-  overrides: {
-    originKind: "git" | "file";
-    originRef: string | null;
-    sourcePath: string;
-    filePath: string;
-  },
+  sourcePath: string,
+  overrides: Partial<ReturnType<typeof savedConversationBase>> = {},
 ) {
+  return { ...savedConversationBase(id, sourcePath), ...overrides };
+}
+
+function savedConversationBase(id: string, sourcePath: string) {
   const timestamp = "2026-02-01T10:00:00.000Z";
   return {
     id,
     sourceId: id,
     source: "claude-code",
-    title: `Imported ${id.slice(0, 8)}`,
+    title: "Saved title",
     summary: "",
     summaryKind: "none" as const,
     summaryExtraction: null,
-    author: "bob",
-    projectName: null,
-    projectPath: null,
+    author: "alice",
+    projectName: "app",
+    projectPath: "/Users/alice/work/app",
     tags: [],
     slug: null,
     createdAt: timestamp,
@@ -820,74 +762,11 @@ function makeSavedImportedConversation(
     savedAt: timestamp,
     savedMessageCount: 1,
     saveVersion: 1,
-    sourceMtime: null,
+    sourcePath,
+    filePath: sourcePath,
+    sourceMtime: timestamp,
     indexedAt: null,
-    ...overrides,
+    originKind: "local" as const,
+    originRef: null,
   };
-}
-
-async function writeCodexConversation(
-  codexRoot: string,
-  id: string,
-  cwd: string,
-): Promise<string> {
-  const filePath = path.join(
-    codexRoot,
-    "sessions",
-    "2026",
-    "02",
-    "01",
-    `rollout-2026-02-01T10-00-00-${id}.jsonl`,
-  );
-
-  await writeJsonl(filePath, [
-    {
-      type: "session_meta",
-      payload: {
-        id,
-        timestamp: "2026-02-01T10:00:00.000Z",
-        cwd,
-      },
-    },
-    {
-      type: "event_msg",
-      payload: {
-        type: "user_message",
-        message: "Codex conversation",
-      },
-    },
-  ]);
-
-  return filePath;
-}
-
-async function writeClaudeConversation(
-  root: string,
-  id: string,
-  cwd: string,
-  title = "Title",
-  summary?: string,
-): Promise<string> {
-  const filePath = path.join(root, "-Users-alice-project", `${id}.jsonl`);
-  const lines = [
-    {
-      type: "user",
-      timestamp: "2026-02-01T10:00:00.000Z",
-      cwd,
-      message: {
-        role: "user",
-        content: title,
-      },
-    },
-  ];
-
-  if (summary) {
-    lines.push({
-      type: "summary",
-      summary,
-    });
-  }
-
-  await writeJsonl(filePath, lines);
-  return filePath;
 }

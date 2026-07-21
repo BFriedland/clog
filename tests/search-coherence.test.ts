@@ -123,13 +123,9 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
       state: "unsaved",
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
-    await insertConversation(conversation);
-
     const next = await markConversationIndexStale(conversation);
     expect(next).toBe(conversation);
-
-    const reloaded = await getConversationById(conversation.id);
-    expect(reloaded?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+    await expect(getConversationById(conversation.id)).resolves.toBeNull();
   });
 });
 
@@ -299,7 +295,8 @@ describe("searchConversations expanding window (SPEC §10.9)", () => {
 
 function makeConversation(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
   const now = "2026-02-01T10:00:00.000Z";
-  return {
+  const state = overrides.state ?? "unsaved";
+  const common = {
     id: "aaaaaaaa-1111-2222-3333-444444444444",
     sourceId: "aaaaaaaa-1111-2222-3333-444444444444",
     source: "claude-code",
@@ -313,18 +310,30 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: now,
     discoveredAt: now,
     modifiedAt: now,
-    state: "unsaved",
-    savedAt: null,
-    savedMessageCount: null,
-    saveVersion: 0,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: now,
     indexedAt: null,
     originKind: "local",
     originRef: null,
-    ...overrides,
   };
+  return state === "saved"
+    ? {
+        ...common,
+        state,
+        savedAt: now,
+        savedMessageCount: 0,
+        saveVersion: 1,
+        ...overrides,
+      } as ConversationMeta
+    : {
+        ...common,
+        state,
+        savedAt: null,
+        savedMessageCount: null,
+        saveVersion: 0,
+        ...overrides,
+      } as ConversationMeta;
 }
 
 function makeEmbedding(): EmbeddingProvider {

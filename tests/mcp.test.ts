@@ -14,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMcpLauncherScript } from "../src/cli/mcp.js";
 import { getDefaultConfig, loadConfig, saveConfig } from "../src/config/index.js";
 import {
+  handleAnalysisSuggestions,
   handleBrowse,
   handleGet,
   handleList,
   handleSearch,
+  handleSummarizationGuide,
   handleUpdate,
 } from "../src/mcp/handlers.js";
 import { createMcpServer } from "../src/mcp/create-server.js";
@@ -121,6 +123,24 @@ describe("mcp handlers", () => {
       state: "saved",
       sourceMtime: null,
     });
+  });
+
+  it("leaves the current-schema database byte-identical across every non-writing MCP tool", async () => {
+    const dbPath = path.join(tempDir, "clog.db");
+    const before = await fs.readFile(dbPath);
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore([]),
+    });
+
+    await handleList({ state: "all" });
+    await handleGet({ id: "abc12345-1234-1234-1234-123456789012" });
+    await handleBrowse({ by: "tags" });
+    await handleSearch({ query: "auth" });
+    await handleSummarizationGuide();
+    await handleAnalysisSuggestions();
+
+    await expect(fs.readFile(dbPath)).resolves.toEqual(before);
   });
 
   it("registers the public tool names and list_conversations state schema", async () => {
@@ -365,32 +385,6 @@ describe("mcp handlers", () => {
     ]);
   });
 
-  it("falls back to stored modifiedAt when an unsaved row has no source mtime", async () => {
-    const id = "a4000000-0000-0000-0000-000000000001";
-    await insertOtherSaved(id, {
-      state: "unsaved",
-      savedAt: null,
-      savedMessageCount: null,
-      saveVersion: 0,
-      filePath: null,
-      sourcePath: path.join(tempDir, "outside-scanned-roots.jsonl"),
-      sourceMtime: null,
-      modifiedAt: "2025-12-01T12:00:00.000Z",
-    });
-
-    const result = await handleList({
-      state: "unsaved",
-      sortBy: "modifiedAt",
-      sortDirection: "asc",
-    });
-
-    expect(result.conversations[0]).toMatchObject({
-      id,
-      modifiedAt: "2025-12-01T12:00:00.000Z",
-      sourceMtime: null,
-    });
-  });
-
   it("returns collapsed scan warnings in the top-level warnings array", async () => {
     await writeMalformedClaudeConversation(
       sourceDir,
@@ -523,6 +517,23 @@ describe("mcp handlers", () => {
 
     expect(result.conversation.modifiedAt).toBe(before?.modifiedAt);
     expect(after?.modifiedAt).toBe(before?.modifiedAt);
+  });
+
+  it("returns scan warnings from successful no-op updates", async () => {
+    await writeMalformedClaudeConversation(
+      sourceDir,
+      "abc50000-0000-0000-0000-000000000001",
+    );
+
+    const result = await handleUpdate({
+      id: "abc12345",
+      title: "Debug auth flow",
+      addTags: ["auth"],
+    });
+
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: "malformed_jsonl" }),
+    ]);
   });
 
   it("browses distinct values", async () => {
@@ -908,9 +919,11 @@ describe("mcp handlers", () => {
   });
 
   it("get_conversation throws on a discovered conversation", async () => {
-    await insertOtherSaved("b6666666-6666-6666-6666-666666666666", {
-      state: "unsaved",
-    });
+    await writeUnsavedClaudeConversation(
+      sourceDir,
+      "b6666666-6666-6666-6666-666666666666",
+      { title: "Unsaved get target" },
+    );
     await expect(handleGet({ id: "b6666666" })).rejects.toThrow(
       /saved/,
     );
@@ -925,9 +938,11 @@ describe("mcp handlers", () => {
   // ============================================================
 
   it("update_conversation throws on a discovered conversation", async () => {
-    await insertOtherSaved("b7777777-7777-7777-7777-777777777777", {
-      state: "unsaved",
-    });
+    await writeUnsavedClaudeConversation(
+      sourceDir,
+      "b7777777-7777-7777-7777-777777777777",
+      { title: "Unsaved update target" },
+    );
 
     await expect(
       handleUpdate({ id: "b7777777", title: "New title" }),

@@ -96,7 +96,6 @@ interface ClogState {
 
 async function gatherClogState(): Promise<ClogState> {
   const saved = await listConversations({
-    states: ["saved"],
     origin: "local",
   });
 

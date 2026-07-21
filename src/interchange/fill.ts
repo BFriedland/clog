@@ -1,5 +1,6 @@
-import type { ConversationMeta, OriginKind } from "../models/conversation.js";
+import type { OriginKind, SavedConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
+import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import type { ScannedPair, ValidatedPair } from "./pairs.js";
 
 export type FillMode = "file" | "own";
@@ -21,13 +22,14 @@ export type FillSkipReason =
   | "local_unsaved_precedence"
   | "local_saved_precedence"
   | "git_collision"
-  | "unsupported_promotion";
+  | "unsupported_promotion"
+  | "source_discovery_incomplete";
 
 export type FillWriteAction =
   | {
       kind: "insert";
       pair: ValidatedPair;
-      conversation: ConversationMeta;
+      conversation: SavedConversationMeta;
       managedPath: string;
       copyContent: true;
     }
@@ -35,25 +37,18 @@ export type FillWriteAction =
       kind: "update";
       pair: ValidatedPair;
       rowId: string;
-      conversation: ConversationMeta;
+      conversation: SavedConversationMeta;
       managedPath: string;
       copyContent: boolean;
     }
-  | {
-      kind: "restore_unsaved";
-      pair: ValidatedPair;
-      rowId: string;
-      conversation: ConversationMeta;
-      managedPath: string;
-      copyContent: true;
-    };
+  ;
 
 export type FillAction =
   | FillWriteAction
   | {
       kind: "unchanged";
       pair: ValidatedPair;
-      owner: ConversationMeta;
+      owner: SavedConversationMeta;
       managedPath: string;
     }
   | {
@@ -62,7 +57,7 @@ export type FillAction =
       message: string;
       failure: boolean;
       pair?: ValidatedPair;
-      owner?: ConversationMeta;
+      owner?: SavedConversationMeta;
       warning?: ClogWarning;
       scannedPair?: ScannedPair;
       diagnosticPath?: string;
@@ -81,7 +76,9 @@ export interface FillPlan {
 
 export interface PlanFillArgs {
   candidates: FillCandidate[];
-  existingRows: ConversationMeta[];
+  existingRows: SavedConversationMeta[];
+  localCandidates?: LocalDiscoveryCandidate[];
+  incompleteSources?: string[];
   mode: FillMode;
   author: string;
   importTime: string;
@@ -98,6 +95,8 @@ export function planFill(args: PlanFillArgs): FillPlan {
   const {
     candidates,
     existingRows,
+    localCandidates = [],
+    incompleteSources = [],
     mode,
     author,
     importTime,
@@ -211,16 +210,48 @@ export function planFill(args: PlanFillArgs): FillPlan {
     }
   }
 
-  const rowsByIdentity = new Map<string, ConversationMeta>();
+  const rowsByIdentity = new Map<string, SavedConversationMeta>();
   for (const row of existingRows) {
     rowsByIdentity.set(identityKey(row.source, row.sourceId), row);
   }
+  const localCandidateKeys = new Set(
+    localCandidates.map((candidate) => identityKey(candidate.source, candidate.sourceId)),
+  );
+  const incompleteSourceSet = new Set(incompleteSources);
 
   for (const pair of uniqueValid) {
-    const owner = rowsByIdentity.get(identityKey(pair.meta.source, pair.meta.id));
+    const key = identityKey(pair.meta.source, pair.meta.id);
+    const owner = rowsByIdentity.get(key);
     const managedPath = getManagedPath(pair, mode);
 
     if (!owner) {
+      if (localCandidateKeys.has(key) && mode === "file") {
+        actions.push({
+          kind: "skip",
+          reason: "local_unsaved_precedence",
+          message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run with --own to import this conversation as an editable local copy.`,
+          failure: false,
+          pair,
+        });
+        continue;
+      }
+
+      if (
+        mode === "file" &&
+        !localCandidateKeys.has(key) &&
+        incompleteSourceSet.has(pair.meta.source)
+      ) {
+        actions.push({
+          kind: "skip",
+          reason: "source_discovery_incomplete",
+          message: `Skipping ${pair.meta.id.slice(0, 8)} because ${pair.meta.source} discovery did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          failure: true,
+          pair,
+        });
+        hasFailures = true;
+        continue;
+      }
+
       actions.push({
         kind: "insert",
         pair,
@@ -241,7 +272,6 @@ export function planFill(args: PlanFillArgs): FillPlan {
       pair,
       owner,
       managedPath,
-      importTime,
     });
     actions.push(planned);
     if (planned.kind === "skip" && planned.failure) {
@@ -263,47 +293,17 @@ export function planFill(args: PlanFillArgs): FillPlan {
 export function isFillWriteAction(action: FillAction): action is FillWriteAction {
   return (
     action.kind === "insert" ||
-    action.kind === "update" ||
-    action.kind === "restore_unsaved"
+    action.kind === "update"
   );
 }
 
 function planFillCollision(args: {
   mode: FillMode;
   pair: ValidatedPair;
-  owner: ConversationMeta;
+  owner: SavedConversationMeta;
   managedPath: string;
-  importTime: string;
 }): FillAction {
-  const { mode, pair, owner, managedPath, importTime } = args;
-
-  if (owner.originKind === "local" && owner.state === "unsaved") {
-    if (mode === "own") {
-      return {
-        kind: "restore_unsaved",
-        rowId: owner.id,
-        pair,
-        managedPath,
-        copyContent: true,
-        conversation: buildConversationFromFillPair({
-          pair,
-          managedPath,
-          originKind: "local",
-          importTime,
-          discoveredAt: owner.discoveredAt,
-        }),
-      };
-    }
-
-    return {
-      kind: "skip",
-      reason: "local_unsaved_precedence",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run with --own to import this conversation as an editable local copy.`,
-      failure: false,
-      pair,
-      owner,
-    };
-  }
+  const { mode, pair, owner, managedPath } = args;
 
   if (owner.originKind === "local") {
     return {
@@ -370,7 +370,7 @@ function buildConversationFromFillPair(args: {
   originKind: Extract<OriginKind, "local" | "file">;
   importTime: string;
   discoveredAt?: string;
-}): ConversationMeta {
+}): SavedConversationMeta {
   const { pair, managedPath, originKind, importTime, discoveredAt } = args;
   return {
     id: pair.meta.id,
@@ -402,10 +402,10 @@ function buildConversationFromFillPair(args: {
 }
 
 function mergeFilePairIntoConversation(
-  existing: ConversationMeta,
+  existing: SavedConversationMeta,
   pair: ValidatedPair,
   managedPath: string,
-): { conversation: ConversationMeta; copyContent: boolean } | null {
+): { conversation: SavedConversationMeta; copyContent: boolean } | null {
   const titleChanged = existing.title !== pair.meta.title;
   const summaryChanged = existing.summary !== pair.meta.summary;
   const contentChanged = existing.savedMessageCount !== pair.messageCount;

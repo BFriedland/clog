@@ -431,7 +431,7 @@ describe("e2e", () => {
     expect(pathCmd.stdout.trim()).toBe(filePath);
   });
 
-  it("show fails with clog-style guidance when a discovered source file is missing", async () => {
+  it("show no longer resolves an unsaved conversation after its source file disappears", async () => {
     const id = "26262626-2626-2626-2626-262626262626";
     const filePath = path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`);
     await writeClaudeConversation(filePath, "Show missing source");
@@ -442,7 +442,7 @@ describe("e2e", () => {
     await fs.rm(filePath);
 
     await expect(run(["show", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining(`Source file is missing for ${id}. Run "clog status" to refresh discovery.`),
+      stderr: expect.stringContaining(`No conversation matches "${id.slice(0, 8)}".`),
     });
   });
 
@@ -577,7 +577,7 @@ describe("e2e", () => {
     expect(stdout).toContain("since v1");
   });
 
-  it("diff rejects discovered conversations", async () => {
+  it("diff resolves IDs only against the saved collection", async () => {
     const id = "19191919-1919-1919-1919-191919191919";
     await writeClaudeConversation(
       path.join(claudeRoot, "-Users-alice-api-service", `${id}.jsonl`),
@@ -589,7 +589,7 @@ describe("e2e", () => {
     await run(["status"]);
 
     await expect(run(["diff", id.slice(0, 8)])).rejects.toMatchObject({
-      stderr: expect.stringContaining("is not saved"),
+      stderr: expect.stringContaining(`No conversation matches "${id.slice(0, 8)}".`),
     });
   });
 
@@ -896,7 +896,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
-    const { stderr } = await run(["list"]);
+    const { stderr } = await run(["list", "--state", "unsaved"]);
     expect(stderr).toContain(
       "warning: Skipped 2 conversation(s): project path missing: these conversation files have no cwd metadata.",
     );

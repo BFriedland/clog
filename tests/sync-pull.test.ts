@@ -876,7 +876,10 @@ describe("sync pull reconciliation", () => {
       },
     ]);
 
-    const stats = await reconcileRemote(getDefaultConfig("alice"), REMOTE_URL);
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = false;
+    config.sources["codex-cli"].enabled = false;
+    const stats = await reconcileRemote(config, REMOTE_URL);
 
     expect(stats.inserted).toBe(0);
     expect(stats.warnings).toHaveLength(0);

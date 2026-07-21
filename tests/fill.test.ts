@@ -6,6 +6,7 @@ import { zipSync } from "fflate";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as adapterRegistry from "../src/adapters/registry.js";
 import { applyFillWriteAction } from "../src/cli/fill-executor.js";
 import { buildFillCommand } from "../src/cli/fill.js";
 import { buildRemoveCommand } from "../src/cli/remove.js";
@@ -47,7 +48,9 @@ describe("clog fill", () => {
     await ensureClogHome({ interactive: false });
 
     const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "source")];
     config.sources["codex-cli"].enabled = false;
+    await fs.mkdir(config.sources["claude-code"].paths[0]!, { recursive: true });
     await saveConfig(config);
   });
 
@@ -76,6 +79,25 @@ describe("clog fill", () => {
       `paths=${inputPath}${path.sep}${id}.meta.json, ${inputPath}${path.sep}${id}.jsonl`,
     );
     expect(result.stderr).not.toContain(pairDir);
+  });
+
+  it("runs local source discovery once for one fill invocation", async () => {
+    const id = "a0202020-2020-2020-2020-202020202020";
+    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    const discover = vi.fn(async function* () {
+      return;
+    });
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      name: "claude-code",
+      watchPaths: () => [],
+      parseMessages: async () => [],
+      discover,
+    }]);
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(result.error).toBeNull();
+    expect(discover).toHaveBeenCalledOnce();
   });
 
   it("renders descendants of a dot input beneath ./", async () => {
@@ -1081,18 +1103,9 @@ describe("clog fill", () => {
 
   it("restores over discovered local rows through the command", async () => {
     const id = "b8a8a8a8-a8a8-a8a8-a8a8-a8a8a8a8a8a8";
-    await insertConversation(conversation({
-      id,
-      sourceId: id,
-      state: "unsaved",
-      filePath: null,
-      sourcePath: path.join(tempDir, "source", `${id}.jsonl`),
-      sourceMtime: "2026-02-19T09:20:00.000Z",
-      savedAt: null,
-      savedMessageCount: null,
-      saveVersion: 0,
-      discoveredAt: "2026-02-19T09:16:00.000Z",
-    }));
+    const sourcePath = path.join(tempDir, "source", "api-service", `${id}.jsonl`);
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.writeFile(sourcePath, makeClaudeJsonl(1), "utf8");
     await writePairFixture(pairDir, id, { author: "alice", title: "Restored pair" }, 2);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir, "--own"]);
@@ -1105,7 +1118,6 @@ describe("clog fill", () => {
       state: "saved",
       title: "Restored pair",
       projectPath: null,
-      discoveredAt: "2026-02-19T09:16:00.000Z",
       savedMessageCount: 2,
     });
     expect(row?.filePath).toBe(getRawConversationPath("claude-code", id));
@@ -1205,13 +1217,29 @@ describe("clog fill", () => {
       title: "Incoming",
     });
 
-    expect(singleAction({ pair, mode: "file", owner: conversation({ state: "unsaved" }) })).toMatchObject({
+    expect(singleAction({ pair, mode: "file", localCandidate: true })).toMatchObject({
       kind: "skip",
       reason: "local_unsaved_precedence",
       failure: false,
     });
-    expect(singleAction({ pair, mode: "own", owner: conversation({ state: "unsaved" }) })).toMatchObject({
-      kind: "restore_unsaved",
+    expect(singleAction({ pair, mode: "own", localCandidate: true })).toMatchObject({
+      kind: "insert",
+    });
+    expect(singleAction({
+      pair,
+      mode: "file",
+      incompleteSources: [pair.meta.source],
+    })).toMatchObject({
+      kind: "skip",
+      reason: "source_discovery_incomplete",
+      failure: true,
+    });
+    expect(singleAction({
+      pair,
+      mode: "own",
+      incompleteSources: [pair.meta.source],
+    })).toMatchObject({
+      kind: "insert",
     });
     expect(singleAction({ pair, mode: "file", owner: conversation({ state: "saved" }) })).toMatchObject({
       kind: "skip",
@@ -1352,11 +1380,30 @@ function makeFilesystemError(code: string, filePath: string): NodeJS.ErrnoExcept
 function singleAction(args: {
   pair: ValidatedPair;
   mode: FillMode;
-  owner: ConversationMeta;
+  owner?: ConversationMeta;
+  localCandidate?: boolean;
+  incompleteSources?: string[];
 }) {
   const plan = planFill({
     candidates: [{ kind: "valid", pair: args.pair }],
-    existingRows: [args.owner],
+    existingRows: args.owner ? [args.owner] : [],
+    localCandidates: args.localCandidate
+      ? [{
+          source: args.pair.meta.source,
+          sourceId: args.pair.meta.id,
+          sourcePath: "/source/conversation.jsonl",
+          sourceMtime: "2026-03-01T09:00:00.000Z",
+          metadata: {
+            title: "Source conversation",
+            summary: "",
+            projectName: "api-service",
+            projectPath: "/tmp/api-service",
+            createdAt: "2026-02-19T09:15:00.000Z",
+            slug: null,
+          },
+        }]
+      : [],
+    incompleteSources: args.incompleteSources,
     mode: args.mode,
     author: "alice",
     importTime: "2026-03-01T10:00:00.000Z",

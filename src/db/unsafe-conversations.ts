@@ -2,6 +2,8 @@ import type { Database } from "sql.js";
 
 import {
   type ConversationMeta,
+  type SavedConversationMeta,
+  savedConversationMetaSchema,
   serializeSummaryExtraction,
 } from "../models/conversation.js";
 
@@ -20,7 +22,6 @@ const CONVERSATION_UPDATE_SET_SQL = `
   created_at = ?,
   discovered_at = ?,
   modified_at = ?,
-  state = ?,
   saved_at = ?,
   saved_message_count = ?,
   save_version = ?,
@@ -36,6 +37,7 @@ export function unsafeInsertConversationInDb(
   db: Database,
   conversation: ConversationMeta,
 ): void {
+  const saved = savedConversationMetaSchema.parse(conversation);
   db.run(
     `
       INSERT INTO conversations (
@@ -54,7 +56,6 @@ export function unsafeInsertConversationInDb(
         created_at,
         discovered_at,
         modified_at,
-        state,
         saved_at,
         saved_message_count,
         save_version,
@@ -64,9 +65,9 @@ export function unsafeInsertConversationInDb(
         indexed_at,
         origin_kind,
         origin_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    conversationToParams(conversation),
+    conversationToParams(saved),
   );
 }
 
@@ -74,13 +75,14 @@ export function unsafeUpdateConversationInDb(
   db: Database,
   conversation: ConversationMeta,
 ): void {
+  const saved = savedConversationMetaSchema.parse(conversation);
   db.run(
     `
       UPDATE conversations
       SET ${CONVERSATION_UPDATE_SET_SQL}
       WHERE id = ?
     `,
-    [...conversationUpdateParams(conversation), conversation.id],
+    [...conversationUpdateParams(saved), saved.id],
   );
 }
 
@@ -88,6 +90,7 @@ export function unsafeUpdateLocalConversationInDb(
   db: Database,
   conversation: ConversationMeta,
 ): number {
+  const saved = savedConversationMetaSchema.parse(conversation);
   db.run(
     `
       UPDATE conversations
@@ -96,7 +99,7 @@ export function unsafeUpdateLocalConversationInDb(
         AND origin_kind = 'local'
         AND origin_ref IS NULL
     `,
-    [...conversationUpdateParams(conversation), conversation.id],
+    [...conversationUpdateParams(saved), saved.id],
   );
 
   return db.getRowsModified();
@@ -106,7 +109,7 @@ export function unsafeDeleteConversationInDb(db: Database, id: string): void {
   db.run("DELETE FROM conversations WHERE id = ?", [id]);
 }
 
-function conversationToParams(conversation: ConversationMeta): unknown[] {
+function conversationToParams(conversation: SavedConversationMeta): unknown[] {
   return [
     conversation.id,
     conversation.sourceId,
@@ -123,7 +126,6 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
     conversation.createdAt,
     conversation.discoveredAt,
     conversation.modifiedAt,
-    conversation.state,
     conversation.savedAt,
     conversation.savedMessageCount,
     conversation.saveVersion,
@@ -136,7 +138,7 @@ function conversationToParams(conversation: ConversationMeta): unknown[] {
   ];
 }
 
-function conversationUpdateParams(conversation: ConversationMeta): unknown[] {
+function conversationUpdateParams(conversation: SavedConversationMeta): unknown[] {
   return [
     conversation.sourceId,
     conversation.source,
@@ -152,7 +154,6 @@ function conversationUpdateParams(conversation: ConversationMeta): unknown[] {
     conversation.createdAt,
     conversation.discoveredAt,
     conversation.modifiedAt,
-    conversation.state,
     conversation.savedAt,
     conversation.savedMessageCount,
     conversation.saveVersion,

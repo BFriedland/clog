@@ -3,8 +3,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { createReadStream } from "node:fs";
 
-import { glob } from "glob";
-
 import type { Config } from "../config/schema.js";
 import type { Message } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
@@ -14,6 +12,7 @@ import {
   type DiscoverOptions,
   type DiscoveredConversation,
   type SourceAdapter,
+  globSourceFiles,
 } from "./adapter.js";
 
 interface ClaudeJsonLine {
@@ -44,11 +43,28 @@ export class ClaudeCodeAdapter implements SourceAdapter {
 
   async *discover(options: DiscoverOptions = {}): AsyncIterable<DiscoveredConversation> {
     for (const basePath of this.watchPaths()) {
-      const files = await glob("*/*.jsonl", {
-        cwd: basePath,
-        absolute: true,
-        nodir: true,
-      });
+      try {
+        const stat = await fs.stat(basePath);
+        if (!stat.isDirectory()) {
+          throw new Error("not a directory");
+        }
+      } catch {
+        options.onIncomplete?.();
+        options.onWarning?.({
+          code: "missing_source_file",
+          message: "Configured Claude Code conversations directory is missing or unreadable.",
+          source: this.name,
+          path: basePath,
+          guidance: "Fix the configured path or remove it from config.",
+        });
+        continue;
+      }
+
+      const files = await globSourceFiles(
+        "*/*.jsonl",
+        basePath,
+        options.onIncomplete,
+      );
 
       for (const filePath of files.sort()) {
         const discovered = await this.discoverFile(filePath, options.onWarning);

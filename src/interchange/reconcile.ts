@@ -3,8 +3,9 @@ import path from "node:path";
 
 import { isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
-import type { ConversationMeta } from "../models/conversation.js";
+import type { ConversationMeta, SavedConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
+import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import { nowIso } from "../utils/time.js";
 import { isValidSourceKey } from "../utils/source-keys.js";
 import {
@@ -47,18 +48,19 @@ type ReconcileSkipReason =
   | "ignored"
   | "duplicate"
   | "local_unsaved_owner"
+  | "local_discovery_incomplete"
   | "local_saved_owner"
   | "file_owner"
   | "other_git_owner"
   | "invalid_pair";
 
 export type ReconcileAction =
-  | { kind: "insert"; pair: GitValidatedPair; conversation: ConversationMeta }
+  | { kind: "insert"; pair: GitValidatedPair; conversation: SavedConversationMeta }
   | {
       kind: "update";
       rowId: string;
       pair: GitValidatedPair;
-      conversation: ConversationMeta;
+      conversation: SavedConversationMeta;
     }
   | { kind: "delete"; rowId: string }
   | {
@@ -67,7 +69,7 @@ export type ReconcileAction =
       message: string;
       pair?: GitValidatedPair;
       scannedPair?: ScannedPair;
-      owner?: ConversationMeta;
+      owner?: SavedConversationMeta;
     };
 
 export interface GitReconciliationPlan {
@@ -80,7 +82,10 @@ export interface GitReconciliationPlan {
 
 export interface PlanGitReconciliationArgs {
   scan: GitPairScan;
-  existingRows: ConversationMeta[];
+  existingRows: SavedConversationMeta[];
+  localCandidates?: LocalDiscoveryCandidate[];
+  incompleteSources?: string[];
+  localWarnings?: ClogWarning[];
   remoteUrl: string;
   ignoreRules?: string[];
   matchesIgnoreRule?: (
@@ -182,21 +187,28 @@ export function planGitReconciliation(
   const {
     scan,
     existingRows,
+    localCandidates = [],
+    incompleteSources = [],
+    localWarnings = [],
     remoteUrl,
     ignoreRules = [],
     matchesIgnoreRule,
     deletionsEnabled = true,
   } = args;
   const actions: ReconcileAction[] = [];
-  const warnings = [...scan.warnings];
+  const warnings = [...scan.warnings, ...localWarnings];
   const protectedIdentities: SourceIdentity[] = [];
   const protectedKeys = new Set<string>();
   const presentKeys = new Set<string>();
   const seenValidKeys = new Map<string, GitValidatedPair>();
   let ignoredCount = 0;
 
-  const rowsByIdentity = new Map<string, ConversationMeta>();
-  const inScopeRowsByIdentity = new Map<string, ConversationMeta>();
+  const rowsByIdentity = new Map<string, SavedConversationMeta>();
+  const inScopeRowsByIdentity = new Map<string, SavedConversationMeta>();
+  const localCandidateKeys = new Set(
+    localCandidates.map((candidate) => identityKey(candidate.source, candidate.sourceId)),
+  );
+  const incompleteSourceSet = new Set(incompleteSources);
 
   for (const row of existingRows) {
     const key = identityKey(row.source, row.sourceId);
@@ -274,6 +286,26 @@ export function planGitReconciliation(
         continue;
       }
 
+      if (!owner && localCandidateKeys.has(key)) {
+        actions.push({
+          kind: "skip",
+          reason: "local_unsaved_owner",
+          message: `Skipping remote conversation ${pair.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.id.slice(0, 8)}' to keep the local copy.`,
+          pair,
+        });
+        continue;
+      }
+
+      if (!owner && incompleteSourceSet.has(pair.source)) {
+        actions.push({
+          kind: "skip",
+          reason: "local_discovery_incomplete",
+          message: `Skipping remote conversation ${pair.id.slice(0, 8)} because ${pair.source} discovery did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          pair,
+        });
+        continue;
+      }
+
       actions.push({
         kind: "insert",
         pair,
@@ -316,7 +348,7 @@ export function planGitReconciliation(
 function buildConversationFromGitPair(
   pair: GitValidatedPair,
   remoteUrl: string,
-): ConversationMeta {
+): SavedConversationMeta {
   const now = nowIso();
   return {
     id: pair.pair.meta.id,
@@ -348,10 +380,10 @@ function buildConversationFromGitPair(
 }
 
 function mergeGitPairIntoConversation(
-  existing: ConversationMeta,
+  existing: SavedConversationMeta,
   pair: GitValidatedPair,
   remoteUrl: string,
-): ConversationMeta | null {
+): SavedConversationMeta | null {
   const titleChanged = existing.title !== pair.pair.meta.title;
   const summaryChanged = existing.summary !== pair.pair.meta.summary;
   const contentChanged = existing.savedMessageCount !== pair.pair.messageCount;
@@ -652,11 +684,7 @@ function uniqueIdentities(identities: SourceIdentity[]): SourceIdentity[] {
   return unique;
 }
 
-function ownerSkipReason(owner: ConversationMeta): ReconcileSkipReason {
-  if (owner.originKind === "local" && owner.state === "unsaved") {
-    return "local_unsaved_owner";
-  }
-
+function ownerSkipReason(owner: SavedConversationMeta): ReconcileSkipReason {
   if (owner.originKind === "local") {
     return "local_saved_owner";
   }
@@ -668,12 +696,8 @@ function ownerSkipReason(owner: ConversationMeta): ReconcileSkipReason {
   return "other_git_owner";
 }
 
-function ownerSkipMessage(pair: GitValidatedPair, owner: ConversationMeta): string {
+function ownerSkipMessage(pair: GitValidatedPair, owner: SavedConversationMeta): string {
   const shortId = pair.id.slice(0, 8);
-
-  if (owner.originKind === "local" && owner.state === "unsaved") {
-    return `Skipping remote conversation ${shortId} - a local unsaved copy already exists. Run 'clog save ${shortId}' to keep the local copy, or remove the local row before using the imported copy.`;
-  }
 
   if (owner.originKind === "local") {
     return `Skipping remote conversation ${shortId} - the local saved copy takes precedence.`;

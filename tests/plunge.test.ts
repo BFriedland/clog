@@ -71,6 +71,44 @@ describe("plunge", () => {
     await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
   });
 
+  it("identifies the saved checkpoint that blocks migration from schema version 8", async () => {
+    await seedConfig();
+    const id = "5aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const rawPath = getRawConversationPath("claude-code", id);
+    await writeMinimalClaudeJsonl(rawPath, "Migration blocker");
+    await insertConversation(makeConversation({
+      id,
+      sourceId: id,
+      filePath: rawPath,
+      sourcePath: rawPath,
+    }));
+    await dbModule.withDb((db) => {
+      db.exec(`
+        CREATE TABLE conversations_v8_corrupt AS
+          SELECT *, 'saved' AS state FROM conversations;
+        DROP TABLE conversations;
+        ALTER TABLE conversations_v8_corrupt RENAME TO conversations;
+        UPDATE conversations
+        SET saved_at = NULL, saved_message_count = NULL, save_version = 0
+        WHERE id = '${id}';
+        UPDATE schema_version SET version = 8;
+      `);
+    }, { mode: "write" });
+    const before = await fs.readFile(getClogDbPath());
+
+    const report = await generatePlungeReport();
+
+    expect(findCheck(report, 2)?.recovery).toContain("checkpoint corruption reported below");
+    expect(findCheck(report, 11)).toMatchObject({
+      severity: "corruption",
+      conversation: { id, source: "claude-code" },
+    });
+    expect(findCheck(report, 11)?.message).toContain("saved_at is null");
+    expect(findCheck(report, 11)?.message).toContain("saved_message_count is null");
+    expect(findCheck(report, 11)?.message).toContain("save_version is 0");
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
+  });
+
   it("reports a simulated non-ok integrity_check result as fatal", async () => {
     await ensureClogHome({ interactive: false });
 
@@ -261,15 +299,26 @@ describe("plunge", () => {
         sourceId: id,
         state: "saved",
         filePath: rawPath,
-        savedAt: null,
-        savedMessageCount: null,
-        saveVersion: 0,
       }),
     );
+    await dbModule.withDb((db) => {
+      db.exec(`
+        CREATE TABLE conversations_without_constraints AS
+          SELECT * FROM conversations;
+        DROP TABLE conversations;
+        ALTER TABLE conversations_without_constraints RENAME TO conversations;
+      `);
+      db.run(
+        "UPDATE conversations SET saved_at = NULL, saved_message_count = NULL, save_version = 0 WHERE id = ?",
+        [id],
+      );
+    }, { mode: "write" });
 
     const report = await generatePlungeReport();
 
-    expect(findCheck(report, 11)?.message).toContain("saved_at is null");
+    expect(findCheck(report, 11)?.message).toContain("saved_message_count is null");
+    expect(findCheck(report, 11)?.message).toContain("save_version is 0");
+    expect(findCheck(report, 12)?.message).toContain("saved_at");
   });
 
   it("reports invalid timestamps", async () => {
@@ -433,10 +482,10 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: now,
     discoveredAt: now,
     modifiedAt: now,
-    state: "unsaved",
-    savedAt: null,
-    savedMessageCount: null,
-    saveVersion: 0,
+    state: "saved",
+    savedAt: now,
+    savedMessageCount: 0,
+    saveVersion: 1,
     sourcePath: "/tmp/source.jsonl",
     filePath: null,
     sourceMtime: now,

@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 
 const allowedUnsafeImporters = new Map<string, string>([
   ["src/db/index.ts", "public write APIs re-check provenance before calling unsafe SQL"],
-  ["src/cli/local-discovery-executor.ts", "local source discovery writes only local rows"],
   ["src/cli/fill-executor.ts", "file import and fill --own writes have origin-specific guards"],
   ["src/sync/reconcile-executor.ts", "git reconciliation writes only rows for the configured remote"],
   ["tests/helpers/db.ts", "tests seed exact database states through unsafe primitives"],

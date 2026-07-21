@@ -109,7 +109,7 @@ clog is a local-first CLI tool and MCP server that lets developers discover, cur
 
 Phase 3 (§11) adds a git-based sync layer for team sharing. Phase 2 (§10) adds the vector DB for semantic search. Both are optional — Phase 1 is a complete system on its own.
 
-**Design principle: files as source of truth, database as index.** Conversation content lives in raw JSONL files on disk. The SQLite database stores only metadata and state — enough to power listing, filtering, and the curation workflow. Full conversation content is read from files on demand. This keeps the database lightweight for `sql.js`'s in-memory loading model and avoids storing large tool outputs in the DB.
+**Design principle: files as source of truth, database as saved-collection index.** Conversation content lives in raw JSONL files on disk. The SQLite database stores metadata only for saved and imported conversations, which is enough to power saved listing, filtering, and curation. Unsaved metadata is derived from source files on demand. Full conversation content is read from files when needed. This keeps the database lightweight for `sql.js`'s in-memory loading model and avoids storing large tool outputs in the database.
 
 ### 2.2 Tech Stack
 
@@ -127,7 +127,7 @@ Phase 3 (§11) adds a git-based sync layer for team sharing. Phase 2 (§10) adds
 
 If `sql.js` performance ever becomes a problem (unlikely), the DB layer is isolated enough to swap in `better-sqlite3` later.
 
-**`sql.js` persistence caveat:** Because `sql.js` operates entirely in memory, changes must be explicitly flushed to disk by writing the database buffer to the file. Database access declares whether its callback reads or writes. Read access ensures that the schema is current, runs the callback with SQLite query-only enforcement, and flushes only when schema creation or schema migration changed the in-memory database. Write access flushes once after a successful callback, so a logical mutation such as a scan that inserts 100 rows writes the database file once rather than 100 times. A callback that throws does not flush its partial in-memory changes.
+**`sql.js` persistence caveat:** Because `sql.js` operates entirely in memory, changes must be explicitly flushed to disk by writing the database buffer to the file. Database access declares whether its callback reads or writes. Read access ensures that the schema is current, runs the callback with SQLite query-only enforcement, and flushes only when schema creation or schema migration changed the in-memory database. Write access flushes once after a successful callback, so a batch mutation such as git reconciliation writes the database file once rather than once per row. A callback that throws does not flush its partial in-memory changes.
 
 **Concurrent access:** The MCP server and CLI can run simultaneously (e.g., a developer runs `clog save` while the MCP server is handling a query). Since `sql.js` loads the entire database into memory, concurrent writers risk last-write-wins data loss — one process's flush could overwrite the other's changes.
 
@@ -204,6 +204,8 @@ clog/
 │   ├── db/                  # Database layer
 │   │   ├── schema.ts        # Table definitions + migrations
 │   │   └── index.ts         # Query functions
+│   ├── conversations/       # Saved-plus-unsaved view composition and write guards
+│   │   └── view.ts          # Identity deduplication, view filtering, and ID resolution
 │   ├── interchange/         # Transport-neutral conversation file-pair IO and reconciliation planning
 │   │   ├── archive.ts       # Deterministic zip creation and safe selected-entry extraction
 │   │   ├── pairs.ts         # Pair discovery, validation, metadata, and safe writing
@@ -232,7 +234,20 @@ Phase 3 (§11.15) adds: `src/sync/`, plus CLI files (`remote.ts`, `sync.ts`, `re
 
 ### 3.1 Conversation Metadata
 
-The database stores metadata about conversations. Full content (messages, tool use, tool results) lives in raw JSONL files on disk and is parsed on demand when needed (e.g., `clog show`, MCP `get_conversation`).
+The database stores metadata only for conversations that the user saved locally
+or imported. Unsaved conversations are ephemeral views derived from enabled
+external source transcripts during a command invocation; they are never
+database rows. Full content (messages, tool use, tool results) lives in raw
+JSONL files on disk and is parsed on demand when needed (for example,
+`clog show` or MCP `get_conversation`).
+
+Saved versus unsaved records user intent and controls default command scope.
+Saving adds a conversation to clog's durable saved collection. The lifecycle
+label is not an authorization boundary: a command may explicitly opt into an
+operation on an unsaved source conversation without saving it when that
+command's contract allows the operation. Commands such as metadata editing
+still require a saved local row because unsaved views have no durable curation
+metadata to update.
 
 ```typescript
 type SummaryKind = "none" | "imported" | "generated" | "curated";
@@ -270,19 +285,19 @@ interface ConversationMeta {
 
   // Timestamps
   createdAt: string;             // ISO 8601 (from source)
-  discoveredAt: string;          // When clog first saw it
-  modifiedAt: string;            // Last database metadata or scan-bookkeeping update
+  discoveredAt: string;          // Save/import time for saved rows; scan time for unsaved views
+  modifiedAt: string;            // Last saved-row write or unsaved source mtime
 
   // State
   state: "unsaved" | "saved";
-  savedAt: string | null;        // Last successful save time, null until first save
-  savedMessageCount: number | null;  // Parser-sequence checkpoint, null until first save
-  saveVersion: number;           // Increments on re-save after edits
+  savedAt: string | null;        // Non-null for saved rows; null for unsaved views
+  savedMessageCount: number | null;  // Non-negative for saved rows; null for unsaved views
+  saveVersion: number;           // >= 1 for saved rows; 0 for unsaved views
 
   // File references
   sourcePath: string;            // Local source path, git checkout path, or managed import path
   filePath: string | null;       // Managed content path for saved rows; null until save/import
-  sourceMtime: string | null;    // ISO 8601 mtime of source file at last scan
+  sourceMtime: string | null;    // Current source mtime for views; stored locator metadata for saved rows
   indexedAt: string | null;      // Phase 2 search cache freshness marker
 
   // Provenance
@@ -299,7 +314,7 @@ For the built-in Phase 1 sources, `id = sourceId`. Claude Code and Codex CLI bot
 
 This is intentional. clog does not use a composite key for the built-in sources because a single physical `id` keeps identity handling, file naming, CLI resolution, MCP retrieval, and sync reconciliation simpler and less bug-prone for the current sources. At clog's expected scale and with the built-in sources' UUID-shaped IDs, a cross-source collision is not a realistic design constraint for Phase 1.
 
-**Timestamp roles:** `createdAt` is source chronology; `discoveredAt` is when clog first saw or imported the conversation; `modifiedAt` records the latest database metadata change or local-source scan bookkeeping update, but it is not a saved-conversation status marker; `savedAt` is the latest successful save time; `savedMessageCount` is the transcript diff and saved-status checkpoint, not a timestamp; `sourceMtime` is the local source scan cache marker; `indexedAt` is the search cache freshness marker.
+**Timestamp roles:** `createdAt` is source chronology. For saved rows, `discoveredAt` is the first save or import time and `modifiedAt` is the latest successful metadata edit or save write. For an ephemeral unsaved scan view, `discoveredAt` is the invocation's scan time and `modifiedAt` is the source file's `sourceMtime`. `modifiedAt` is not a saved-conversation status marker. `savedAt` is the latest successful save time; `savedMessageCount` is the transcript and saved-status checkpoint, not a timestamp; `sourceMtime` is operational source-locator metadata; and `indexedAt` is the search cache freshness marker. MCP list responses omit `discoveredAt` for unsaved views.
 
 **Summary metadata:** `summary` is the prose summary. `summaryKind` records who or what produced that prose:
 
@@ -362,7 +377,7 @@ Codex CLI JSONL (Section 4.3) is normalized as follows:
 Full conversation IDs are UUIDs from the source system (e.g., `c7044ea5-c019-44d6-a77a-500036740f9a`). The CLI displays and accepts short prefixes, similar to Git:
 
 - **Display:** All commands that show IDs use the first 8 characters by default (e.g., `c7044ea5`).
-- **Input:** Any command that accepts an ID resolves short prefixes by querying the database with a `LIKE 'prefix%'` match. If the prefix is ambiguous (matches multiple conversations), the command errors with a message showing copy-pasteable disambiguation candidates.
+- **Input:** Saved-only commands resolve short prefixes against saved database rows. Commands whose scope includes unsaved conversations compose saved rows with the invocation's local-source scan view before prefix matching. A saved row suppresses a scan candidate with the same `source + sourceId` identity before ambiguity is evaluated.
 - **Source-qualified input:** Commands also accept `prefix@source`, for example `c7044ea5@codex-cli`. Parse by splitting on the last `@`. Empty prefixes, empty sources, extra `@` characters in the prefix, source qualifiers with invalid source-key syntax, and prefixes shorter than the minimum are invalid. A syntactically valid source qualifier does not need to be parse-supported by this clog build; it restricts resolution to database rows whose stored source key exactly matches the qualifier.
 - **Minimum prefix length:** 4 characters. Shorter prefixes are rejected as ID resolutions. In selector-bearing commands a bare token under 4 characters can still resolve as a project name (see §5.1.1), but the cross-space ambiguity check still applies: if the same short token also matches any conversation ID prefix, the command errors with the cross-space ambiguity message rather than silently choosing the project.
 
@@ -398,11 +413,9 @@ CREATE TABLE conversations (
   created_at      TEXT NOT NULL,
   discovered_at   TEXT NOT NULL,
   modified_at     TEXT NOT NULL,
-  state           TEXT NOT NULL DEFAULT 'unsaved'
-                  CHECK(state IN ('unsaved','saved')),
-  saved_at    TEXT,
-  saved_message_count INTEGER,
-  save_version INTEGER DEFAULT 0,
+  saved_at        TEXT NOT NULL,
+  saved_message_count INTEGER NOT NULL CHECK(saved_message_count >= 0),
+  save_version    INTEGER NOT NULL CHECK(save_version >= 1),
   source_path     TEXT NOT NULL,       -- Local source path, git checkout path, or managed import path
   file_path       TEXT,               -- Managed content path for saved rows; null until save/import
   source_mtime    TEXT,               -- ISO 8601 mtime of source file at last scan
@@ -437,15 +450,17 @@ Fresh installs create all tables with the latest schema and set the version to t
 | 6 | Constrain the version-6 conversation state to `discovered` and `saved` |
 | 7 | Split legacy `origin` into `origin_kind` and `origin_ref` |
 | 8 | Rename the conversation lifecycle state from `discovered` to `unsaved` |
+| 9 | Drop cached unsaved rows, remove the persisted `state` column, and require valid save checkpoints on every row |
 
 Phase 2 (§10) adds: `indexed_at` column (migration version 2)
 Phase 3 (§11.4) adds: `origin_kind` and `origin_ref` columns (migration version 7, after the legacy version-3 sync marker)
 The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
 The summarization migration (version 5) adds `summary_kind` with a default of `none` and a CHECK constraint over `none`, `imported`, `generated`, and `curated`; adds nullable `summary_extraction`; and back-fills `summary_kind = 'curated'` for existing rows whose `summary` is non-empty. This conservative back-fill prevents agent summarization from overwriting prose the user may already have edited.
 The provenance migration (version 7) rebuilds the conversations table for sql.js compatibility, replaces legacy `origin` with `origin_kind` and `origin_ref`, back-fills rows whose legacy `origin` value is null as `origin_kind = 'local', origin_ref = NULL`, and back-fills rows whose legacy `origin` value is non-null as `origin_kind = 'git', origin_ref = <legacy origin URL>`.
-The state terminology migration (version 8) rebuilds the conversations table for sql.js compatibility, changes the `state` column default and CHECK constraint to `unsaved`/`saved`, and rewrites legacy `state = 'discovered'` rows to `state = 'unsaved'`. Fresh installs create the version-8 schema directly.
+The state terminology migration (version 8) rebuilds the conversations table for sql.js compatibility, changes the `state` column default and CHECK constraint to `unsaved`/`saved`, and rewrites legacy `state = 'discovered'` rows to `state = 'unsaved'`. Version 8 was the last schema that persisted lifecycle state; fresh installs now create version 9 directly.
+The saved-only storage migration (version 9) validates every legacy saved row's save checkpoints, then rebuilds the conversations table without the `state` column and copies only saved rows. Invalid saved checkpoints fail the migration without replacing the existing database. Legacy unsaved rows are disposable discovery cache entries and are dropped. Fresh installs create the version-9 schema directly.
 
-**What's NOT in the database:** Full message content, tool outputs, raw conversation text. These live in JSONL files. For saved conversations, `file_path` points at the managed content file: local rows use `~/.clog/raw/`, git rows use `~/.clog/remote/`, and file-imported rows use `~/.clog/imports/`. For unsaved conversations, `source_path` points at the original source location. This keeps the database small (a few KB per conversation) so that `sql.js` can load it into memory instantly, even at thousands of conversations.
+Database membership means that a conversation is part of clog's durable saved collection. The database does not store lifecycle state or unsaved source conversations. It also does not store full message content, tool outputs, or raw conversation text. Saved local rows point at managed files under `~/.clog/raw/`, git rows point into `~/.clog/remote/`, and file-imported rows point into `~/.clog/imports/`. Unsaved conversations exist only as on-demand views whose `sourcePath` points at an enabled external source.
 
 ### 3.5 Storage Location
 
@@ -1023,9 +1038,9 @@ $ clog show a1b2c3
 
 ### 5.2 The `status` Command
 
-`clog status` scans enabled local sources, refreshes discovery metadata, and shows the local projects that need attention:
+`clog status` builds an invocation-scoped view from enabled local sources and shows the local projects that need attention:
 
-- **Saved conversations to resave:** saved conversations whose managed raw copy parses to more messages than `savedMessageCount`, plus saved conversations whose `savedAt` or `savedMessageCount` checkpoint is missing. `clog save` with no arguments saves everything in this group. Persisted metadata changes and `modifiedAt > savedAt` do not place a conversation in this group.
+- **Saved conversations to resave:** saved conversations whose managed raw copy parses to more messages than `savedMessageCount`. `clog save` with no arguments saves everything in this group. Missing checkpoints are corruption, and persisted metadata changes or `modifiedAt > savedAt` do not place a conversation in this group.
 - **Saved conversations whose source files changed:** saved conversations whose managed raw copy is missing or whose source file differs from the managed raw copy. `clog save <id>` recreates or refreshes the raw copy from its source file and saves it.
 - **Unsaved conversations:** local source conversations not yet saved.
 
@@ -1070,7 +1085,7 @@ Unsaved conversations:
 # Filter by state
 $ clog list --state unsaved
 
-# Show everything, including unsaved rows and rediscovered ignored local sources
+# Show everything, including unsaved views and ignored local source conversations
 $ clog list --all
 
 # Filter by project, author, tag, or text search
@@ -1145,7 +1160,7 @@ $ clog path a1b2c3
 # User opens and edits the file with their preferred editor
 ```
 
-The raw JSONL copy is the curated content for saved conversations. For a saved conversation whose source has grown, explicit `clog save <id>` refreshes the raw copy from the source and saves the new checkpoint. No-argument `clog save` does not pull in source changes; it saves already-saved conversations whose managed raw copy parses beyond the saved message-count checkpoint or whose save checkpoint is missing. Metadata edits are durable database writes and do not require a later save.
+The raw JSONL copy is the curated content for saved conversations. For a saved conversation whose source has grown, explicit `clog save <id>` refreshes the raw copy from the source and saves the new checkpoint. No-argument `clog save` does not scan or pull in source changes; it saves already-saved conversations whose managed raw copy parses beyond the saved message-count checkpoint. Metadata edits are durable database writes and do not require a later save.
 
 ### 5.4.1 The `tag` and `untag` Commands
 
@@ -1173,25 +1188,19 @@ When `clog tag` or `clog untag` actually changes the tag set, `modified_at` is s
 
 ### 5.5 Implicit Scanning
 
-There is no explicit `discover` command. Scanning for new and updated conversations happens automatically when relevant commands run (`status`, `list`, `save`). Developers see the current state without an extra step.
+There is no explicit `discover` command. Commands that include unsaved source conversations run local discovery on demand. A command invocation scans each enabled source adapter at most once and passes the resulting snapshot to every listing, resolution, saved-source comparison, or interchange-precedence operation in that invocation. Saved-only views read the database without scanning.
 
 **Scanning behavior:**
 
-Scanning iterates every enabled source adapter. Counts may remain source-agnostic in normal output, but diagnostic scan output must name the source for each conversation found or skipped by local discovery.
+Scanning iterates every enabled source adapter and returns an in-memory snapshot containing discovered candidates, ignored display candidates, warning records, filtering counts, and per-adapter completeness. The scanner does not open or write the database. Counts may remain source-agnostic in normal output, but diagnostic output names the source for each conversation found or skipped.
 
-Local source discovery reads only the bounded metadata head of each enabled source file. The `source_mtime` column is row metadata used after adapter discovery to avoid unnecessary database rewrites and record source-file bookkeeping; it is not a cache key that skips adapter metadata reads or a saved-conversation status signal by itself.
+Local source discovery reads only the bounded metadata head of each enabled source file. An unsaved view derives all metadata from the source candidate and current configuration: `author = config.author`, `tags = []`, `discoveredAt = scan time`, and `modifiedAt = sourceMtime`. Changing `defaultTags` does not affect an unsaved view; normalized current default tags are applied only during first save.
 
-Scanning is idempotent. Each scan will:
+The conversation-view composer combines saved database rows with unsaved scan candidates. It suppresses any scan candidate whose `source + sourceId` identity is already owned by a saved or imported database row, then applies lifecycle, project, author, tag, origin, and other view filters. Disabling an adapter removes that adapter's conversations from the next unsaved view. Deleting a source file likewise removes its conversation from the next view without a prune operation.
 
-- Find new conversations not yet in the database → insert as `unsaved`
-- When inserting a new local unsaved conversation, set `author = config.author` as disposable scan metadata. Later scans do not rewrite the persisted cache value, but unsaved views and the unsaved-to-saved transition use the current configured author.
-- Avoid rewriting existing rows whose discovered `sourcePath` and post-discovery `source_mtime` match the stored row for the same `source + sourceId`
-- If a local source candidate has the same `(source, sourceId)` as a `git` or `file` row, leave the imported row unchanged and do not insert a duplicate local row. The imported row remains authoritative for that identity until the user removes it.
-- **Detect updated source files** for local conversations in any state. When the post-discovery `source_mtime` comparison shows that a source file's mtime has changed since the last scan:
-  - For `unsaved` conversations: re-extract metadata (title and summary may change as the conversation grows). If the re-extracted summary is non-blank, set `summaryKind = "imported"`; otherwise set `summaryKind = "none"`. `summaryExtraction` remains `null`.
-  - For `saved` conversations: preserve the stored metadata row and preserve the saved raw copy. Scan refresh may update only operational locator/cache fields such as `sourcePath` and `source_mtime`, plus `modified_at` as the timestamp of that bookkeeping update; it must not rewrite stored metadata such as `title`, `summary`, `summaryKind`, `summaryExtraction`, `author`, `tags`, `slug`, `projectName`, or `projectPath`. Update `source_mtime` and `modified_at` to the scan time, but do not treat those timestamps as evidence that the conversation needs saving. Status compares the live source bytes with the managed raw copy instead. The user may run `clog save <id>` to refresh and save byte-different source content.
-- **Detect moved source files.** When a known local conversation's `sourcePath` no longer matches the path returned by the adapter (e.g., the project directory was renamed), update `sourcePath` in the DB. For `unsaved` conversations, also update `projectPath` and `projectName`. For `saved` conversations, keep `projectPath` and `projectName` unchanged; only the operational source-file locator moves.
-- **Prune stale entries per source.** After discovery completes, remove `unsaved`-state DB entries whose source files are no longer found by that adapter. Only entries for the same source whose `sourcePath` falls under a scanned source directory are pruned — entries from unscanned paths or other sources are left alone. Saved conversations are never pruned because they have their own copies in `~/.clog/raw/`. The scan reports a `pruned` count alongside other filter counts.
+`clog status` uses its scan snapshot's matching candidate path to compare a saved local row's live source bytes with its managed raw copy. `clog diff` uses the same matching rule. Neither command repairs `sourcePath`, `sourceMtime`, or `modifiedAt` in the database. A save command may persist the current candidate path and mtime as part of its intentional save write.
+
+Source adapters fail independently. A broad view retains candidates yielded before an adapter failure, includes candidates from adapters that complete, and emits a `source_discovery_incomplete` warning identifying the failed source. A source-qualified lookup depends on the named adapter; an unqualified external lookup depends on every enabled adapter. If relevant discovery is incomplete, a no-match or a single shortened-prefix match is indeterminate rather than definitive. A full source-qualified identity resolves once its own adapter completed, even if another adapter failed.
 
 **Malformed source files.** Scan-driven commands warn and skip malformed source files rather than prompting when a malformed JSONL record is encountered while the adapter is still extracting discovery metadata. This includes `clog status`, `clog list`, `clog save --all`, selector-bearing `clog save`, and any other command path that refreshes local unsaved conversations before acting. Warnings are aggregated per scan pass, printed to stderr, and include source, file path, reason, and recovery guidance when possible. Malformed transcript records after metadata discovery stops are handled by full content-reading commands such as `clog show` and `clog save` when those commands read the full source file. The command exit code remains 0 unless the requested operation itself fails.
 
@@ -1203,6 +1212,7 @@ type ClogWarningCode =
   | "missing_source_id"
   | "source_id_mismatch"
   | "path_filter_without_project"
+  | "source_discovery_incomplete"
   | "unsupported_source"
   | "missing_source_file"
   | PairWarningCode;
@@ -1247,11 +1257,11 @@ git author or source directory is `pair_layout_mismatch`, not invalid metadata.
 
 This structured warning contract applies to source discovery, conversation file-pair validation, file import, and git reconciliation diagnostics. Other warning families, such as search scan-cap warnings, Git credential warnings, or best-effort deindex cleanup warnings, may use their own simpler output contracts.
 
-**Graceful handling of missing sources in scan-driven save flows.** `clog save --all` and selector-bearing `clog save` require a fresh scan because they operate on the current set of local unsaved conversations. If a requested selector no longer matches anything after that refresh, the command fails as "no conversation or project matches." If a source file disappears after scan but before the copy step, clog warns, deletes the stale unsaved row, and skips that conversation rather than crashing.
+**Graceful handling of missing sources in scan-driven save flows.** `clog save --all` and selector-bearing `clog save` use one fresh scan snapshot. An unsaved conversation whose file disappeared is absent from the snapshot and has no stale database row to clean up. A directly named saved local conversation with no matching enabled live source is left unchanged and reports that its source is unavailable. If its adapter did not complete discovery, clog reports that source availability is indeterminate instead of treating the source as absent.
 
 **No file copying during scan.** Raw JSONL files are not copied to `~/.clog/raw/` during scanning. Before a conversation is curated, clog reads metadata from the source location directly (read-only). Content is copied only by explicit save actions. This avoids doubling disk usage for conversations the developer never intends to curate.
 
-**Performance:** Local discovery keeps scanning proportional to the number of enabled source files by reading only the bounded metadata head of each file. The database stores `source_mtime` after discovery so unchanged rows are not rewritten, but `source_mtime` does not skip adapter metadata reads. If scanning latency becomes an issue at thousands of conversations, the next optimization should preserve the bounded-read contract and avoid turning `clog status` or `clog list` into full transcript integrity checks.
+**Performance:** Local discovery keeps scanning proportional to the number of enabled source files by reading only the bounded metadata head of each file. An invocation-scoped snapshot prevents repeated discovery within one command. If scanning latency becomes an issue at thousands of conversations, later optimization must preserve the bounded-read and read-only command contracts.
 
 **Filtering personal conversations:** Developers use personal laptops and will have conversations unrelated to the company. Scanning respects two explicit filter layers plus a fail-closed undiscoverable rule:
 
@@ -1264,9 +1274,9 @@ If a source cannot determine a conversation's `projectPath`, discovery fails clo
 
 ### 5.6 The `save` Command
 
-Saving is a local operation in Phase 1. It:
+Saving is the intent boundary that adds an external source conversation to clog's durable saved collection. It:
 
-1. Changes or keeps the conversation's state as `saved`
+1. Inserts a saved row on first save or updates the existing saved row on refresh
 2. Increments `save_version`
 3. Ensures a raw curated file exists for the conversation
 4. Parses the save candidate through the adapter selected by `source`
@@ -1276,9 +1286,9 @@ Saving is a local operation in Phase 1. It:
 
 When an unsaved conversation becomes saved, clog sets `author` to the current
 `config.author` and sets `tags` to the current `config.defaultTags` after
-trimming, lowercasing, removing empty values, and deduplicating them. The
-author and tags stored on an unsaved database row are discovery-cache values,
-not curated metadata.
+trimming, lowercasing, removing empty values, and deduplicating them. Unsaved
+scan views have no persisted author or tags; their prospective author is the
+current configured author and their tag list is empty.
 
 Refreshing an already saved conversation preserves its stored author and tags.
 Changing `config.author` does not rename saved conversations, and changing
@@ -1298,9 +1308,9 @@ $ clog save project:api-service
 $ clog save --all
 ```
 
-When called with no arguments, `clog save` saves saved local conversations whose managed raw copy parses to more messages than `saved_message_count`, plus saved rows whose `saved_at` or `saved_message_count` checkpoint is missing. It does not select a saved conversation merely because persisted metadata changed or `modified_at` is later than `saved_at`. It also does not implicitly save unsaved conversations or refresh saved conversations from changed source files. This prevents a bare command from pulling every local source conversation into the knowledge base by accident.
+When called with no arguments, `clog save` performs no local-source scan. It saves only a saved local conversation whose existing managed raw copy parses to more messages than `saved_message_count`. Missing saved checkpoints violate the database invariant and are corruption, not bare-save targets. Bare save does not select unsaved conversations, refresh saved rows from live source files, or emit source-discovery warnings.
 
-`clog save --all` explicitly saves every local conversation that `clog status` would flag as needing attention: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs byte-for-byte from it, and saved conversations selected by the no-argument checkpoint rule above. Persisted metadata changes and scan-time mtime bookkeeping do not make a saved conversation an `--all` target. The command is the bulk equivalent of running `clog save <id>` for each row reported by `clog status`.
+`clog save --all` explicitly saves every local conversation that `clog status` would flag as needing attention: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs byte-for-byte from it, and saved conversations selected by the no-argument checkpoint rule above. Persisted metadata changes and source mtime alone do not make a saved conversation an `--all` target. The command is the bulk equivalent of running `clog save <id>` for each row reported by `clog status`.
 
 When called with explicit selectors, `clog save [selectors...]` can save unsaved or already saved local conversations.
 
@@ -1309,12 +1319,14 @@ Project selectors are only a batching mechanism here: `clog save myapp` must beh
 Per-conversation explicit save behavior:
 
 - For an unsaved conversation, explicit save verifies the source file exists, copies it to `~/.clog/raw/<source>/<id>.jsonl`, sets `file_path`, parses that raw copy, and saves it.
-- For a saved conversation whose source file is unchanged or unavailable, explicit save reads the existing raw copy at `file_path`.
+- For a saved conversation whose enabled live source is unchanged, explicit save reads the existing raw copy at `file_path` and records the explicit resave.
 - For a saved conversation whose source file exists and differs from the current raw copy, explicit save refreshes the raw copy from `sourcePath` before parsing and saving.
 
-If a source file needed for an unsaved conversation is unavailable, that conversation fails clearly. If a saved conversation's source file is unavailable, explicit save falls back to the existing raw copy.
+First save acquires the database write lock and rechecks `source + sourceId` before creating or overwriting the managed raw copy. It retains the lock through the copy, managed-copy parse, and saved-row insert. If another process already saved that identity, clog reports that no additional change was made and asks the user to rerun save to refresh it. If an imported row owns the identity, clog directs the user to inspect and remove that copy before retrying. A process that loses this identity race does not create or alter the managed raw file.
 
-`saved_message_count` is `null` until the first successful save. Every save or resave replaces it with the current parsed message count.
+If a source file needed for an unsaved conversation disappears after discovery, first save fails without inserting a row. If a complete scan cannot find the enabled live source for a directly named saved local conversation, explicit save leaves its managed copy, checkpoint, and save version unchanged and reports the source as unavailable; it does not create a new version from the unchanged managed copy. Incomplete discovery produces an indeterminate-source diagnostic.
+
+Every persisted conversation has non-null `saved_at`, a non-negative `saved_message_count`, and `save_version >= 1`. Every successful save or resave replaces the checkpoint with the current parsed message count and increments the version.
 
 Save preserves `summary`, `summaryKind`, and `summaryExtraction`; it does not summarize, clear, or refresh summary metadata. Summary freshness across later re-saves is intentionally not tracked in v1.
 
@@ -1411,7 +1423,7 @@ The `Summary:` line includes `summaryKind` in parentheses. Extraction lines are 
 
 When source is shown in CLI or MCP metadata, use the canonical raw source key such as `claude-code` or `codex-cli`, not a separate human-friendly display label.
 
-`clog show` and `clog path` resolve content paths from the stored row. Unsaved local conversations read from `sourcePath`. Saved conversations read from `filePath`, which points at `~/.clog/raw/<source>/<id>.jsonl` for local saved rows, `~/.clog/remote/<author>/<source>/<id>.jsonl` for git-imported rows, and `~/.clog/imports/<source>/<id>.jsonl` for file-imported rows. `clog diff` is local-only; see §5.8.
+`clog show` and `clog path` resolve content paths from the combined conversation view. Unsaved local conversations read from the scan view's `sourcePath`. Saved conversations read from the database row's `filePath`, which points at `~/.clog/raw/<source>/<id>.jsonl` for local saved rows, `~/.clog/remote/<author>/<source>/<id>.jsonl` for git-imported rows, and `~/.clog/imports/<source>/<id>.jsonl` for file-imported rows. `clog diff` is local-only; see §5.8.
 
 ### 5.7.2 The `plunge` Command
 
@@ -1446,19 +1458,18 @@ Findings use three severities:
 - `corruption` — a clog invariant is violated
 - `info` — informational only
 
-The command currently checks:
+The command currently checks the following numbered diagnostics. Removed
+lifecycle-state diagnostics leave gaps in the stable check identifiers:
 
 1. SQLite `integrity_check`
 2. schema version
 3. syntactically valid stored `source` values
 4. built-in-source `id == source_id`
-5. valid row `state`
 6. parseable `tags_json`
 7. expected raw-file path/presence for local saved rows
 8. successful raw-file parsing through the selected adapter
 9. saved parser-sequence checkpoint drift (`saved_message_count`)
-10. cleared save fields on unsaved rows
-11. required save metadata on saved rows
+11. required save metadata on every conversation row
 12. parseable timestamps and `saved_at <= modified_at`
 13. readable `clogignore`
 14. supported `clogignore` rule syntax
@@ -1551,7 +1562,6 @@ clog drain api-service --author alice -o api.zip # project selector within a fil
 | `--force` | | Replace eligible existing output. |
 | `--include-imported` | | Include imported conversations when no selector or filter is supplied. |
 | `--yes` | | Export saved local conversations without prompting when no selector or filter is supplied. |
-| `--refresh` | | Refresh local discovery before resolving the export set. |
 | `--show-all-errors` | | Show every per-conversation export failure. |
 | `--project <name>` | `-p` | Exact project metadata filter. |
 | `--author <name>` | `-a` | Exact author metadata filter. |
@@ -1567,6 +1577,9 @@ only saved conversations from an explicit selection. The removed
 `--state unsaved` form explains that `clog drain` exports saved conversations
 only. Compatibility-only parsing for removed options does not make those
 options appear in command help.
+The obsolete `--refresh` option is not recognized. Explicit selectors and
+selection filters already use a fresh invocation-scoped scan view; bare and
+`--include-imported` drain are saved-only and do not scan.
 
 #### 5.7.3.1 Conversation Selection
 
@@ -1584,7 +1597,7 @@ export.
 A drain invocation is selector-free when it has no positional selector and
 none of `--project`, `--tag`, `--author`, or `--origin`. It is bare when it is
 selector-free and does not supply `--include-imported`. Destination, format,
-refresh, replacement, error-reporting, and confirmation options do not make the
+replacement, error-reporting, and confirmation options do not make the
 selection explicit.
 
 Bare drain exports saved local conversations only, regardless of author
@@ -1602,7 +1615,7 @@ and checks the destination before asking whether to export. Only `y`, compared
 case-insensitively after trimming, accepts. Declining prints `Operation
 cancelled.` and exits `0` without creating an output destination or staging
 conversation content. Without interactive stdin, bare drain requires `--yes`
-and otherwise exits `2` before refresh or selection resolution. The error says
+and otherwise exits `2` before selection resolution. The error says
 `Exporting all saved local conversations requires confirmation. Add a
 conversation or project selector, add a filter, or use --yes.` It does not
 suggest `--include-imported`, because that option broadens the export. Explicit
@@ -1611,13 +1624,13 @@ effect on them. `--force` does not skip confirmation, and `--yes` does not
 permit destination replacement.
 
 Both output formats export saved rows only because conversation-pair metadata
-requires save-time fields. Selection treats unsaved rows as follows:
+requires save-time fields. Selection treats unsaved views as follows:
 
-- a project selector, filter selection, or selector-free selection skips
-  matching unsaved rows and reports the skipped count;
+- a project selector or filter selection skips matching unsaved views and
+  reports the skipped count;
 - an explicitly named unsaved conversation remains a per-conversation failure;
   and
-- a broad selection containing only unsaved rows fails with guidance to save
+- a broad selection containing only unsaved views fails with guidance to save
   those conversations first.
 
 Saved local, Git-imported, and file-imported rows are eligible for
@@ -1935,21 +1948,22 @@ never trips the `UNIQUE(source, source_id)` constraint as an error. Fill uses th
 same conversation file-pair layer and resolution policy as git reconciliation
 (§11.8), implemented by a fill-specific planner:
 
-| Existing row | Default `clog fill` | `clog fill --own` |
-|--------------|---------------------|-------------------|
+| Existing owner | Default `clog fill` | `clog fill --own` |
+|----------------|---------------------|-------------------|
 | none | Insert a read-only `file` row | Insert a writable `local` row after the author guard |
-| local unsaved | Skip with guidance to save locally or restore with `--own` | Restore over the unsaved row as a saved local row |
+| local unsaved scan candidate | Skip with guidance to save locally or import with `--own` | Insert a writable `local` saved row from the pair |
 | local saved | Skip because local curation takes precedence | Skip because existing local curation wins |
 | file | Update if metadata or parsed content changed; otherwise unchanged | Failure-class skip because promotion is unsupported |
 | git | Failure-class skip because a synced read-only copy owns the identity | Failure-class skip because promotion is unsupported |
 
-When `--own` restores over an existing local unsaved row, the pair metadata
-and content win. Fill preserves only the existing `discoveredAt`, writes the
-managed raw copy to `raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`,
-sets `sourceMtime` from the managed copy, sets `projectPath = null`, and stores
-the row as a clean saved local conversation. A later local source scan may
-reattach a live source path. If a later save would replace imported or restored
-content with a live local source version found by discovery, clog asks for confirmation
+Fill runs one local-source scan before entering its database write section. A
+plain fill gives a matching unsaved scan candidate local precedence. With
+`--own`, no database row exists to restore in place: fill inserts the
+pair-derived saved row, writes the managed raw copy to
+`raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`, sets `sourceMtime` from
+the managed copy, and sets `projectPath = null`. A later `clog save` may attach
+the matching live source path to that row in memory. If saving would replace
+the restored content with the live source version, clog asks for confirmation
 before overwriting the managed copy.
 
 Default fill writes managed content to:
@@ -1982,7 +1996,7 @@ New imported/restored rows use pair metadata plus these derived fields:
 - `indexedAt = null`
 - `filePath` and `sourcePath` set to the managed copy
 - `sourceMtime` from the managed copy
-- `discoveredAt` set to import time, except unsaved-row restore preserves the existing `discoveredAt`
+- `discoveredAt` set to import time
 
 File-row updates are triggered by a changed pair metadata field or a changed
 parsed `savedMessageCount`. Metadata-only updates do not recopy content. A
@@ -2053,15 +2067,15 @@ $ clog diff --last 3          # alias for --tail
 
 With no arguments and no modified conversations, `clog diff` produces no output (like `git diff` on a clean tree).
 
-If `saved_message_count` is `null`, the saved baseline is treated as empty and the full parsed conversation is shown. If the current parsed message count is less than the stored checkpoint, clog reports a clear error for that conversation because the raw file was edited, truncated, or parsed differently than the version that was saved.
+If the current parsed message count is less than `saved_message_count`, clog reports a clear error for that conversation because the raw file was edited, truncated, or parsed differently than the version that was saved. A missing `saved_message_count` is database corruption under the saved-only schema.
 
 The checkpoint assumes source conversations are append-only and adapter parsing is deterministic. `saved_message_count` detects obvious boundary breakage when the current parsed message count is less than the stored checkpoint. It cannot detect every edit before the saved boundary when the current count remains greater than or equal to the checkpoint; in that case the count may no longer point to the same logical message. This is accepted behavior for direct raw-file editing; the recovery path is to review and re-save the conversation so the checkpoint reflects the edited file.
 
 **Saved-conversation status model:** For a local saved conversation (`origin_kind = 'local'`), `clog status` first compares the live source file with the clog-managed raw copy. A missing managed raw copy or any byte difference places the conversation under **Saved conversations whose source files changed**. This byte-difference classification deliberately remains independent of parsed message count.
 
-When the live source is unavailable or byte-identical to the managed raw copy, `clog status` parses the managed raw copy. A parsed message count greater than `saved_message_count` places the conversation under **Saved conversations to resave**. A missing `saved_at` or `saved_message_count` checkpoint also places the conversation in that section.
+When the live source is unavailable or byte-identical to the managed raw copy, `clog status` parses the managed raw copy. A parsed message count greater than `saved_message_count` places the conversation under **Saved conversations to resave**.
 
-Persisted metadata edits do not create save work. Commands such as `clog edit`, `clog tag`, and `clog untag` update the database immediately, so `modified_at > saved_at` does not make a saved conversation appear in `clog status` or become an automatic `clog save` target. A source-file mtime change may cause local discovery to update `source_mtime` and `modified_at`, but those bookkeeping timestamps also do not create save work when the source and managed raw copy remain byte-identical.
+Persisted metadata edits do not create save work. Commands such as `clog edit`, `clog tag`, and `clog untag` update the database immediately, so `modified_at > saved_at` does not make a saved conversation appear in `clog status` or become an automatic `clog save` target. Local discovery never updates a saved row. Status obtains the current live path from its scan snapshot and compares source bytes with the managed raw copy without persisting scan bookkeeping.
 
 Git reconciliation and `clog fill` updates are read-only imported-row changes. They can make an imported row's search index stale through `indexedAt` (§10.8.1), but they do not make the row eligible for `clog save`, `clog diff`, or the local saved-conversation status model.
 
@@ -2125,7 +2139,7 @@ Lines whose first non-whitespace character is `#` are comments. Blank lines are 
 2. Evaluate `clogignore`
 3. If `projectPath` is still unavailable, skip the conversation as `undiscoverable`
 4. Apply `config.json` `includePaths` / `excludePaths`
-5. Insert or update the DB row
+5. Add the candidate to the invocation-scoped unsaved conversation view
 
 The `projectPath` fail-closed rule still applies even when no path filters are configured. clog treats unknown project paths as unsafe because path filtering is the primary privacy boundary for local discovery. The ordering above is intentional: an ID rule in `clogignore` may suppress a conversation before it would otherwise appear as `undiscoverable`.
 
@@ -2162,13 +2176,13 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 - Refuses in non-interactive contexts unless `--yes` or `--dry-run` is supplied
 - Supports `--dry-run` to preview matches without deleting rows, raw files, or vectors
 - After confirmation, `clog remove` rechecks every previewed saved row before deleting anything; if any previewed row changed or disappeared, the whole removal exits before deleting database rows, managed files, or search vectors
-- Operates only on `saved`-state rows. Unsaved rows are transient artifacts of the latest scan and would simply reappear on the next scan, so they are skipped. Use `clog exclude` to keep unsaved rows from coming back.
+- Operates only on saved database rows. Unsaved conversations are external on-demand views and are not removal targets. Use `clog exclude` to keep matching source conversations out of future views.
 - Deletes the union of matching saved DB rows across provenance kinds
 - Deletes curated raw copies for removed local curated rows and managed import copies for removed file rows
 - Leaves git checkout files alone
 - Best-effort deletes search vectors for removed searchable rows
 - Reports the number of removed conversations
-- If no saved DB rows match, reports "No saved conversations in clog's database match those rules." and leaves the database unchanged, even when unsaved rows would have matched the same rules
+- If no saved database rows match, reports "No saved conversations in clog's database match those rules." and leaves the database unchanged, even when ephemeral unsaved views would have matched the same rules
 - Leaves `clogignore` unchanged
 
 **Scan output must report filtering.** `clog status` shows a dimmed filter summary line when any scan counts are non-zero:
@@ -2179,7 +2193,7 @@ The `projectPath` fail-closed rule still applies even when no path filters are c
 
 The line appears only if at least one count is non-zero. The undiscoverable hint portion only appears when the undiscoverable count is non-zero.
 
-The filter counts are reason-based and disjoint. If a source file still exists under a watched root but is now ignored, filtered, or undiscoverable, clog removes any stale unsaved row without also incrementing `pruned`. `pruned` is reserved for unsaved rows whose source file no longer appears in the scanned source roots.
+The filter counts are reason-based and disjoint. Ignored, config-filtered, and undiscoverable candidates never enter the unsaved view. A source file that disappears is simply absent from the next view; there is no persisted prune count.
 
 `clogignore` is strictly local. It is never synced to a remote, though the local file is still consulted during git pull reconciliation and file import. Git reconciliation and `clog fill` print one summary line when `clogignore` skips one or more candidate conversation file pairs.
 
@@ -2337,6 +2351,7 @@ returns: {
   };
   truncated: boolean;        // True when messages exist outside the returned slice
   truncationNote?: string;   // Present when truncated, tells agent how to page
+  warnings?: ClogWarning[];
 }
 
 // **Message ranges:** With no range fields, `get_conversation` returns the last 20
@@ -2394,6 +2409,7 @@ returns: {
     createdAt: string;
     modifiedAt: string;
   };
+  warnings?: ClogWarning[];
 }
 
 If the requested update would not change the conversation's title, summary, summary kind, extraction, or tags, `update_conversation` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
@@ -2447,19 +2463,21 @@ returns: {
 `list_conversations` defaults to `state: "saved"`, preserving the saved-library result
 population. `state: "unsaved"` returns unsaved local source conversations, and
 `state: "all"` returns saved and unsaved conversations. Unsaved and all
-requests scan every enabled local source before listing, regardless of
-`config.autoScan`; saved-only requests do not perform an on-demand scan.
+requests scan every enabled local source once before listing; saved-only
+requests do not perform an on-demand scan.
 `state: "all"` broadens only lifecycle state and does not include ignored
 conversations or broaden the author or origin scope. `origin: "remote"` with
 `state: "unsaved"` returns an empty result.
 
-Before filtering, sorting, or pagination, unsaved rows are represented with
+Before filtering, sorting, or pagination, unsaved views are represented with
 the current `config.author`, empty tags, null summary extraction, null save
-fields, and local origin metadata. Their `modifiedAt` is `sourceMtime` when
-available and otherwise retains the stored `modifiedAt`. These values are
-normalized in memory and are not written back to the database. Saved rows keep
+fields, and local origin metadata. Their `modifiedAt` is the source file's
+`sourceMtime`. These values are derived in memory and are never written to the
+database. Saved rows keep
 their stored curation metadata. An unsaved or all request returns collapsed
-scan diagnostics in the optional top-level `warnings` array.
+scan diagnostics in the optional top-level `warnings` array. If one adapter
+fails, broad list requests keep its already-yielded candidates and every other
+adapter's candidates while reporting that discovery was incomplete.
 
 `list_conversations` always returns explicit pagination metadata. Agents should treat `hasMore: true` as an instruction to request the
 next page with `offset: nextOffset` and the same `limit` when the task requires
@@ -2538,8 +2556,7 @@ When an MCP tool performs a scan and encounters malformed source files, it retur
       "excludePaths": []
     }
   },
-  "defaultTags": [],
-  "autoScan": false
+  "defaultTags": []
 }
 ```
 
@@ -2557,11 +2574,10 @@ Phase 3 (§11.5) adds: `remote` block
 | `sources.*.includePaths` | string[] | If non-empty, only discover conversations whose `projectPath` values match these directories by the path-boundary rule below |
 | `sources.*.excludePaths` | string[] | Skip conversations whose `projectPath` values match these directories by the path-boundary rule below |
 | `defaultTags` | string[] | Tags applied, after normalization, when an unsaved conversation becomes saved |
-| `autoScan` | boolean | If true, the MCP server runs a source scan on startup |
 
 **Source path overrides:** Source locations are configured only through `sources.<name>.paths`. `CLOG_HOME` overrides clog's data directory; there is no environment-variable override for source paths.
 
-**Default source enablement:** Built-in sources are enabled by default so `clog status` discovers Claude Code and Codex CLI conversations without extra setup. Discovery is local-only: it stores metadata in the local clog database and does not save, sync, or copy raw content. Users can disable local discovery for a source with `sources.<name>.enabled = false`, or narrow discovery with `includePaths` / `excludePaths`.
+**Default source enablement:** Built-in sources are enabled by default so `clog status` discovers Claude Code and Codex CLI conversations without extra setup. Discovery is local-only and read-only: it builds an in-memory view and does not save metadata, sync content, or copy raw files. Users can disable local discovery for a source with `sources.<name>.enabled = false`, or narrow discovery with `includePaths` / `excludePaths`.
 
 **Local discovery toggle:** `enabled: false` means clog does not scan local files for that source. The source remains supported for parsing saved or remotely imported conversations already present in clog state. A remote-only configuration may set all built-in sources to `enabled: false`; local scan commands then find no local conversations, while sync pull, remote browsing, and MCP access to imported conversations continue to work.
 
@@ -2574,7 +2590,6 @@ Paths support `~` expansion and are compared after normalization. A `projectPath
 ```bash
 clog config set author alice                          # string
 clog config set defaultTags '["team-a", "team-b"]'    # array
-clog config set autoScan true                          # boolean
 ```
 
 ### 7.3 Initialization and Health Checks
@@ -2647,7 +2662,8 @@ Phase 1 implementation work includes:
 
 - `src/adapters/registry.ts` — centralize source-aware adapter construction and dispatch
 - `src/adapters/codex-cli.ts` — implement Codex discovery and parsing
-- `src/cli/scan.ts` — iterate all enabled adapters and prune stale unsaved rows per source
+- `src/cli/scan.ts` — build one read-only snapshot from all enabled adapters
+- `src/conversations/view.ts` — compose saved rows with ephemeral unsaved scan views and resolve their IDs
 - `src/cli/drain.ts` — export saved conversations as deterministic archives or unpacked pair directories
 - `src/cli/show.ts`, `src/cli/path.ts`, `src/cli/diff.ts` — use source-aware content path resolution and parsing
 - `src/cli/save.ts` — copy raw files into `raw/<source>/`, set `saved_message_count`, and use source-aware parsing
@@ -2809,11 +2825,11 @@ The `indexed_at` column tracks vector DB state:
 - **`null`** — conversation has not been embedded in the vector DB
 - **Timestamp** — when the conversation was last embedded
 
-**Staleness marker:** a saved conversation is not currently searchable and needs indexing or re-indexing when `indexed_at = null`, when `saved_at` is missing, or when `indexed_at < saved_at`. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. If an operation advances `saved_at`, it must also refresh `indexed_at` during indexing or leave the row stale. Search-visible content changes are title changes, prose-summary changes, and parsed transcript changes. A local raw file mtime newer than `indexed_at` marks the index stale because the saved transcript may have changed. A locator-only update from git reconciliation or `clog fill` preserves `indexed_at` when title, summary, and parsed transcript content are unchanged. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
+**Staleness marker:** a saved conversation is not currently searchable and needs indexing or re-indexing when `indexed_at = null` or `indexed_at < saved_at`. A missing `saved_at` is database corruption under the saved-only schema. Implementations may update non-search metadata (for example `author`, `projectName`, `projectPath`, `slug`, `summaryKind`, `summaryExtraction`, or `modified_at`) without clearing `indexed_at` when the indexed search-visible content is unchanged. If an operation advances `saved_at`, it must also refresh `indexed_at` during indexing or leave the row stale. Search-visible content changes are title changes, prose-summary changes, and parsed transcript changes. A local raw file mtime newer than `indexed_at` marks the index stale because the saved transcript may have changed. A locator-only update from git reconciliation or `clog fill` preserves `indexed_at` when title, summary, and parsed transcript content are unchanged. Remote reconciliation uses `.meta.json` field comparison plus derived path changes instead of filesystem mtime.
 
 **Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
-**Searchability invariant:** The vector store is a derived cache of the subset of conversations that are currently searchable. A conversation is searchable if and only if it exists in the local database, is in `saved` state, has a non-null `saved_at`, has a non-null `indexed_at`, and `indexed_at >= saved_at`. A saved conversation whose index timestamp is missing or older than its latest save has either never been indexed or has been marked stale after a content change; its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, removed from `saved` state, have a stale index, or otherwise dropped from the local database.
+**Searchability invariant:** The vector store is a derived cache of the subset of saved database conversations that are currently searchable. Database membership already implies saved state. A conversation is searchable if and only if it exists in the local database, has a non-null `indexed_at`, and `indexed_at >= saved_at`. A saved conversation whose index timestamp is missing or older than its latest save has either never been indexed or has been marked stale after a content change; its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, have a stale index, or otherwise dropped from the local database. Unsaved scan views are never indexed.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -2861,12 +2877,12 @@ The search index follows the lifecycle of conversations in the database:
 | `save` | Conversation enters `saved` state; `saved_at`, `modified_at`, and `saved_message_count` are refreshed | If search is configured and indexing succeeds, vectors are created or refreshed and `indexed_at` is set to a timestamp at or after `saved_at`. If search is unconfigured or indexing fails, save still succeeds and `indexed_at` remains `null`, so the conversation is saved but not searchable until indexed. Save output must report which of these outcomes occurred. |
 | `edit`, MCP `update_conversation` title/summary change on a saved conversation | Conversation remains `saved`, but embedded search-visible metadata changes | If the operation actually changes title or summary and search is set up, clog immediately attempts to re-index that conversation before returning. If re-indexing succeeds, the conversation remains searchable with refreshed vectors. If re-indexing fails, `indexed_at` is set to `null` so the conversation is treated as stale until `clog index` succeeds. If search is not set up, the metadata update succeeds and Phase 2 remains inert. No-op updates skip re-indexing and do not bump `modified_at`. |
 | `tag`, `untag`, MCP `update_conversation` tag, `summaryKind`, or `summaryExtraction` change on a saved conversation | Conversation remains `saved`; DB metadata filters or agent-analysis metadata change | No vector re-index occurs because tags and structured extraction are not part of the embedded search content. Tag-based filtering and MCP metadata reads reflect the new DB state immediately. `indexed_at` is unchanged. No-op updates do not bump `modified_at`. |
-| Local scan detects source mtime change on a saved conversation | Conversation remains `saved`; curated metadata and raw content are preserved; `modified_at` and `source_mtime` are refreshed as scan bookkeeping and do not by themselves mark the conversation for saving. Status compares the live source bytes against the managed raw copy to decide whether newer source content is available | No immediate search effect. The saved/searchable content has not changed until explicit `clog save <id>` refreshes and resaves it. |
+| Local scan detects source mtime change on a saved conversation | No database effect. Status and diff use the matching candidate's current path from the invocation-scoped scan snapshot; the saved row and managed raw copy remain unchanged | No immediate search effect. The saved/searchable content has not changed until explicit `clog save <id>` refreshes and resaves it. |
 | A command detects a raw copy mtime newer than `saved_at` or `indexed_at` | Conversation remains `saved`; curated raw content may have changed | `indexed_at` is set to `null` because projected transcript content may have changed. |
 | Git reconciliation update on an in-scope git conversation | Conversation remains `saved`; DB metadata, parser checkpoint, and derived checkout path may be refreshed from the checkout | If reconciliation changes title, summary, or parsed transcript content, `indexed_at` is set to `null` so the imported conversation is treated as stale until re-indexed. Tag-only changes and path-only locator changes preserve `indexed_at` when title, summary, and parsed content are unchanged. |
 | File import update from `clog fill` | Conversation remains `saved`; DB metadata, parser checkpoint, and managed import path may be refreshed from the input pair | If fill changes title, summary, or parsed transcript content, `indexed_at` is set to `null`. Tag-only changes and path-only locator changes preserve `indexed_at` when title, summary, and parsed content are unchanged. |
 | `exclude` | Local ignore intent is updated in `~/.clog/clogignore`; the current DB row is left in place | No immediate search effect. The conversation remains searchable until it becomes ignored at discovery/import time or is explicitly removed from the DB. |
-| `remove` | Only `saved` conversations matched by the rules are removed from the DB; matching `unsaved` rows are left in place | If the removed conversation had vectors, they are deleted. The deindex attempt is best-effort: a saved row that was never indexed (or whose vectors were already gone) deletes cleanly as a no-op. |
+| `remove` | Matching saved conversations are removed from the database. Ephemeral unsaved views are outside the command's database scope | If the removed conversation had vectors, they are deleted. The deindex attempt is best-effort: a saved row that was never indexed (or whose vectors were already gone) deletes cleanly as a no-op. |
 | `remote remove` | All git conversations imported from the configured remote are removed from the DB | Those conversations cease to be searchable; their vectors are deleted |
 | Git reconciliation delete/retract | An in-scope git conversation is removed from the DB | Conversation ceases to be searchable; vectors are deleted |
 
@@ -2920,7 +2936,7 @@ returns: {
 normalized exact OR filters, and `origin` maps `local` to `origin_kind = 'local'`
 and `remote` to `origin_kind != 'local'`.
 
-Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (saved state with a fresh `indexed_at` at or after `saved_at`). If a vector-store entry refers to a conversation that is missing from the DB, no longer in `saved` state, or has a stale index, that hit is filtered out and must not be surfaced to the user.
+Before returning results, both the CLI and MCP search paths check each search hit against the current database state using the searchability invariant (database membership with a fresh `indexed_at` at or after `saved_at`). If a vector-store entry refers to a conversation that is missing from the database or has a stale index, that hit is filtered out and must not be surfaced to the user.
 
 Search uses an expanding query window: it starts by fetching a small multiple of the requested limit from the vector store, then doubles the fetch count on each iteration until it either collects enough valid results or reaches the 5,000-entry scan cap. If search stops because it reached that 5,000-entry cap before finding enough valid results, it returns the best results found so far and includes a warning that results may be incomplete. If search stops for any other reason (enough results found, or vector store exhausted below the cap), it does not include that warning.
 
@@ -3504,7 +3520,7 @@ This complements the import-side guards in §11.8 (`clogignore` import gating an
 
 **Export phase** (write local state to checkout):
 
-4. For each local saved conversation (`origin_kind = 'local' AND state = 'saved'`) where `author = config.author` and `source` is parse-supported by this clog build:
+4. For each local saved conversation (`origin_kind = 'local'`) where `author = config.author` and `source` is parse-supported by this clog build:
    - Write `<author>/<source>/<id>.meta.json` with metadata, including `projectName`, `summaryKind`, and `summaryExtraction`, but not local-only `projectPath`, `originKind`, `originRef`, managed paths, or parser checkpoints
    - Copy `raw/<source>/<id>.jsonl` to `<author>/<source>/<id>.jsonl`
    - Use the shared pair writer, which writes JSONL first and metadata last
@@ -3589,11 +3605,15 @@ Reconciliation is scoped to the configured git remote only:
 - `local` and `file` rows are out of scope
 - deletion applies only to in-scope rows
 
-The planner keys conversations by `(source, id)`. A valid pair insertion checks
-the global owner for that identity. Any out-of-scope owner blocks the git insert:
-a local unsaved row, a local saved row, a file-imported row, or a git row
-from a different remote. Every resolution outcome is chosen so reconciliation
-never trips the `UNIQUE(source, source_id)` constraint as an error.
+The planner keys conversations by `(source, id)`. Reconciliation scans local
+sources once before entering its database write section. A valid pair insertion
+checks both the saved database owner and the unsaved scan candidates for that
+identity. A local unsaved candidate, local saved row, file-imported row, or git
+row from a different remote blocks the git insert. If relevant local discovery
+was incomplete and no candidate was found, reconciliation conservatively skips
+the insert rather than assuming the identity is unowned. Every resolution
+outcome is chosen so reconciliation never trips the
+`UNIQUE(source, source_id)` constraint as an error.
 
 Git reconciliation and `clog fill` (§5.7.4) share one policy-parameterized
 resolution engine, so the two transports stay deliberately consistent where their
@@ -3685,15 +3705,14 @@ Not shown on `clog show`, `clog search`, or other commands that retrieve specifi
 `clog list` remains curated-by-default in Phase 3. With no flags, it shows the user's local curated library on this machine plus same-author imported saved conversations:
 
 ```sql
-WHERE state = 'saved'
-  AND (origin_kind = 'local' OR (origin_kind != 'local' AND author = <configured author>))
+WHERE origin_kind = 'local'
+   OR (origin_kind != 'local' AND author = <configured author>)
 ```
 
 If `config.author` is empty or unset, fall back to:
 
 ```sql
-WHERE state = 'saved'
-  AND origin_kind = 'local'
+WHERE origin_kind = 'local'
 ```
 
 This shows:
@@ -3912,10 +3931,10 @@ tests/
 ├── chunker.test.ts          # Turn-based chunking logic (Phase 2)
 ├── cli.test.ts              # CLI command unit tests (error handling, output, edge cases)
 ├── config.test.ts           # Config schema, load/save, defaults, init
-├── db.test.ts               # CRUD, state transitions, save fields, project filtering
+├── db.test.ts               # Saved-row CRUD, schema migration/constraints, project filtering
 ├── mcp.test.ts              # MCP tool handler tests (list, get, update, browse, search)
 ├── models.test.ts           # Zod schema validation for conversation and message types
-├── scan.test.ts             # Scan pipeline, ignore/config filtering, stale entry pruning
+├── scan.test.ts             # Ephemeral scan views, completeness, filtering, and read-only guarantees
 ├── plunge.test.ts           # Corruption audit (clog plunge)
 ├── search.test.ts           # Search integration, conditional on deps (Phase 2)
 ├── search-coherence.test.ts # Searchability invariants, deindexing, scan-cap behavior (Phase 2)
@@ -3985,8 +4004,8 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 - Schema creation succeeds and is idempotent
 - CRUD operations for conversation metadata
-- State transitions (unsaved → saved, saved resave behavior)
-- Save fields written and cleared correctly
+- Saved-only schema creation and migration from persisted lifecycle rows
+- First-save insertion and saved checkpoint constraints
 - ID prefix resolution (min 4 chars, ambiguity detection)
 - Source-qualified ID resolution (`prefix@source`) and ambiguity errors with copy-pasteable candidates
 - Browse distinct tags/projects/authors
@@ -4037,12 +4056,14 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Scan tests** (`scan.test.ts`):
 
 - 2-layer path/privacy filter pipeline (`clogignore` → config) plus undiscoverable handling
-- `source_mtime` comparison avoids database rewrites for unchanged rows after adapter discovery
-- New conversation discovery
-- Stale entry pruning when source files disappear
-- Source path updates when files move between directories
+- Unsaved views derive current author, empty tags, and source-mtime modification time without database writes
+- Saved rows suppress scan candidates with the same source identity
+- Deleted and disabled source conversations disappear from the next unsaved view
+- Saved-source path changes are consumed in memory without scan-initiated database updates
 - Discovery across all enabled built-in adapters
-- Per-source pruning isolation
+- Per-source completeness, retained partial results, and indeterminate targeted resolution
+- One discovery pass per enabled adapter for `clog list --all`
+- One scan for `clog save --all` and no scan for bare `clog save`
 - Fail-closed path filtering when projectPath is unavailable within the discovery line bound
 - Aggregated malformed-file warnings for malformed JSONL encountered during metadata discovery
 
@@ -4051,7 +4072,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Multi-step flows: save → edit → re-save, exclude → unexclude, exclude → remove
 - Saved refresh flows: source grows after save → explicit `clog save <id>` refreshes the raw copy and resaves; bare `clog save` does not refresh changed source content without a selector
 - Literal ignore-rule handling: exact-line append/remove semantics, `project:<name>` rejection on ignore-rule commands, and `clog remove` deleting current DB rows without editing `clogignore`
-- State transitions through `withDb`
+- First save from an on-demand source view without a prior persisted discovery row
 
 **Interchange tests** (`interchange.test.ts`):
 
@@ -4065,7 +4086,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 **Reconcile tests** (`reconcile.test.ts`):
 
 - Exact git kind/ref scope and deletion enablement
-- Out-of-scope owner collisions with local unsaved, local saved, file, and other-git rows
+- Out-of-scope owner collisions with local unsaved scan candidates, local saved rows, file rows, and other-git rows
 - Deterministic duplicate winner for git checkout duplicates
 - Ignore-rule gating and ignored valid pairs protecting in-scope rows from deletion
 - Incomplete or invalid pair identities protecting deletion by every credible `(source, id)`
@@ -4081,7 +4102,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 - Metadata-only and JSONL-only input warnings
 - Duplicate input identities rejected with `pair_duplicate_identity`
 - Default fail-before-writes behavior for validation failures, duplicate identities, unsupported promotions, and git-row collisions
-- `--own` author guard, unsaved-row restore, and full collision matrix
+- `--own` author guard, scan-candidate precedence and insertion, and the full collision matrix
 - Imported rows stored as clean saved artifacts under `imports/<source>/<id>.jsonl`
 - File-row metadata-only and content updates, including `indexedAt` preservation/clearing rules
 - Removal of file-import managed content and restored-local only-copy warning

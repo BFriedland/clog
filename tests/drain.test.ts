@@ -48,7 +48,9 @@ describe("clog drain archive transport", () => {
     process.env.CLOG_HOME = path.join(tempDir, "clog-home");
     await ensureClogHome({ interactive: false });
     const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "claude-sources")];
     config.sources["codex-cli"].enabled = false;
+    await fs.mkdir(config.sources["claude-code"].paths[0]!, { recursive: true });
     await saveConfig(config);
   });
 
@@ -86,6 +88,88 @@ describe("clog drain archive transport", () => {
     await fs.rm(path.join(tempDir, "clog-export.zip"));
     await runBuiltCommandCapturingError(buildDrainCommand, [id]);
     expect(await fs.readFile(path.join(tempDir, "clog-export.zip"))).toEqual(firstBytes);
+  });
+
+  it("reports indeterminate ID resolution when configured source discovery is incomplete", async () => {
+    const sourceRoot = path.join(tempDir, "claude-sources");
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+
+    const noMatch = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "eeeeeeee",
+      "-o",
+      path.join(tempDir, "no-match.zip"),
+    ]);
+    expect((noMatch.error as Error).message).toMatch(/could not determine/i);
+
+    const id = "efffffff-ffff-ffff-ffff-ffffffffffff";
+    await seedSavedConversation(id);
+    const shortenedMatch = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "efff",
+      "-o",
+      path.join(tempDir, "shortened.zip"),
+    ]);
+    expect((shortenedMatch.error as Error).message).toMatch(/could not determine/i);
+  });
+
+  it("keeps an ID-shaped project selector indeterminate when discovery is incomplete", async () => {
+    const sourceRoot = path.join(tempDir, "claude-sources");
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    const projectName = "deadbeef";
+    const conversation = await seedSavedConversation(
+      "d1212121-1212-1212-1212-121212121212",
+      { projectName },
+    );
+
+    const bare = await runBuiltCommandCapturingError(buildDrainCommand, [
+      projectName,
+      "-o",
+      path.join(tempDir, "ambiguous-project.zip"),
+    ]);
+    expect((bare.error as Error).message).toMatch(/could not determine/i);
+
+    const explicitOutput = path.join(tempDir, "explicit-project.zip");
+    const explicit = await runBuiltCommandCapturingError(buildDrainCommand, [
+      `project:${projectName}`,
+      "-o",
+      explicitOutput,
+    ]);
+    expect(explicit.error).toBeNull();
+    expect(Object.keys(unzipSync(await fs.readFile(explicitOutput)))).toContain(
+      `claude-code/${conversation.id}.meta.json`,
+    );
+  });
+
+  it("resolves saved IDs when filters exclude all unseen unsaved conversations", async () => {
+    const sourceRoot = path.join(tempDir, "claude-sources");
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    const id = "fabcd123-1234-1234-1234-123456789abc";
+    await seedSavedConversation(id, {
+      author: "bob",
+      tags: ["filtered-export"],
+      originKind: "file",
+      originRef: null,
+    });
+
+    const cases = [
+      ["--origin", "remote"],
+      ["--tag", "filtered-export"],
+      ["--author", "bob"],
+    ] as const;
+
+    for (const [index, filter] of cases.entries()) {
+      const output = path.join(tempDir, `filtered-${index}.zip`);
+      const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+        id.slice(0, 4),
+        ...filter,
+        "-o",
+        output,
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(Object.keys(unzipSync(await fs.readFile(output)))).toContain(
+        `claude-code/${id}.meta.json`,
+      );
+    }
   });
 
   it("writes pair output to -o and retains pair-directory partial success", async () => {
@@ -363,16 +447,11 @@ describe("clog drain archive transport", () => {
       { tags: ["saved-only"] },
     );
     const unsavedId = "d7777777-7777-7777-7777-777777777777";
-    await insertConversation(makeConversation({
-      id: unsavedId,
-      sourceId: unsavedId,
-      tags: ["saved-only"],
-    }));
+    await writeUnsavedClaudeConversation(tempDir, unsavedId);
     const broadOutput = path.join(tempDir, "broad.zip");
 
     const broad = await runBuiltCommandCapturingError(buildDrainCommand, [
-      "--tag",
-      "saved-only",
+      "webapp",
       "-o",
       broadOutput,
     ]);
@@ -409,7 +488,6 @@ describe("clog drain archive transport", () => {
       { author: "alice", originKind: "file", originRef: null },
     );
     const unsavedId = "d9797979-9797-9797-9797-979797979797";
-    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
     const output = path.join(tempDir, "with-imports.zip");
 
     const result = await runBuiltCommandCapturingError(buildDrainCommand, [
@@ -455,7 +533,6 @@ describe("clog drain archive transport", () => {
       { author: "bob", originKind: "file", originRef: null },
     );
     const unsavedId = "d4141414-4141-4141-4141-414141414141";
-    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
     const output = path.join(tempDir, "saved-local.zip");
 
     const result = await runBuiltCommandCapturingError(buildDrainCommand, [
@@ -519,18 +596,18 @@ describe("clog drain archive transport", () => {
     expect((result.error as Error).message).toContain("No conversations match");
     await expect(fs.access(output)).rejects.toThrow();
 
-    const unsavedId = "d5050505-5050-5050-5050-505050505050";
-    await insertConversation(makeConversation({ id: unsavedId, sourceId: unsavedId }));
-    const unsavedOnly = await runBuiltCommandCapturingError(buildDrainCommand, [
+    await writeUnsavedClaudeConversation(
+      tempDir,
+      "d5050505-5050-5050-5050-505050505050",
+    );
+    const stillEmpty = await runBuiltCommandCapturingError(buildDrainCommand, [
       "--yes",
       "-o",
       output,
     ]);
 
-    expect(unsavedOnly.error).toMatchObject({ exitCode: 1 });
-    expect((unsavedOnly.error as Error).message).toContain(
-      "1 matching conversation is unsaved; save it first with 'clog save'",
-    );
+    expect(stillEmpty.error).toMatchObject({ exitCode: 1 });
+    expect((stillEmpty.error as Error).message).toContain("No conversations match");
     await expect(fs.access(output)).rejects.toThrow();
   });
 
@@ -610,13 +687,18 @@ describe("clog drain archive transport", () => {
     for (const args of [
       [] as string[],
       ["-o", path.join(tempDir, "bare.zip")],
-      ["--refresh", "--force"],
       ["--tag", ""],
       ["--origin", ""],
     ]) {
       const result = await runBuiltCommandCapturingError(buildDrainCommand, args);
       expect(result.error).toMatchObject({ exitCode: 2 });
     }
+
+    const removedRefresh = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "--refresh",
+      "--force",
+    ]);
+    expect(removedRefresh.error).toMatchObject({ exitCode: 1 });
 
     const bare = await runBuiltCommandCapturingError(buildDrainCommand, []);
     expect((bare.error as Error).message).toBe(
@@ -759,6 +841,18 @@ async function seedSavedConversation(
   return conversation;
 }
 
+async function writeUnsavedClaudeConversation(rootDir: string, id: string): Promise<void> {
+  const sourcePath = path.join(rootDir, "claude-sources", "webapp", `${id}.jsonl`);
+  await writeJsonl(sourcePath, [
+    {
+      type: "user",
+      timestamp: "2026-02-01T10:00:00.000Z",
+      cwd: "/Users/alice/projects/webapp",
+      message: { role: "user", content: `Unsaved conversation ${id}` },
+    },
+  ]);
+}
+
 async function runInteractiveCli(
   args: string[],
   stdin: string,
@@ -813,7 +907,8 @@ async function directoryIsCaseInsensitive(directory: string): Promise<boolean> {
 function makeConversation(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
   const timestamp = "2026-02-01T10:00:00.000Z";
   const id = overrides.id ?? "dbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-  return {
+  const state = overrides.state ?? "unsaved";
+  const common = {
     id,
     sourceId: id,
     source: "claude-code",
@@ -829,18 +924,30 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     createdAt: timestamp,
     discoveredAt: timestamp,
     modifiedAt: timestamp,
-    state: "unsaved",
-    savedAt: null,
-    savedMessageCount: null,
-    saveVersion: 0,
     sourcePath: path.join(os.tmpdir(), `${id}.jsonl`),
     filePath: null,
     sourceMtime: timestamp,
     indexedAt: null,
     originKind: "local",
     originRef: null,
-    ...overrides,
   };
+  return state === "saved"
+    ? {
+        ...common,
+        state,
+        savedAt: timestamp,
+        savedMessageCount: 0,
+        saveVersion: 1,
+        ...overrides,
+      } as ConversationMeta
+    : {
+        ...common,
+        state,
+        savedAt: null,
+        savedMessageCount: null,
+        saveVersion: 0,
+        ...overrides,
+      } as ConversationMeta;
 }
 
 async function runBuiltCommandCapturingError(

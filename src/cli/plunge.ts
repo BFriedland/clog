@@ -89,7 +89,6 @@ interface RawConversationRow {
   title: string;
   author: string | null;
   project_name: string | null;
-  state: string;
   tags_json: unknown;
   modified_at: unknown;
   saved_at: unknown;
@@ -117,7 +116,7 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
 ];
 
 const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
-const VALID_STATES = new Set(["unsaved", "saved"]);
+const LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION = 8;
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
@@ -365,10 +364,20 @@ async function inspectDatabase(
         subsystem: "database",
         severity: "fatal",
         message: `schema_version is ${String(version)} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
-        recovery: 'Run "clog init" and restore from backup if you have one.',
+        recovery:
+          version === LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION
+            ? "Repair any saved-row checkpoint corruption reported below, then retry the command that attempted migration."
+            : 'Run "clog init" and restore from backup if you have one.',
         paths: [path.join(getClogHome(), "clog.db")],
         sortKey: "schema-version-mismatch",
       });
+
+      if (
+        version === LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION &&
+        tableExists(db, "conversations")
+      ) {
+        findings.push(...inspectSchema8Checkpoints(db));
+      }
     }
   }
 
@@ -408,17 +417,6 @@ async function inspectDatabase(
       }));
     }
 
-    if (!VALID_STATES.has(row.state)) {
-      findings.push(conversationFinding(row, {
-        check: 5,
-        subsystem: "database",
-        severity: "corruption",
-        message: `Row has invalid state ${JSON.stringify(row.state)}.`,
-        recovery: "Investigate this row manually.",
-        sortKey: row.id,
-      }));
-    }
-
     const tagsCheck = validateTagsJson(row.tags_json);
     if (!tagsCheck.ok) {
       findings.push(conversationFinding(row, {
@@ -438,7 +436,7 @@ async function inspectDatabase(
     if (!modifiedAt.valid) {
       invalidTimestampParts.push("modified_at");
     }
-    if (row.saved_at != null && !savedAt.valid) {
+    if (!savedAt.valid || savedAt.instant == null) {
       invalidTimestampParts.push("saved_at");
     }
 
@@ -467,19 +465,22 @@ async function inspectDatabase(
     }
   }
 
-  for (const row of rows.filter((candidate) => candidate.state === "unsaved")) {
-    const hasDirtyCurationFields =
-      row.file_path != null ||
-      row.saved_at != null ||
-      row.saved_message_count != null ||
-      Number(row.save_version ?? 0) !== 0;
-
-    if (hasDirtyCurationFields) {
+  for (const row of rows) {
+    const savedMessageCount = toFiniteNumber(row.saved_message_count);
+    const saveVersion = toFiniteNumber(row.save_version);
+    const saveMetadataProblems: string[] = [];
+    if (savedMessageCount == null || savedMessageCount < 0) {
+      saveMetadataProblems.push(`saved_message_count is ${String(row.saved_message_count)}`);
+    }
+    if (saveVersion == null || saveVersion < 1) {
+      saveMetadataProblems.push(`save_version is ${String(row.save_version)}`);
+    }
+    if (saveMetadataProblems.length > 0) {
       findings.push(conversationFinding(row, {
-        check: 10,
+        check: 11,
         subsystem: "checkpoints",
         severity: "corruption",
-        message: "Unsaved row still has curation or save checkpoint fields set.",
+        message: saveMetadataProblems.join("; "),
         recovery: "Investigate this row manually.",
         sortKey: row.id,
       }));
@@ -488,10 +489,6 @@ async function inspectDatabase(
 
   for (const row of localRows) {
     if (!BUILTIN_SOURCE_SET.has(row.source)) {
-      continue;
-    }
-
-    if (row.state !== "saved") {
       continue;
     }
 
@@ -544,31 +541,8 @@ async function inspectDatabase(
       continue;
     }
 
-    if (row.state === "saved") {
-      const saveMetadataProblems: string[] = [];
+    {
       const savedMessageCount = toFiniteNumber(row.saved_message_count);
-      const saveVersion = toFiniteNumber(row.save_version);
-
-      if (row.saved_at == null) {
-        saveMetadataProblems.push("saved_at is null");
-      }
-      if (row.saved_message_count == null) {
-        saveMetadataProblems.push("saved_message_count is null");
-      }
-      if (saveVersion == null || saveVersion < 1) {
-        saveMetadataProblems.push(`save_version is ${String(row.save_version)}`);
-      }
-
-      if (saveMetadataProblems.length > 0) {
-        findings.push(conversationFinding(row, {
-          check: 11,
-          subsystem: "checkpoints",
-          severity: "corruption",
-          message: saveMetadataProblems.join("; "),
-          recovery: `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`,
-          sortKey: row.id,
-        }));
-      }
 
       if (savedMessageCount != null) {
         try {
@@ -591,6 +565,34 @@ async function inspectDatabase(
     }
   }
 
+  return findings;
+}
+
+function inspectSchema8Checkpoints(db: Database): PlungeFindingInternal[] {
+  const findings: PlungeFindingInternal[] = [];
+  for (const row of getConversationRows(db, { legacySavedOnly: true })) {
+    const problems: string[] = [];
+    if (row.saved_at == null) {
+      problems.push("saved_at is null");
+    }
+    if (!isSqliteInteger(row.saved_message_count) || row.saved_message_count < 0) {
+      problems.push(`saved_message_count is ${String(row.saved_message_count)}`);
+    }
+    if (!isSqliteInteger(row.save_version) || row.save_version < 1) {
+      problems.push(`save_version is ${String(row.save_version)}`);
+    }
+
+    if (problems.length > 0) {
+      findings.push(conversationFinding(row, {
+        check: 11,
+        subsystem: "checkpoints",
+        severity: "corruption",
+        message: problems.join("; "),
+        recovery: "Repair this saved row's checkpoint metadata before retrying the database migration.",
+        sortKey: row.id,
+      }));
+    }
+  }
   return findings;
 }
 
@@ -836,7 +838,11 @@ function readPragmaSingleString(db: Database, sql: string): string | null {
   return value == null ? null : String(value);
 }
 
-function getConversationRows(db: Database): RawConversationRow[] {
+function getConversationRows(
+  db: Database,
+  options: { legacySavedOnly?: boolean } = {},
+): RawConversationRow[] {
+  const whereClause = options.legacySavedOnly ? "WHERE state = 'saved'" : "";
   const result = db.exec(
     `
       SELECT
@@ -846,7 +852,6 @@ function getConversationRows(db: Database): RawConversationRow[] {
         title,
         author,
         project_name,
-        state,
         tags_json,
         modified_at,
         saved_at,
@@ -857,6 +862,7 @@ function getConversationRows(db: Database): RawConversationRow[] {
         origin_kind AS originKind,
         origin_ref AS originRef
       FROM conversations
+      ${whereClause}
       ORDER BY id ASC
     `,
   );
@@ -882,7 +888,6 @@ function getConversationRows(db: Database): RawConversationRow[] {
       title: String(record.title ?? ""),
       author: nullableString(record.author),
       project_name: nullableString(record.project_name),
-      state: String(record.state ?? ""),
       tags_json: record.tags_json,
       modified_at: record.modified_at,
       saved_at: record.saved_at,
@@ -894,6 +899,10 @@ function getConversationRows(db: Database): RawConversationRow[] {
       originRef: record.originRef,
     };
   });
+}
+
+function isSqliteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value);
 }
 
 function formatConversationOrigin(row: RawConversationRow): string | null {
@@ -974,11 +983,7 @@ function parseClogIgnoreLines(raw: string): ClogIgnoreLine[] {
 }
 
 function rawRecoveryForRow(row: RawConversationRow): string {
-  if (row.state === "saved") {
-    return `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`;
-  }
-
-  return "Investigate this row manually.";
+  return `Run "clog save ${row.id}" after verifying the conversation with "clog show ${row.id}".`;
 }
 
 function nullableString(value: unknown): string | null {

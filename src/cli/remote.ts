@@ -156,7 +156,7 @@ async function runRemoteShow(): Promise<void> {
     return;
   }
 
-  const localCount = (await listConversations({ origin: "local", states: ["saved"] })).length;
+  const localCount = (await listConversations({ origin: "local" })).length;
   const remoteCount = (await listConversations({ origin: gitOriginFilter(remote.url) })).length;
 
   process.stdout.write(`Remote URL: ${remote.url}\n`);

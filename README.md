@@ -51,6 +51,12 @@ Many clog commands work with either a project name or a conversation ID. Convers
 
 ### Discovery & Curation
 
+Unsaved conversations are fresh, read-only views of transcripts from enabled
+Claude Code and Codex CLI sources; clog does not store them in its database.
+Saving a conversation records the user's intent to add it to clog's durable
+saved collection, where metadata edits, search indexing, export, and sync can
+operate on it.
+
 | Command | What it does |
 |---------|-------------|
 | `clog status` | Scan sources and show project summaries for unsaved conversations and saved conversations needing attention (`--conversations`, `--source`) |

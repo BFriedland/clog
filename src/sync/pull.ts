@@ -1,4 +1,6 @@
 import { matchesRemoteClogIgnoreRule, readClogIgnoreRules } from "../cli/clogignore.js";
+import { scanLocalSources } from "../cli/scan.js";
+import { getScanWarningsForCommand } from "../cli/common.js";
 import type { Config } from "../config/schema.js";
 import {
   listConversationsInDb,
@@ -30,6 +32,7 @@ export async function reconcileRemote(
   remoteUrl: string,
 ): Promise<PullStats> {
   const scan = await scanGitCheckoutPairs(getRemoteRoot(), config);
+  const localScan = await scanLocalSources(config);
   const clogIgnoreRules = await readClogIgnoreRules();
 
   const plan = await withDb((db) => {
@@ -37,6 +40,11 @@ export async function reconcileRemote(
     const planned = planGitReconciliation({
       scan,
       existingRows,
+      localCandidates: localScan.candidates,
+      incompleteSources: localScan.sourceStatuses
+        .filter((status) => !status.complete)
+        .map((status) => status.source),
+      localWarnings: getScanWarningsForCommand(localScan),
       remoteUrl,
       ignoreRules: clogIgnoreRules,
       matchesIgnoreRule: matchesRemoteClogIgnoreRule,

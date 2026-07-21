@@ -1,7 +1,7 @@
 import chalk from "chalk";
 
 import { getConversationById, listConversations } from "../db/index.js";
-import type { ConversationMeta } from "../models/conversation.js";
+import type { ConversationMeta, SavedConversationMeta } from "../models/conversation.js";
 import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { searchConversations } from "../search/indexer.js";
@@ -128,19 +128,18 @@ async function listMatchingSavedConversations(options: {
   tag?: string;
 }): Promise<ConversationMeta[]> {
   return listConversations({
-    states: ["saved"],
     projectName: options.project,
     author: options.author,
     tag: options.tag,
   });
 }
 
-async function loadConversationsById(ids: string[]): Promise<Map<string, ConversationMeta>> {
+async function loadConversationsById(ids: string[]): Promise<Map<string, SavedConversationMeta>> {
   const entries = await Promise.all(
     [...new Set(ids)].map(async (id) => [id, await getConversationById(id)] as const),
   );
   return new Map(
-    entries.filter((entry): entry is readonly [string, ConversationMeta] => Boolean(entry[1])),
+    entries.filter((entry): entry is readonly [string, SavedConversationMeta] => Boolean(entry[1])),
   );
 }
 

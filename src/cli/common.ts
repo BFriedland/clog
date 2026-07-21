@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from "node:process";
 
 import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
+import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import {
   type LocalConversation,
   requireLocalConversation,
@@ -28,7 +29,7 @@ import type { ScanResult } from "./scan.js";
 
 const VERBOSE_WARNINGS_GUIDANCE = 'Run "clog status --verbose-warnings" for the full list';
 
-export class SourceFileMissingError extends ClogError {
+class SourceFileMissingError extends ClogError {
   constructor(conversationId: string) {
     super(
       `Source file is missing for ${conversationId}. Run "clog status" to refresh discovery.`,
@@ -600,12 +601,11 @@ export async function hasReadableIndependentSource(
 }
 
 // Heuristic for fill-restored rows: projectPath is null only for `fill --own`
-// imports, because scan drops projectPath-less sources as undiscoverable, so an
-// ordinary saved local row always has one. Scan re-attaches a live sourcePath to a
-// restored row but does NOT set its projectPath (src/cli/scan.ts saved-row
-// branch), which is what keeps this true after a scan. If re-attachment is ever
-// completed to also set projectPath, this returns false and the save guard in
-// confirmRestoredOverwriteIfNeeded stops firing.
+// imports, because discovery drops projectPath-less source conversations and an
+// ordinary saved local row therefore has one. `clog save` attaches a matching
+// scan candidate's current sourcePath to the saved row in memory without copying
+// candidate project metadata. The null projectPath keeps this predicate true and
+// preserves the restored-content overwrite confirmation.
 export function isLikelyRestoredLocalConversation(
   conversation: ConversationMeta,
 ): boolean {
@@ -635,6 +635,7 @@ export type SavedDelta = "clean" | "ready" | "source_ahead";
 
 export async function classifySavedDelta(
   conversation: ConversationMeta,
+  liveCandidate?: LocalDiscoveryCandidate | null,
 ): Promise<SavedDelta> {
   if (conversation.state !== "saved") {
     return "clean";
@@ -649,9 +650,11 @@ export async function classifySavedDelta(
     return "source_ahead";
   }
 
-  if (await pathExists(conversation.sourcePath)) {
+  const sourcePath =
+    liveCandidate === undefined ? conversation.sourcePath : liveCandidate?.sourcePath;
+  if (sourcePath && await pathExists(sourcePath)) {
     const sourceDiffers = !(await compareFileContents(
-      conversation.sourcePath,
+      sourcePath,
       conversation.filePath,
     ));
     if (sourceDiffers) {
@@ -675,6 +678,17 @@ export async function classifySavedDelta(
 export async function getSaveCandidate(conversation: ConversationMeta): Promise<{
   path: string;
   shouldRefreshRawCopy: boolean;
+}>;
+export async function getSaveCandidate(
+  conversation: ConversationMeta,
+  liveCandidate: LocalDiscoveryCandidate | null,
+): Promise<{ path: string; shouldRefreshRawCopy: boolean }>;
+export async function getSaveCandidate(
+  conversation: ConversationMeta,
+  liveCandidate?: LocalDiscoveryCandidate | null,
+): Promise<{
+  path: string;
+  shouldRefreshRawCopy: boolean;
 }> {
   if (conversation.state === "unsaved") {
     if (!(await pathExists(conversation.sourcePath))) {
@@ -692,10 +706,13 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
   }
 
   const rawExists = await pathExists(conversation.filePath);
+  const sourcePath =
+    liveCandidate === undefined ? conversation.sourcePath : liveCandidate?.sourcePath;
+
   if (!rawExists) {
-    if (await pathExists(conversation.sourcePath)) {
+    if (sourcePath && await pathExists(sourcePath)) {
       return {
-        path: conversation.sourcePath,
+        path: sourcePath,
         shouldRefreshRawCopy: true,
       };
     }
@@ -705,7 +722,7 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
     );
   }
 
-  if (!(await pathExists(conversation.sourcePath))) {
+  if (!sourcePath || !(await pathExists(sourcePath))) {
     return {
       path: conversation.filePath,
       shouldRefreshRawCopy: false,
@@ -713,13 +730,13 @@ export async function getSaveCandidate(conversation: ConversationMeta): Promise<
   }
 
   const sourceDiffers = !(await compareFileContents(
-    conversation.sourcePath,
+    sourcePath,
     conversation.filePath,
   ));
 
   if (sourceDiffers) {
     return {
-      path: conversation.sourcePath,
+      path: sourcePath,
       shouldRefreshRawCopy: true,
     };
   }
