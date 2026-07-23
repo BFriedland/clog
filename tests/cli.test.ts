@@ -117,6 +117,7 @@ import { buildFillCommand } from "../src/cli/fill.js";
 import { buildInitCommand } from "../src/cli/init.js";
 import { assertMcpServerFileExists, buildMcpCommand } from "../src/cli/mcp.js";
 import { buildListCommand } from "../src/cli/list.js";
+import { buildProgram } from "../src/cli/program.js";
 import { buildPathCommand } from "../src/cli/path.js";
 import { buildSaveCommand } from "../src/cli/save.js";
 import { buildRefreshCommand } from "../src/cli/refresh.js";
@@ -384,6 +385,44 @@ describe("cli", () => {
       expect(parentHelp).toContain("fill|import");
       expect(drain.helpInformation()).toContain("Usage: clog drain|export");
       expect(fill.helpInformation()).toContain("Usage: clog fill|import");
+    });
+  });
+
+  describe("top-level help", () => {
+    const originalIsTty = process.stdout.isTTY;
+
+    afterEach(() => {
+      process.stdout.isTTY = originalIsTty;
+    });
+
+    async function captureTopLevelHelp(): Promise<string> {
+      const program = buildProgram();
+      program.exitOverride();
+      let out = "";
+      program.configureOutput({
+        writeOut: (chunk) => {
+          out += chunk;
+        },
+      });
+
+      await expect(program.parseAsync(["node", "clog", "--help"])).rejects.toMatchObject({
+        code: "commander.helpDisplayed",
+      });
+
+      return out;
+    }
+
+    it("includes the agent-integration footer for non-interactive output", async () => {
+      process.stdout.isTTY = false;
+      const out = await captureTopLevelHelp();
+      expect(out).toContain("AI agent integration");
+      expect(out).toContain("clog mcp setup <claude|codex|both>");
+    });
+
+    it("omits the footer for an interactive terminal", async () => {
+      process.stdout.isTTY = true;
+      const out = await captureTopLevelHelp();
+      expect(out).not.toContain("AI agent integration");
     });
   });
 

@@ -89,10 +89,14 @@ export const listInputSchema = z.object({
     .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
   sortBy: listSortBySchema
     .default("createdAt")
-    .describe("Sort field. Defaults to createdAt."),
+    .describe(
+      "Sort field. Defaults to createdAt. Use createdAt for the most recent conversations by transcript start time.",
+    ),
   sortDirection: listSortDirectionSchema
     .default("desc")
-    .describe("Sort direction. Defaults to desc."),
+    .describe(
+      "Sort direction. Defaults to desc. Use desc with createdAt for the newest conversations first.",
+    ),
 });
 
 const getInputSchema = z.object({

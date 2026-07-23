@@ -180,6 +180,66 @@ describe("mcp handlers", () => {
     }
   });
 
+  it("exposes server instructions and retrieval-oriented tool metadata", async () => {
+    const server = createMcpServer();
+    const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    try {
+      const instructions = client.getInstructions();
+      expect(instructions).toBeDefined();
+      // Codex docs recommend the first ~512 characters be self-contained;
+      // clog keeps the whole instructions string within that budget.
+      expect(instructions!.length).toBeLessThanOrEqual(512);
+      expect(instructions).toContain("Claude Code and Codex");
+      expect(instructions).toContain("summarize and analyze");
+
+      const { tools } = await client.listTools();
+      for (const tool of tools) {
+        expect(tool.title, `title for ${tool.name}`).toBeTruthy();
+        expect(tool.description, `description for ${tool.name}`).toBeTruthy();
+      }
+
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      expect(byName.get("list_conversations")?.description).toContain("literal-text");
+      expect(byName.get("search_conversations")?.description).toContain("meaning");
+      expect(byName.get("get_conversation")?.description).toContain("saved");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("registers a deterministic tool inventory across server constructions", async () => {
+    const inventories: string[] = [];
+
+    for (let i = 0; i < 2; i += 1) {
+      const server = createMcpServer();
+      const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await Promise.all([
+        server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+
+      try {
+        const { tools } = await client.listTools();
+        inventories.push(JSON.stringify(tools));
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
+
+    expect(inventories[0]).toBe(inventories[1]);
+  });
+
   it("starts and handshakes through the import-based MCP setup launcher", async () => {
     const serverPath = fileURLToPath(new URL("../dist/mcp/server.js", import.meta.url));
     const transport = new StdioClientTransport({
