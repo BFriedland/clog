@@ -104,7 +104,6 @@ export const listInputSchema = z
 export const getInputSchema = z
   .object({
     id: z.string(),
-    maxMessages: z.number().int().positive().max(200).optional(),
     head: z.number().int().positive().max(200).optional(),
     tail: z.number().int().positive().max(200).optional(),
     offset: z.number().int().nonnegative().optional(),
@@ -244,21 +243,20 @@ function selectMessageRange(input: GetInput, totalMessages: number): SelectedRan
     };
   }
 
-  const pageSize = input.tail ?? input.maxMessages ?? 20;
+  const pageSize = input.tail ?? 20;
   const startIndex = Math.max(0, totalMessages - pageSize);
   return buildRange("tail", startIndex, totalMessages, pageSize, totalMessages);
 }
 
 function validateRangeControls(input: GetInput): void {
   const activeModes = [
-    input.maxMessages !== undefined ? "maxMessages" : null,
     input.head !== undefined ? "head" : null,
     input.tail !== undefined ? "tail" : null,
     input.offset !== undefined ? "offset/limit" : null,
   ].filter(Boolean);
 
   if (activeModes.length > 1) {
-    throw new Error("Choose only one message range: maxMessages, head, tail, or offset/limit.");
+    throw new Error("Choose only one message range: head, tail, or offset/limit.");
   }
 
   if (input.limit !== undefined && input.offset === undefined) {

@@ -130,7 +130,7 @@ export function createMcpServer(): McpServer {
     },
     async (_uri, variables) => {
       const id = firstVariable(variables.id);
-      const payload = await handleGet({ id, maxMessages: 200 });
+      const payload = await handleGet({ id, tail: 200 });
       return {
         contents: [
           {

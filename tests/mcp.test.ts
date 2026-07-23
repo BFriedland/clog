@@ -595,7 +595,7 @@ describe("mcp handlers", () => {
   });
 
   it("gets a conversation with parsed messages", async () => {
-    const result = await handleGet({ id: "abc12345", maxMessages: 20 });
+    const result = await handleGet({ id: "abc12345", tail: 20 });
     expect(result.totalMessages).toBe(2);
     expect(result.messages[0]?.content).toBe("Debug auth flow");
     expect(result.project).toBe("api-service");
@@ -619,13 +619,13 @@ describe("mcp handlers", () => {
   it("returns clog-style guidance when content is missing", async () => {
     await fs.rm(path.join(tempDir, "raw", "claude-code", "abc12345-1234-1234-1234-123456789012.jsonl"));
 
-    await expect(handleGet({ id: "abc12345", maxMessages: 20 })).rejects.toThrow(
+    await expect(handleGet({ id: "abc12345", tail: 20 })).rejects.toThrow(
       'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog save abc12345" to recreate it from source if the source file is still available.',
     );
   });
 
   it("includes a request-more truncation note when get_conversation is truncated", async () => {
-    const result = await handleGet({ id: "abc12345", maxMessages: 1 });
+    const result = await handleGet({ id: "abc12345", tail: 1 });
     expect(result.truncated).toBe(true);
     expect(result.truncationNote).toContain("Request head or offset/limit");
   });
@@ -934,25 +934,6 @@ describe("mcp handlers", () => {
     expect(result.truncationNote).toContain("Showing the last 20 of 25 messages");
   });
 
-  it("get_conversation keeps maxMessages as a tail-mode compatibility alias", async () => {
-    const id = "c2000000-0000-0000-0000-000000000000";
-    await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
-
-    const result = await handleGet({ id: "c2000000", maxMessages: 2 });
-
-    expect(result.messages.map((message) => message.content)).toEqual(["m3", "m4"]);
-    expect(result.range).toMatchObject({
-      mode: "tail",
-      startIndex: 3,
-      endIndex: 5,
-      returnedMessages: 2,
-      pageSize: 2,
-      hasMoreBefore: true,
-      hasMoreAfter: false,
-      previousOffset: 1,
-    });
-  });
-
   it("get_conversation supports explicit head and tail ranges", async () => {
     const id = "c3000000-0000-0000-0000-000000000000";
     await insertSavedMessages(tempDir, id, ["m0", "m1", "m2", "m3", "m4"]);
@@ -1057,11 +1038,11 @@ describe("mcp handlers", () => {
   });
 
   it("get_conversation rejects conflicting range controls", async () => {
-    await expect(handleGet({ id: "abc12345", maxMessages: 5, head: 2 })).rejects.toThrow(
-      "Choose only one message range: maxMessages, head, tail, or offset/limit.",
+    await expect(handleGet({ id: "abc12345", head: 5, tail: 2 })).rejects.toThrow(
+      "Choose only one message range: head, tail, or offset/limit.",
     );
     await expect(handleGet({ id: "abc12345", tail: 5, offset: 2, limit: 2 })).rejects.toThrow(
-      "Choose only one message range: maxMessages, head, tail, or offset/limit.",
+      "Choose only one message range: head, tail, or offset/limit.",
     );
   });
 

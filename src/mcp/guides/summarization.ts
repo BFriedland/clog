@@ -122,8 +122,8 @@ nothing stands out, omit the field entirely.
 
 ## Sampling long conversations
 
-\`get_conversation\` accepts \`head\`, \`tail\`, \`offset\`/\`limit\`, and
-\`maxMessages\` for windowing, so you can read a long transcript in parts. Aim
+\`get_conversation\` accepts \`head\`, \`tail\`, and
+\`offset\`/\`limit\` for windowing, so you can read a long transcript in parts. Aim
 for a summary that reflects the whole arc — including mid-conversation pivots,
 rejected approaches, and the work that explains the outcome — not just how the
 conversation opened and ended. How much to read is your judgment, scaled to the

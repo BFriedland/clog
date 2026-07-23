@@ -2316,7 +2316,6 @@ returns: {
 tool: "get_conversation"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
-  maxMessages?: number;    // Compatibility alias for tail mode; max 200
   head?: number;           // First N messages; max 200
   tail?: number;           // Last N messages; max 200
   offset?: number;         // Zero-based message window offset
@@ -2355,17 +2354,16 @@ returns: {
 }
 
 // **Message ranges:** With no range fields, `get_conversation` returns the last 20
-// messages. `maxMessages` is retained indefinitely as a compatibility alias for
-// tail mode, and explicit callers may use `head`, `tail`, or `offset`/`limit`.
+// messages. Explicit callers may use `head`, `tail`, or `offset`/`limit`.
 // Message indexes are zero-based positions in the canonical parsed `Message[]`
 // order. `offset` is uncapped; offsets beyond the end return an empty window
 // with `startIndex` and `endIndex` clamped to `totalMessages`.
 //
-// Exactly one range mode may be active. `maxMessages`, `head`, and `tail` are
-// mutually exclusive. `offset` is mutually exclusive with those fields. `limit`
-// may appear only with `offset`; `limit` without `offset` is invalid. Message
-// counts (`maxMessages`, `head`, `tail`, and `limit`) must be positive integers
-// and are capped at 200. Window mode uses `limit ?? 20`.
+// Exactly one range mode may be active. `head` and `tail` are mutually exclusive.
+// `offset` is mutually exclusive with those fields. `limit` may appear only with
+// `offset`; `limit` without `offset` is invalid. Message counts (`head`, `tail`,
+// and `limit`) must be positive integers and are capped at 200. Window mode uses
+// `limit ?? 20`.
 //
 // `previousOffset` is present whenever `hasMoreBefore` is true and points to an
 // offset that can be requested with `limit: pageSize` to page backward.
