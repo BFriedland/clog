@@ -1,7 +1,7 @@
 // First-draft summarization guide. The user expects this to be refined based
 // on early use; the wording here is provisional but functional.
 
-export const SUMMARIZATION_GUIDE_VERSION = 2;
+export const SUMMARIZATION_GUIDE_VERSION = 3;
 
 export const SUMMARIZATION_GUIDE = `# How to Summarize clog Conversations
 
@@ -15,8 +15,6 @@ The transcript remains the source of truth. Your summary is a compact index
 card that helps future agents and the user navigate the library without
 loading every conversation.
 
-This is a draft. The user expects this guide to be refined based on early use.
-
 ## What to write for each conversation
 
 For each conversation you summarize, call the \`update_conversation\` MCP tool. The
@@ -29,7 +27,6 @@ exact input shape is:
   "extraction": {
     "topics": ["auth", "jwt", "race-condition"],
     "outcome": "fixed",
-    "toolsUsed": ["Edit", "Bash", "Grep"],
     "notableMoments": [
       { "why": "user noticed a wrong premise in the AI's diagnosis" }
     ]
@@ -105,7 +102,10 @@ flag itself is the value, not the absence of one.
 
 ### \`toolsUsed\`
 
-The tool names that played a substantive role. Omit incidental one-off calls.
+The least important extraction field; it is fine to omit, and in practice it
+usually is. If the tools that played a substantive role are obvious from what
+you already read, you may list them. Do not read more of the transcript just
+to fill this field.
 
 ### \`notableMoments\`
 
@@ -120,24 +120,21 @@ Examples:
 Be conservative. These should not be paraphrases of ordinary turns. If
 nothing stands out, omit the field entirely.
 
-## Triage long conversations before reading them in full
+## Sampling long conversations
 
 \`get_conversation\` accepts \`head\`, \`tail\`, \`offset\`/\`limit\`, and
-\`maxMessages\` for windowing. For conversations longer than your context
-can comfortably handle, triage before committing to a full read:
+\`maxMessages\` for windowing, so you can read a long transcript in parts. Aim
+for a summary that reflects the whole arc — including mid-conversation pivots,
+rejected approaches, and the work that explains the outcome — not just how the
+conversation opened and ended. How much to read is your judgment, scaled to the
+conversation: a short, single-thread session may be clear from its ends alone,
+while a long, tool-heavy, or multi-request one usually rewards sampling the
+middle too.
 
-1. Call \`get_conversation\` with \`head: 5\` to see how the user framed the work.
-2. Call \`get_conversation\` with \`tail: 5\` to see how the session ended.
-3. Decide whether head + tail are enough to summarize honestly. If a clear
-   thread runs from opening to final state, they often are.
-4. If the ends do not tell you enough — pivots in the middle, unexplained
-   conclusions, a final state that doesn't match the framing — fetch
-   middle windows with \`offset\`/\`limit\`.
-
-You do not need to read every message. The summary should reflect what the
-transcript actually shows; if a stretch was skipped, the summary should not
-make confident claims about what happened there. When in doubt, set
-\`outcome\` to \`unclear\`.
+You do not need to read every message, but don't make confident claims about
+stretches you skipped. When the goal, decisions, or outcome stay unclear, read
+more or set \`outcome\` to \`unclear\` rather than infer completion from the
+ending.
 
 ## Batch semantics
 
