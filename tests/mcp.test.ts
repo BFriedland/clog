@@ -174,6 +174,103 @@ describe("mcp handlers", () => {
           },
         },
       });
+
+      const searchTool = tools.find((tool) => tool.name === "search_conversations");
+      expect(searchTool?.inputSchema).toMatchObject({
+        properties: {
+          project: {
+            description: "Filter by project using case-insensitive substring matching.",
+          },
+          author: {
+            description: "Filter by author metadata using case-insensitive substring matching.",
+          },
+          origin: {
+            description: "Use local for locally writable rows, remote for imported read-only rows.",
+          },
+          limit: {
+            default: 10,
+          },
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("rejects unknown parameters for every parameterized tool", async () => {
+    const server = createMcpServer();
+    const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    // One resolution is enough: unknown-key calls fail validation before the
+    // handler runs, so only the valid search_conversations call fetches providers.
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore([]),
+    });
+
+    const validCalls: Array<{
+      name: string;
+      arguments: Record<string, unknown>;
+    }> = [
+      { name: "list_conversations", arguments: {} },
+      { name: "get_conversation", arguments: { id: "abc12345" } },
+      {
+        name: "update_conversation",
+        arguments: { id: "abc12345", title: "Debug auth flow" },
+      },
+      { name: "browse_metadata", arguments: { by: "tags" } },
+      { name: "search_conversations", arguments: { query: "auth" } },
+    ];
+
+    try {
+      for (const validCall of validCalls) {
+        const invalidResult = await client.callTool({
+          name: validCall.name,
+          arguments: {
+            ...validCall.arguments,
+            unexpectedParameter: true,
+          },
+        });
+
+        expect(invalidResult.isError, validCall.name).toBe(true);
+        expect(invalidResult.content, validCall.name).toEqual([
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("unexpectedParameter"),
+          }),
+        ]);
+
+        const validResult = await client.callTool(validCall);
+        expect(validResult.isError, validCall.name).not.toBe(true);
+      }
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("calls no-parameter tools without an arguments field", async () => {
+    const server = createMcpServer();
+    const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    try {
+      for (const name of ["summarization_guide", "analysis_suggestions"]) {
+        const result = await client.callTool({ name });
+        expect(result.isError, name).not.toBe(true);
+      }
     } finally {
       await client.close();
       await server.close();

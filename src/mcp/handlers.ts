@@ -47,66 +47,70 @@ const listSortBySchema = z.enum([
 ]);
 const listSortDirectionSchema = z.enum(["asc", "desc"]);
 
-export const listInputSchema = z.object({
-  state: z
-    .enum(["saved", "unsaved", "all"])
-    .default("saved")
-    .describe(
-      "Defaults to saved. Use unsaved or all only when the user asks about unsaved conversations or needs a complete saved-and-unsaved view. Either value scans all enabled coding-agent transcript sources before listing.",
-    ),
-  tags: z
-    .array(z.string())
-    .optional()
-    .describe("Filter by tags using OR semantics after tag normalization."),
-  project: z
-    .string()
-    .optional()
-    .describe("Filter by project using case-insensitive substring matching."),
-  author: z
-    .string()
-    .optional()
-    .describe("Filter by author metadata using case-insensitive substring matching."),
-  grep: z
-    .string()
-    .optional()
-    .describe("Case-insensitive substring match on title, summary, or message content."),
-  origin: z
-    .enum(["local", "remote"])
-    .optional()
-    .describe("Use local for locally writable rows, remote for imported read-only rows."),
-  limit: z
-    .number()
-    .int()
-    .positive()
-    .max(100)
-    .default(20)
-    .describe("Maximum conversations to return. Defaults to 20; maximum is 100."),
-  offset: z
-    .number()
-    .int()
-    .nonnegative()
-    .default(0)
-    .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
-  sortBy: listSortBySchema
-    .default("createdAt")
-    .describe(
-      "Sort field. Defaults to createdAt. Use createdAt for the most recent conversations by transcript start time.",
-    ),
-  sortDirection: listSortDirectionSchema
-    .default("desc")
-    .describe(
-      "Sort direction. Defaults to desc. Use desc with createdAt for the newest conversations first.",
-    ),
-});
+export const listInputSchema = z
+  .object({
+    state: z
+      .enum(["saved", "unsaved", "all"])
+      .default("saved")
+      .describe(
+        "Defaults to saved. Use unsaved or all only when the user asks about unsaved conversations or needs a complete saved-and-unsaved view. Either value scans all enabled coding-agent transcript sources before listing.",
+      ),
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by tags using OR semantics after tag normalization."),
+    project: z
+      .string()
+      .optional()
+      .describe("Filter by project using case-insensitive substring matching."),
+    author: z
+      .string()
+      .optional()
+      .describe("Filter by author metadata using case-insensitive substring matching."),
+    grep: z
+      .string()
+      .optional()
+      .describe("Case-insensitive substring match on title, summary, or message content."),
+    origin: z
+      .enum(["local", "remote"])
+      .optional()
+      .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .default(20)
+      .describe("Maximum conversations to return. Defaults to 20; maximum is 100."),
+    offset: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Zero-based result offset for pagination. Use nextOffset when hasMore is true."),
+    sortBy: listSortBySchema
+      .default("createdAt")
+      .describe(
+        "Sort field. Defaults to createdAt. Use createdAt for the most recent conversations by transcript start time.",
+      ),
+    sortDirection: listSortDirectionSchema
+      .default("desc")
+      .describe(
+        "Sort direction. Defaults to desc. Use desc with createdAt for the newest conversations first.",
+      ),
+  })
+  .strict();
 
-const getInputSchema = z.object({
-  id: z.string(),
-  maxMessages: z.number().int().positive().max(200).optional(),
-  head: z.number().int().positive().max(200).optional(),
-  tail: z.number().int().positive().max(200).optional(),
-  offset: z.number().int().nonnegative().optional(),
-  limit: z.number().int().positive().max(200).optional(),
-});
+export const getInputSchema = z
+  .object({
+    id: z.string(),
+    maxMessages: z.number().int().positive().max(200).optional(),
+    head: z.number().int().positive().max(200).optional(),
+    tail: z.number().int().positive().max(200).optional(),
+    offset: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+  })
+  .strict();
 
 type GetInput = z.infer<typeof getInputSchema>;
 
@@ -142,18 +146,31 @@ export const updateInputSchema = z
   })
   .strict();
 
-const browseInputSchema = z.object({
-  by: z.enum(["tags", "projects", "authors"]),
-});
+export const browseInputSchema = z
+  .object({
+    by: z.enum(["tags", "projects", "authors"]),
+  })
+  .strict();
 
-const searchInputSchema = z.object({
-  query: z.string(),
-  tags: z.array(z.string()).optional(),
-  project: z.string().optional(),
-  author: z.string().optional(),
-  origin: z.enum(["local", "remote"]).optional(),
-  limit: z.number().int().positive().max(50).default(10),
-});
+export const searchInputSchema = z
+  .object({
+    query: z.string(),
+    tags: z.array(z.string()).optional(),
+    project: z
+      .string()
+      .optional()
+      .describe("Filter by project using case-insensitive substring matching."),
+    author: z
+      .string()
+      .optional()
+      .describe("Filter by author metadata using case-insensitive substring matching."),
+    origin: z
+      .enum(["local", "remote"])
+      .optional()
+      .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    limit: z.number().int().positive().max(50).default(10),
+  })
+  .strict();
 
 export async function handleList(input: unknown) {
   const parsed = listInputSchema.parse(input ?? {});

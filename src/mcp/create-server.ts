@@ -1,7 +1,8 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 
 import {
+  browseInputSchema,
+  getInputSchema,
   handleAnalysisSuggestions,
   handleBrowse,
   handleGet,
@@ -10,6 +11,7 @@ import {
   handleSummarizationGuide,
   handleUpdate,
   listInputSchema,
+  searchInputSchema,
   updateInputSchema,
 } from "./handlers.js";
 
@@ -50,14 +52,7 @@ export function createMcpServer(): McpServer {
       title: "Get conversation",
       description:
         "Get the messages and metadata for a saved clog conversation by ID. After `list_conversations` or `search_conversations` returns a candidate, use this tool to inspect and verify the relevant transcript messages for summarization, review, or follow-up analysis. An unsaved conversation must be saved before this tool can retrieve its messages.",
-      inputSchema: {
-        id: z.string(),
-        maxMessages: z.number().int().positive().max(200).optional(),
-        head: z.number().int().positive().max(200).optional(),
-        tail: z.number().int().positive().max(200).optional(),
-        offset: z.number().int().nonnegative().optional(),
-        limit: z.number().int().positive().max(200).optional(),
-      },
+      inputSchema: getInputSchema,
     },
     async (input) => toToolResult(await handleGet(input), "Loaded conversation content."),
   );
@@ -79,7 +74,6 @@ export function createMcpServer(): McpServer {
       title: "Read the summarization guide",
       description:
         "Return clog's required workflow and quality guidelines for summarizing conversations. Read this before generating or updating conversation summaries.",
-      inputSchema: {},
     },
     async () =>
       toToolResult(
@@ -94,7 +88,6 @@ export function createMcpServer(): McpServer {
       title: "Get analysis suggestions",
       description:
         "Return suggested analyses for exploring patterns, friction, outcomes, and working habits across a user's saved conversations.",
-      inputSchema: {},
     },
     async () =>
       toToolResult(
@@ -109,23 +102,7 @@ export function createMcpServer(): McpServer {
       title: "Search conversations by meaning",
       description:
         "Semantic search across saved clog conversations; matches by meaning, not exact text. For exact text, use the `grep` filter on `list_conversations`.",
-      inputSchema: {
-        query: z.string(),
-        tags: z.array(z.string()).optional(),
-        project: z
-          .string()
-          .optional()
-          .describe("Filter by project using case-insensitive substring matching."),
-        author: z
-          .string()
-          .optional()
-          .describe("Filter by author metadata using case-insensitive substring matching."),
-        origin: z
-          .enum(["local", "remote"])
-          .optional()
-          .describe("Use local for locally writable rows, remote for imported read-only rows."),
-        limit: z.number().int().positive().max(50).optional(),
-      },
+      inputSchema: searchInputSchema,
     },
     async (input) => toToolResult(await handleSearch(input), "Searched saved conversations."),
   );
@@ -136,9 +113,7 @@ export function createMcpServer(): McpServer {
       title: "Browse conversation metadata",
       description:
         "List the distinct tags, projects, or authors across saved clog conversations. Returns metadata values, not conversations. Use it to discover filter values before calling other conversation tools.",
-      inputSchema: {
-        by: z.enum(["tags", "projects", "authors"]),
-      },
+      inputSchema: browseInputSchema,
     },
     async (input) => toToolResult(await handleBrowse(input), "Browsed conversation metadata."),
   );
