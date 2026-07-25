@@ -15,7 +15,7 @@ import { collapseAggregatableWarnings } from "../src/cli/common.js";
 import { preAction } from "../src/cli/prelude.js";
 import { buildProgram } from "../src/cli/program.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
-import { getConversationById } from "../src/db/index.js";
+import { getConversationById, withDb } from "../src/db/index.js";
 import type { SavedConversationMeta } from "../src/models/conversation.js";
 import { refreshSavedRelationshipInspections } from "../src/relationships/refresh.js";
 import { deleteConversation, insertConversation } from "./helpers/db.js";
@@ -42,7 +42,12 @@ describe("saved relationship inspection refresh", () => {
     const parentId = "11111111-1111-1111-1111-111111111111";
     const managedPath = path.join(tempDir, "raw", "codex-cli", `${childId}.jsonl`);
     const livePath = path.join(tempDir, "live", `${childId}.jsonl`);
-    await writeJsonl(managedPath, [codexSessionMeta(childId, parentId)]);
+    await writeJsonl(managedPath, [
+      codexSessionMeta(childId, {
+        parentId,
+        threadSource: "user",
+      }),
+    ]);
     await writeJsonl(livePath, [codexSessionMeta(childId)]);
 
     const saved = makeSavedConversation({
@@ -78,6 +83,63 @@ describe("saved relationship inspection refresh", () => {
       withoutRelationshipState(saved),
     );
     await expect(fs.readFile(managedPath)).resolves.toEqual(rawBefore);
+  });
+
+  it("removes a saved version-2 Codex agent edge during version-3 refresh", async () => {
+    const childId = "22222222-2222-2222-2222-222222222222";
+    const parentId = "11111111-1111-1111-1111-111111111111";
+    const managedPath = path.join(tempDir, "raw", "codex-cli", `${childId}.jsonl`);
+    await writeJsonl(managedPath, [
+      codexSessionMeta(childId, {
+        parentId,
+        parentThreadId: parentId,
+        threadSource: "subagent",
+      }),
+    ]);
+    const saved = makeSavedConversation({
+      id: childId,
+      sourceId: childId,
+      filePath: managedPath,
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "codex-cli",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    await insertConversation(saved);
+
+    const report = await refreshSavedRelationshipInspections(config);
+    const updated = await getConversationById(childId);
+    const storedEdgeCount = await withDb((db) => {
+      const result = db.exec(
+        "SELECT COUNT(*) FROM conversation_relationships WHERE child_id = ?",
+        [childId],
+      );
+      return Number(result[0]?.values[0]?.[0] ?? -1);
+    }, { mode: "read" });
+
+    expect(report).toEqual([]);
+    expect(updated).toMatchObject({
+      relationshipInspection: {
+        status: "none_found",
+        version: 3,
+        diagnostic: null,
+      },
+      relationships: [],
+    });
+    expect(withoutRelationshipState(updated!)).toEqual(
+      withoutRelationshipState(saved),
+    );
+    expect(storedEdgeCount).toBe(0);
   });
 
   it("is idempotent after the saved row reaches the adapter version", async () => {
@@ -617,13 +679,22 @@ function makeSavedConversation(
   };
 }
 
-function codexSessionMeta(id: string, parentId?: string): unknown {
+function codexSessionMeta(
+  id: string,
+  options: {
+    parentId?: string;
+    parentThreadId?: string;
+    threadSource?: unknown;
+  } = {},
+): unknown {
   return {
     type: "session_meta",
     payload: {
       id,
       cli_version: "0.145.0",
-      forked_from_id: parentId,
+      forked_from_id: options.parentId,
+      parent_thread_id: options.parentThreadId,
+      thread_source: options.threadSource,
       cwd: "/Users/alice/clog",
       timestamp: "2026-02-01T10:00:00.000Z",
     },

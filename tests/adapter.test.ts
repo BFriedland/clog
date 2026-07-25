@@ -159,7 +159,10 @@ describe("adapters", () => {
     it("does not treat spawned-agent ownership as a branch relationship", async () => {
       const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
       await writeJsonl(filePath, [
-        codexSessionMeta(childId, { parentThreadId: parentId }),
+        codexSessionMeta(childId, {
+          parentThreadId: parentId,
+          threadSource: "subagent",
+        }),
       ]);
 
       const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
@@ -171,11 +174,126 @@ describe("adapters", () => {
       });
     });
 
+    it("creates a source-confirmed branch for a user-classified fork", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          cliVersion: "0.145.0",
+          parentId,
+          threadSource: "user",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "linked",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "codex-cli",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    });
+
+    it.each([
+      {
+        label: "a copied-history subagent",
+        cliVersion: "0.145.0",
+        threadSource: "subagent",
+        parentThreadId: parentId,
+      },
+      {
+        label: "a memory-consolidation thread",
+        cliVersion: "0.145.0",
+        threadSource: "memory_consolidation",
+        parentThreadId: undefined,
+      },
+      {
+        label: "a Codex 0.136.0 ownership-only subagent",
+        cliVersion: "0.136.0",
+        threadSource: "subagent",
+        parentThreadId: undefined,
+      },
+    ])(
+      "does not create a conversation branch for $label",
+      async ({ cliVersion, threadSource, parentThreadId }) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, {
+            cliVersion,
+            parentId,
+            parentThreadId,
+            threadSource,
+          }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "none_found",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: null,
+          relationships: [],
+        });
+      },
+    );
+
+    it.each([
+      {
+        label: "missing",
+        cliVersion: "0.128.0",
+        threadSource: undefined,
+      },
+      {
+        label: "null",
+        cliVersion: "0.145.0",
+        threadSource: null,
+      },
+      {
+        label: "feature-style",
+        cliVersion: "0.145.0",
+        threadSource: "experimental_feature",
+      },
+      {
+        label: "non-string",
+        cliVersion: "0.145.0",
+        threadSource: { kind: "user" },
+      },
+    ])(
+      "keeps a valid fork with $label provenance reviewable",
+      async ({ cliVersion, threadSource }) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, {
+            cliVersion,
+            parentId,
+            threadSource,
+          }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "unknown",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: "codex_relationship_fork_provenance_ambiguous",
+          relationships: [],
+        });
+      },
+    );
+
     it("uses only canonical metadata when copied ancestor metadata conflicts", async () => {
       const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
       await writeJsonl(filePath, [
-        codexSessionMeta(childId, { parentId }),
-        codexSessionMeta(parentId, { parentId: grandchildId }),
+        codexSessionMeta(childId, { parentId, threadSource: "user" }),
+        codexSessionMeta(parentId, {
+          parentId: grandchildId,
+          threadSource: "subagent",
+        }),
       ]);
 
       const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
@@ -210,7 +328,10 @@ describe("adapters", () => {
       for (const fixture of cases) {
         const filePath = path.join(tempDir, `rollout-${fixture.id}.jsonl`);
         await writeJsonl(filePath, [
-          codexSessionMeta(fixture.id, { parentId: fixture.parentId }),
+          codexSessionMeta(fixture.id, {
+            parentId: fixture.parentId,
+            threadSource: "user",
+          }),
         ]);
         const inspection = await adapter.inspectRelationships(filePath);
         expect(inspection).toMatchObject({
@@ -257,6 +378,24 @@ describe("adapters", () => {
       });
     });
 
+    it("keeps a canonical self-parent relationship reviewable without an edge", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          parentId: childId,
+          threadSource: "user",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_self_parent",
+        relationships: [],
+      });
+    });
+
     it("returns an unknown diagnostic for a structurally invalid JSONL record", async () => {
       const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
       await writeRawJsonlLines(filePath, ["null"]);
@@ -294,7 +433,7 @@ describe("adapters", () => {
     it("ignores replayed message timestamps when selecting the parent", async () => {
       const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
       await writeJsonl(filePath, [
-        codexSessionMeta(childId, { parentId }),
+        codexSessionMeta(childId, { parentId, threadSource: "user" }),
         {
           type: "response_item",
           timestamp: "2030-01-01T00:00:00.000Z",
@@ -315,7 +454,10 @@ describe("adapters", () => {
     it("keeps relationship inspection within the metadata line bound", async () => {
       const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
       await writeRawJsonlLines(filePath, [
-        jsonLine(codexSessionMeta(childId, { parentId })),
+        jsonLine(codexSessionMeta(childId, {
+          parentId,
+          threadSource: "user",
+        })),
         ...validJsonlPadding(SCAN_METADATA_MAX_LINES - 1),
         "{not: valid json",
       ]);
@@ -1956,6 +2098,7 @@ function codexSessionMeta(
     cliVersion?: string;
     parentId?: string;
     parentThreadId?: string;
+    threadSource?: unknown;
   } = {},
 ): unknown {
   return {
@@ -1966,6 +2109,7 @@ function codexSessionMeta(
       cli_version: options.cliVersion ?? "0.145.0",
       forked_from_id: options.parentId,
       parent_thread_id: options.parentThreadId,
+      thread_source: options.threadSource,
       cwd: "/Users/alice/project",
       timestamp: "2026-02-01T10:00:00.000Z",
     },

@@ -80,7 +80,7 @@ const AGENTS_INSTRUCTIONS_PREFIX_REGEX =
   /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/;
 
 export const CODEX_CLI_ADAPTER_VERSIONS = {
-  relationshipInspection: 2,
+  relationshipInspection: 3,
   transcriptProjection: 1,
 } as const;
 
@@ -589,6 +589,25 @@ function inspectCanonicalCodexRelationship(args: {
     return unknownCodexRelationshipInspection(
       args.relationshipInspectionVersion,
       "codex_relationship_self_parent",
+    );
+  }
+
+  const threadSource = args.canonicalSessionMeta.thread_source;
+  if (
+    threadSource === "subagent" ||
+    threadSource === "memory_consolidation"
+  ) {
+    return {
+      status: "none_found",
+      version: args.relationshipInspectionVersion,
+      diagnostic: null,
+      relationships: [],
+    };
+  }
+  if (threadSource !== "user") {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_fork_provenance_ambiguous",
     );
   }
 
