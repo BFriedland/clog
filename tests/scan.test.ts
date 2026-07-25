@@ -6,14 +6,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as adapterRegistry from "../src/adapters/registry.js";
 import type { SourceAdapter } from "../src/adapters/adapter.js";
+import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { buildDrainCommand } from "../src/cli/drain.js";
 import { buildListCommand } from "../src/cli/list.js";
 import { buildSaveCommand } from "../src/cli/save.js";
 import { scanLocalSources } from "../src/cli/scan.js";
 import { buildShowCommand } from "../src/cli/show.js";
 import { buildStatusCommand } from "../src/cli/status.js";
+import {
+  classifySavedDelta,
+  parseConversationMessages,
+} from "../src/cli/common.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import {
+  attachCurrentRelationshipInspection,
   buildDiscoveredConversation,
   listConversationView,
   resolveConversationView,
@@ -25,6 +31,25 @@ import { getClogDbPath } from "../src/utils/paths.js";
 import { insertConversation } from "./helpers/db.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 import { captureOutput } from "./helpers/output.js";
+
+const TEST_DISCOVERED_RELATIONSHIP_FIELDS = {
+  relationshipInspection: {
+    status: "unknown" as const,
+    version: 1,
+    diagnostic: "relationship_inspection_not_implemented",
+  },
+  relationships: [],
+};
+
+const TEST_ADAPTER_CONTRACT = {
+  relationshipInspectionVersion: 1,
+  transcriptProjectionVersion: 1,
+  inspectRelationships: async () => ({
+    ...TEST_DISCOVERED_RELATIONSHIP_FIELDS.relationshipInspection,
+    relationships: [],
+  }),
+  parseTranscript: async () => ({ messages: [], warnings: [] }),
+};
 
 describe("ephemeral local source scans", () => {
   let tempDir: string;
@@ -152,7 +177,16 @@ describe("ephemeral local source scans", () => {
 
     expect(snapshot.counts).toMatchObject({ discovered: 1, filtered: 1, ignored: 1 });
     expect(snapshot.candidates[0]?.sourceId).toBe(includedId);
-    expect(snapshot.ignoredCandidates[0]?.sourceId).toBe(ignoredId);
+    expect(snapshot.ignoredCandidates[0]).toMatchObject({
+      sourceId: ignoredId,
+      sourceMtime: expect.any(String),
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      relationships: [],
+    });
   });
 
   it("keeps ignored display candidates inside the configured project-path scope", async () => {
@@ -301,17 +335,244 @@ describe("ephemeral local source scans", () => {
     expect((await scanLocalSources(config)).candidates).toHaveLength(0);
   });
 
+  it.each([
+    0,
+    1,
+    2,
+  ])(
+    "treats a missing transcript projection version as refreshable with saved count %s",
+    async (savedMessageCount) => {
+      const id = `70000000-0000-0000-0000-00000000000${savedMessageCount}`;
+      const sourcePath = await writeClaudeConversation(
+        id,
+        "/Users/alice/work/app",
+      );
+      const conversation = savedConversation(id, sourcePath, {
+        savedMessageCount,
+        transcriptProjectionVersion: null,
+      });
+
+      await expect(classifySavedDelta(conversation)).resolves.toBe("ready");
+    },
+  );
+
+  it("treats a missing relationship inspection version as refreshable", async () => {
+    const id = "70555555-5555-5555-5555-555555555555";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+    );
+    const conversation = savedConversation(id, sourcePath, {
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+    });
+
+    await expect(classifySavedDelta(conversation)).resolves.toBe("ready");
+  });
+
+  it("prioritizes transcript projection version skew over source changes", async () => {
+    const id = "70666666-6666-6666-6666-666666666666";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+      "Changed live source",
+    );
+    const rawPath = path.join(tempDir, "raw-newer-projection.jsonl");
+    await writeJsonl(rawPath, [{
+      type: "user",
+      timestamp: "2026-02-01T09:00:00.000Z",
+      cwd: "/Users/alice/work/app",
+      message: { role: "user", content: "Saved source" },
+    }]);
+    const conversation = savedConversation(id, sourcePath, {
+      filePath: rawPath,
+      transcriptProjectionVersion: 2,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+    });
+
+    await expect(classifySavedDelta(conversation)).resolves.toBe("version_skew");
+  });
+
+  it("treats a newer relationship inspection version as version skew", async () => {
+    const id = "70777777-7777-7777-7777-777777777777";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+    );
+    const conversation = savedConversation(id, sourcePath, {
+      relationshipInspection: {
+        status: "unknown",
+        version: 2,
+        diagnostic: "newer_inspection",
+      },
+    });
+
+    await expect(classifySavedDelta(conversation)).resolves.toBe("version_skew");
+  });
+
+  it("rejects same-version saved and live relationship disagreement", () => {
+    const id = "70888888-8888-8888-8888-888888888888";
+    const sourcePath = path.join(tempDir, `${id}.jsonl`);
+    const conversation = savedConversation(id, sourcePath, {
+      relationshipInspection: {
+        status: "linked",
+        version: 1,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: "saved-parent",
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    expect(() =>
+      attachCurrentRelationshipInspection(conversation, {
+        source: "claude-code",
+        sourceId: id,
+        sourcePath,
+        sourceMtime: "2026-02-01T10:00:00.000Z",
+        metadata: {
+          title: "Saved title",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-01T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "linked",
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: "live-parent",
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      }),
+    ).toThrow(/conflicting saved and live relationship metadata/);
+  });
+
+  it("reinspects a stale saved relationship during a bare save", async () => {
+    const id = "70999999-9999-9999-9999-999999999999";
+    const rawPath = path.join(
+      process.env.CLOG_HOME!,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(rawPath, [{
+      type: "user",
+      timestamp: "2026-02-01T09:00:00.000Z",
+      cwd: "/Users/alice/work/app",
+      message: { role: "user", content: "Saved source" },
+    }]);
+    await insertConversation(savedConversation(id, rawPath));
+    await saveConfig(scanConfig());
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      relationships: [],
+      transcriptProjectionVersion: 1,
+    });
+  });
+
+  it("does not parse a saved transcript stamped by a newer adapter", async () => {
+    const id = "71111111-1111-1111-1111-111111111111";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+    );
+    const conversation = savedConversation(id, sourcePath, {
+      transcriptProjectionVersion: 2,
+    });
+    const parse = vi.spyOn(ClaudeCodeAdapter.prototype, "parseTranscript");
+
+    await expect(classifySavedDelta(conversation)).resolves.toBe("version_skew");
+    await expect(
+      parseConversationMessages(scanConfig(), conversation),
+    ).rejects.toThrow(/newer clog version/);
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh or overwrite a saved transcript stamped by a newer adapter", async () => {
+    const id = "72222222-2222-2222-2222-222222222222";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+      "New live source",
+    );
+    const rawPath = path.join(
+      process.env.CLOG_HOME!,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(rawPath, [{
+      type: "user",
+      timestamp: "2026-02-01T09:00:00.000Z",
+      cwd: "/Users/alice/work/app",
+      message: { role: "user", content: "Newer saved projection" },
+    }]);
+    await insertConversation(savedConversation(id, sourcePath, {
+      filePath: rawPath,
+      transcriptProjectionVersion: 2,
+    }));
+    await saveConfig(scanConfig());
+    const beforeRow = await getConversationById(id);
+    const beforeRaw = await fs.readFile(rawPath);
+
+    await expect(
+      captureOutput(async () => {
+        const command = buildSaveCommand();
+        command.exitOverride();
+        await command.parseAsync([id], { from: "user" });
+      }),
+    ).rejects.toThrow(/newer clog version/);
+
+    await expect(getConversationById(id)).resolves.toEqual(beforeRow);
+    await expect(fs.readFile(rawPath)).resolves.toEqual(beforeRaw);
+  });
+
   it("retains yielded candidates and marks an adapter incomplete when discovery throws", async () => {
     const adapter: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         const sourcePath = await writeClaudeConversation(
           "88888888-8888-8888-8888-888888888888",
           "/Users/alice/work/app",
         );
         yield {
+          ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
           sourceId: "88888888-8888-8888-8888-888888888888",
           sourcePath,
           metadata: {
@@ -358,11 +619,12 @@ describe("ephemeral local source scans", () => {
       createdAt: "2026-02-01T10:00:00.000Z",
     });
     const healthy: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         yield {
+          ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
           sourceId: healthyId,
           sourcePath: healthyPath,
           metadata: metadata("Healthy", "/Users/alice/work/healthy"),
@@ -370,11 +632,12 @@ describe("ephemeral local source scans", () => {
       },
     };
     const incomplete: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "codex-cli",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         yield {
+          ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
           sourceId: partialId,
           sourcePath: partialPath,
           metadata: metadata("Partial", "/Users/alice/work/partial"),
@@ -405,6 +668,7 @@ describe("ephemeral local source scans", () => {
     const healthyPath = await writeClaudeConversation(healthyId, "/Users/alice/work/healthy");
     const partialPath = await writeClaudeConversation(partialId, "/Users/alice/work/partial");
     const discovered = (sourceId: string, sourcePath: string, projectName: string) => ({
+      ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
       sourceId,
       sourcePath,
       metadata: {
@@ -417,17 +681,17 @@ describe("ephemeral local source scans", () => {
       },
     });
     const healthy: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         yield discovered(healthyId, healthyPath, "healthy");
       },
     };
     const incomplete: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "codex-cli",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         yield discovered(partialId, partialPath, "partial");
         throw new Error("partial failure");
@@ -468,6 +732,7 @@ describe("ephemeral local source scans", () => {
         [ignoredId, ignoredPath],
       ] as const) {
         yield {
+          ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
           sourceId,
           sourcePath,
           metadata: {
@@ -482,9 +747,9 @@ describe("ephemeral local source scans", () => {
       }
     });
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       discover,
     }]);
     await saveConfig(scanConfig());
@@ -505,9 +770,9 @@ describe("ephemeral local source scans", () => {
       throw new Error("saved-only list must not scan");
     });
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       discover,
     }]);
     await saveConfig(scanConfig());
@@ -608,9 +873,9 @@ describe("ephemeral local source scans", () => {
       filePath: rawPath,
     });
     const incomplete: SourceAdapter = {
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       async *discover() {
         throw new Error("adapter unavailable");
       },
@@ -637,6 +902,7 @@ describe("ephemeral local source scans", () => {
     const sourcePath = await writeClaudeConversation(id, "/Users/alice/work/app");
     const discover = vi.fn(async function* () {
       yield {
+        ...TEST_DISCOVERED_RELATIONSHIP_FIELDS,
         sourceId: id,
         sourcePath,
         metadata: {
@@ -650,9 +916,9 @@ describe("ephemeral local source scans", () => {
       };
     });
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       discover,
     }]);
     const config = scanConfig();
@@ -671,6 +937,13 @@ describe("ephemeral local source scans", () => {
       state: "saved",
       author: "current-save-author",
       tags: ["current", "release"],
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      relationships: [],
     });
   });
 
@@ -679,9 +952,9 @@ describe("ephemeral local source scans", () => {
       throw new Error("bare save must not scan");
     });
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
       name: "claude-code",
       watchPaths: () => [],
-      parseMessages: async () => [],
       discover,
     }]);
     await saveConfig(scanConfig());
@@ -768,5 +1041,12 @@ function savedConversationBase(id: string, sourcePath: string) {
     indexedAt: null,
     originKind: "local" as const,
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined" as const,
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
+    transcriptProjectionVersion: 1,
   };
 }

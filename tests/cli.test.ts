@@ -3146,6 +3146,12 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
   };
 
   if (state === "saved") {
@@ -3155,6 +3161,12 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
       savedAt: now,
       savedMessageCount: 0,
       saveVersion: 1,
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
       ...overrides,
     } as ConversationMeta;
   }
@@ -3165,6 +3177,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,
+    transcriptProjectionVersion: null,
     ...overrides,
   } as ConversationMeta;
 }

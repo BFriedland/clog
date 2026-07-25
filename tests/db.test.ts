@@ -16,6 +16,7 @@ import {
   insertFirstSavedConversation,
   listConversations,
   listConversationsNeedingIndex,
+  replaceRelationshipInspection,
   resolveConversationId,
   setConversationIndexedAt,
   withDb,
@@ -407,6 +408,226 @@ describe("db", () => {
     await withDb(() => undefined, { mode: "read" });
     await insertConversation(makeConversation());
     await expect(getConversationById("a1234567-1234-1234-1234-123456789012")).resolves.toBeTruthy();
+  });
+
+  it("creates relationship inspection columns and the immediate-parent table", async () => {
+    const schema = await withDb((db) => {
+      const columns = db.exec("PRAGMA table_info(conversations)");
+      const relationships = db.exec(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'conversation_relationships'",
+      );
+      return {
+        columns:
+          columns[0]?.values.map((row) => String(row[1])) ?? [],
+        hasRelationshipsTable:
+          relationships[0]?.values.length === 1,
+      };
+    }, { mode: "read" });
+
+    expect(schema.columns).toEqual(expect.arrayContaining([
+      "relationship_status",
+      "relationship_inspection_version",
+      "relationship_diagnostic",
+      "transcript_projection_version",
+    ]));
+    expect(schema.hasRelationshipsTable).toBe(true);
+  });
+
+  it("migrates schema version 9 rows as unexamined with a stale projection", async () => {
+    const original = makeConversation({
+      title: "Preserved curation",
+      tags: ["preserved"],
+      sourceMtime: "2026-02-01T09:00:00.000Z",
+    });
+    await insertConversation(original);
+
+    await withDb((db) => {
+      db.exec(`
+        DROP TABLE conversation_relationships;
+        CREATE TABLE conversations_v9 AS
+        SELECT
+          id, source_id, source, title, summary, summary_kind,
+          summary_extraction, author, project_name, project_path, tags_json,
+          slug, created_at, discovered_at, modified_at, saved_at,
+          saved_message_count, save_version, source_path, file_path,
+          source_mtime, indexed_at, origin_kind, origin_ref
+        FROM conversations;
+        DROP TABLE conversations;
+        ALTER TABLE conversations_v9 RENAME TO conversations;
+        UPDATE schema_version SET version = 9;
+      `);
+    }, { mode: "write" });
+
+    const migrated = await getConversationById(original.id);
+    expect(migrated).toMatchObject({
+      title: "Preserved curation",
+      tags: ["preserved"],
+      sourceMtime: "2026-02-01T09:00:00.000Z",
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+      relationships: [],
+      transcriptProjectionVersion: null,
+    });
+  });
+
+  it("enforces inspection and transcript-version column constraints", async () => {
+    await insertConversation(makeConversation());
+
+    for (const sql of [
+      "UPDATE conversations SET relationship_status = 'none_found', relationship_inspection_version = NULL",
+      "UPDATE conversations SET relationship_status = 'unknown', relationship_inspection_version = 1, relationship_diagnostic = NULL",
+      "UPDATE conversations SET relationship_status = 'unexamined', relationship_inspection_version = 1",
+      "UPDATE conversations SET transcript_projection_version = 0",
+      "UPDATE conversations SET transcript_projection_version = 1.5",
+    ]) {
+      await expect(
+        withDb((db) => db.exec(sql), { mode: "write" }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("rejects invalid stored relationship kinds, evidence, and branch points", async () => {
+    const conversation = makeConversation();
+    await insertConversation(conversation);
+
+    for (const values of [
+      ["not-a-kind", "source", null],
+      ["branch", "guess", null],
+      ["branch", "source", JSON.stringify({ kind: "source-message", id: "" })],
+      ["branch", "source", JSON.stringify({ kind: "source-record", id: "one" })],
+      ["branch", "source", "{not-json"],
+    ]) {
+      await expect(
+        withDb((db) => {
+          db.run(
+            `
+              INSERT INTO conversation_relationships (
+                child_id,
+                relationship_kind,
+                parent_source,
+                parent_source_id,
+                evidence_kind,
+                branch_point_json
+              ) VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [
+              conversation.id,
+              values[0],
+              "codex-cli",
+              "parent-id",
+              values[1],
+              values[2],
+            ],
+          );
+        }, { mode: "write" }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("round-trips a child edge without requiring a saved parent", async () => {
+    const child = makeConversation({
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "codex-cli",
+          sourceId: "missing-parent",
+        },
+        evidence: "source",
+        branchPoint: {
+          kind: "source-turn",
+          id: "turn-1",
+        },
+      }],
+    });
+    await insertConversation(child);
+
+    await expect(getConversationById(child.id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: child.relationships,
+    });
+
+    const parent = makeConversation({
+      id: "b1234567-1234-1234-1234-123456789012",
+      source: "codex-cli",
+      sourceId: "missing-parent",
+    });
+    await insertConversation(parent);
+    await deleteConversation(parent.id);
+    await expect(getConversationById(child.id)).resolves.toMatchObject({
+      relationships: child.relationships,
+    });
+
+    await deleteConversation(child.id);
+    const edgeCount = await withDb((db) => {
+      const result = db.exec(
+        "SELECT COUNT(*) FROM conversation_relationships WHERE child_id = ?",
+        [child.id],
+      );
+      return Number(result[0]?.values[0]?.[0] ?? -1);
+    }, { mode: "read" });
+    expect(edgeCount).toBe(0);
+  });
+
+  it("replaces inspection state and edges atomically", async () => {
+    const conversation = makeConversation();
+    await insertConversation(conversation);
+
+    await expect(
+      replaceRelationshipInspection(conversation.id, {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+        relationships: [],
+      }),
+    ).rejects.toThrow(/exactly one relationship/);
+    await expect(getConversationById(conversation.id)).resolves.toMatchObject({
+      relationshipInspection: conversation.relationshipInspection,
+      relationships: [],
+    });
+
+    const updated = await replaceRelationshipInspection(conversation.id, {
+      status: "unknown",
+      version: 2,
+      diagnostic: "conflicting_parent",
+      relationships: [],
+    });
+    expect(updated).toMatchObject({
+      relationshipInspection: {
+        status: "unknown",
+        version: 2,
+        diagnostic: "conflicting_parent",
+      },
+      relationships: [],
+    });
+
+    await expect(
+      replaceRelationshipInspection(conversation.id, {
+        status: "none_found",
+        version: 1,
+        diagnostic: null,
+        relationships: [],
+      }),
+    ).rejects.toThrow(/version 2/);
+    await expect(getConversationById(conversation.id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "unknown",
+        version: 2,
+        diagnostic: "conflicting_parent",
+      },
+      relationships: [],
+    });
   });
 
   it("migrates legacy origin into origin_kind and origin_ref", async () => {
@@ -849,7 +1070,7 @@ describe("db", () => {
     expect(reloaded?.indexedAt).toBeNull();
   });
 
-  it("listConversationsNeedingIndex returns saved conversations with missing or stale indexed_at", async () => {
+  it("listConversationsNeedingIndex returns current-projection rows with missing or stale indexed_at", async () => {
     // Saved + null → needs index
     await insertConversation(
       makeConversation({
@@ -878,6 +1099,17 @@ describe("db", () => {
         createdAt: "2026-02-01T07:00:00.000Z",
         savedAt: "2026-02-01T10:00:00.000Z",
         indexedAt: "2026-02-01T10:00:01.000Z",
+      }),
+    );
+    // Saved + stale transcript projection → refresh before indexing
+    await insertConversation(
+      makeConversation({
+        id: "d2222222-1234-1234-1234-123456789012",
+        sourceId: "d2222222-1234-1234-1234-123456789012",
+        state: "saved",
+        createdAt: "2026-02-01T06:00:00.000Z",
+        indexedAt: null,
+        transcriptProjectionVersion: null,
       }),
     );
     const needing = await listConversationsNeedingIndex();
@@ -939,6 +1171,13 @@ function baseConversation() {
     indexedAt: null,
     originKind: "local" as const,
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined" as const,
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
+    transcriptProjectionVersion: 1,
   };
 }
 

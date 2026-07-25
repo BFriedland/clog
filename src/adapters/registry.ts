@@ -1,34 +1,85 @@
 import type { Config } from "../config/schema.js";
 import { ClogError } from "../utils/errors.js";
-import { ClaudeCodeAdapter } from "./claude-code.js";
-import type { SourceAdapter, SourceAdapterFactory } from "./adapter.js";
-import { CodexCliAdapter } from "./codex-cli.js";
+import {
+  classifyAdapterVersion,
+  type AdapterVersionClassification,
+  type SourceAdapter,
+  type SourceAdapterFactory,
+} from "./adapter.js";
+import {
+  CLAUDE_CODE_ADAPTER_VERSIONS,
+  ClaudeCodeAdapter,
+} from "./claude-code.js";
+import {
+  CODEX_CLI_ADAPTER_VERSIONS,
+  CodexCliAdapter,
+} from "./codex-cli.js";
 
-type SourceAdapterRegistry = Record<string, SourceAdapterFactory>;
+interface SourceAdapterRegistration {
+  factory: SourceAdapterFactory;
+  versions: {
+    relationshipInspection: number;
+    transcriptProjection: number;
+  };
+}
 
-const FACTORIES: SourceAdapterRegistry = {
-  "claude-code": (config) => new ClaudeCodeAdapter(config),
-  "codex-cli": (config) => new CodexCliAdapter(config),
+const REGISTRY: Record<string, SourceAdapterRegistration> = {
+  "claude-code": {
+    factory: (config) => new ClaudeCodeAdapter(config),
+    versions: CLAUDE_CODE_ADAPTER_VERSIONS,
+  },
+  "codex-cli": {
+    factory: (config) => new CodexCliAdapter(config),
+    versions: CODEX_CLI_ADAPTER_VERSIONS,
+  },
 };
 
 export function getAdapter(source: string, config: Config): SourceAdapter {
-  if (!Object.hasOwn(FACTORIES, source)) {
+  if (!Object.hasOwn(REGISTRY, source)) {
     throw new ClogError(`Unsupported source "${source}".`);
   }
 
-  const factory = FACTORIES[source];
+  const registration = REGISTRY[source];
 
-  return factory(config);
+  return registration.factory(config);
 }
 
 export function isSourceParseSupported(source: string): boolean {
-  return Object.hasOwn(FACTORIES, source);
+  return Object.hasOwn(REGISTRY, source);
+}
+
+export function getAdapterVersions(
+  source: string,
+): SourceAdapterRegistration["versions"] | null {
+  return REGISTRY[source]?.versions ?? null;
+}
+
+export function classifyInstalledTranscriptProjectionVersion(
+  source: string,
+  storedVersion: number | null,
+): AdapterVersionClassification {
+  const versions = getAdapterVersions(source);
+  if (!versions) {
+    return "version_skew";
+  }
+  return classifyAdapterVersion(storedVersion, versions.transcriptProjection);
+}
+
+export function classifyInstalledRelationshipInspectionVersion(
+  source: string,
+  storedVersion: number | null,
+): AdapterVersionClassification {
+  const versions = getAdapterVersions(source);
+  if (!versions) {
+    return "version_skew";
+  }
+  return classifyAdapterVersion(storedVersion, versions.relationshipInspection);
 }
 
 export function getEnabledAdapters(config: Config): SourceAdapter[] {
-  return Object.entries(FACTORIES)
+  return Object.entries(REGISTRY)
     .filter(
       ([source]) => config.sources[source as keyof Config["sources"]]?.enabled !== false,
     )
-    .map(([, factory]) => factory(config));
+    .map(([, registration]) => registration.factory(config));
 }

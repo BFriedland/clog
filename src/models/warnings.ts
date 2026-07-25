@@ -6,6 +6,7 @@ export type ClogWarningCode =
   | "unsupported_source"
   | "missing_source_file"
   | "source_discovery_incomplete"
+  | "adapter_version_skew"
   | PairWarningCode;
 
 type PairWarningCode =
@@ -40,6 +41,12 @@ export function isAggregatableWarningCode(code: ClogWarningCode): boolean {
   return AGGREGATABLE_WARNING_CODES.has(code);
 }
 
+interface WarningSourceLocation {
+  recordIndex?: number;
+  uuid?: string;
+  relatedUuid?: string;
+}
+
 export interface ClogWarning {
   code: ClogWarningCode;
   message: string;
@@ -61,4 +68,6 @@ export interface ClogWarning {
     source: string;
     id: string;
   };
+  sourceLocation?: WarningSourceLocation;
+  relatedUuids?: string[];
 }

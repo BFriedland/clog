@@ -4,7 +4,10 @@ import readline from "node:readline";
 import { createReadStream } from "node:fs";
 
 import type { Config } from "../config/schema.js";
-import type { Message } from "../models/conversation.js";
+import type {
+  Message,
+  RelationshipInspection,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
@@ -12,7 +15,9 @@ import {
   type DiscoverOptions,
   type DiscoveredConversation,
   type SourceAdapter,
+  type Transcript,
   globSourceFiles,
+  relationshipInspectionNotImplemented,
 } from "./adapter.js";
 
 interface ClaudeJsonLine {
@@ -36,8 +41,17 @@ const KNOWN_HIDDEN_USER_WRAPPER_BLOCKS = ["local-command-caveat"];
 const LOCAL_COMMAND_WRAPPER_REGEX =
   /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>([\s\S]*?)<\/\1>/g;
 
+export const CLAUDE_CODE_ADAPTER_VERSIONS = {
+  relationshipInspection: 1,
+  transcriptProjection: 1,
+} as const;
+
 export class ClaudeCodeAdapter implements SourceAdapter {
   readonly name = "claude-code";
+  readonly relationshipInspectionVersion =
+    CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection;
+  readonly transcriptProjectionVersion =
+    CLAUDE_CODE_ADAPTER_VERSIONS.transcriptProjection;
 
   constructor(private readonly config: Config) {}
 
@@ -75,7 +89,16 @@ export class ClaudeCodeAdapter implements SourceAdapter {
     }
   }
 
-  async parseMessages(filePath: string): Promise<Message[]> {
+  async inspectRelationships(
+    _filePath: string,
+    _options?: DiscoverOptions,
+  ): Promise<RelationshipInspection> {
+    return relationshipInspectionNotImplemented(this.relationshipInspectionVersion);
+  }
+
+  async parseTranscript(
+    filePath: string,
+  ): Promise<Transcript> {
     const lines = await readJsonlFile<ClaudeJsonLine>(filePath);
     const toolNames = new Map<string, string>();
     const mergedAssistants = new Map<
@@ -171,7 +194,7 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       }
     }
 
-    return messages;
+    return { messages, warnings: [] };
   }
 
   watchPaths(): string[] {
@@ -272,10 +295,18 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       input.destroy();
     }
 
+    const inspection = await this.inspectRelationships(filePath, { onWarning });
+
     return {
       sourceId,
       sourcePath: filePath,
       metadata,
+      relationshipInspection: {
+        status: inspection.status,
+        version: inspection.version,
+        diagnostic: inspection.diagnostic,
+      },
+      relationships: inspection.relationships,
     };
   }
 }

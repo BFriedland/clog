@@ -3,7 +3,13 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
+  classifyInstalledRelationshipInspectionVersion,
+  classifyInstalledTranscriptProjectionVersion,
+  getAdapter,
+} from "../adapters/registry.js";
+import {
   attachCurrentSourceCandidate,
+  attachCurrentRelationshipInspection,
   findScanCandidateForConversation,
   isSourceDiscoveryComplete,
   listConversationView,
@@ -35,7 +41,7 @@ import {
   getSaveCandidate,
   isLikelyRestoredLocalConversation,
   pathsIdentifySameManagedCopy,
-  parseConversationMessagesFromPath,
+  parseConversationTranscriptFromPath,
   renderWarnings,
 } from "./common.js";
 import {
@@ -95,9 +101,13 @@ export function buildSaveCommand(): Command {
         const liveCandidate = scanResult
           ? findScanCandidateForConversation(originalConversation, scanResult)
           : undefined;
-        const conversation = scanResult
+        const sourceCurrentConversation = scanResult
           ? attachCurrentSourceCandidate(originalConversation, scanResult)
           : originalConversation;
+        const conversation = attachCurrentRelationshipInspection(
+          sourceCurrentConversation,
+          liveCandidate,
+        );
 
         if (
           conversation.state === "saved" &&
@@ -107,13 +117,31 @@ export function buildSaveCommand(): Command {
           throwDirectSavedSourceUnavailable(conversation, scanResult!);
         }
 
+        if (
+          conversation.state === "saved" &&
+          (
+            classifyInstalledTranscriptProjectionVersion(
+              conversation.source,
+              conversation.transcriptProjectionVersion,
+            ) === "version_skew" ||
+            classifyInstalledRelationshipInspectionVersion(
+              conversation.source,
+              conversation.relationshipInspection.version,
+            ) === "version_skew"
+          )
+        ) {
+          throw new ClogError(
+            `Conversation ${conversation.id.slice(0, 8)} was saved by a newer clog version. Upgrade clog before refreshing it.`,
+          );
+        }
+
         if (conversation.state === "unsaved") {
           const rawPath = defaultSaveFilePath(conversation);
           const saved = await insertFirstSavedConversation(
             conversation,
             async (): Promise<SavedConversationMeta> => {
               await ensureRawCopy(conversation);
-              const messages = await parseConversationMessagesFromPath(
+              const transcript = await parseConversationTranscriptFromPath(
                 config,
                 conversation.source,
                 rawPath,
@@ -129,7 +157,9 @@ export function buildSaveCommand(): Command {
                 saveVersion: 1,
                 savedAt: timestamp,
                 modifiedAt: timestamp,
-                savedMessageCount: messages.length,
+                savedMessageCount: transcript.messages.length,
+                transcriptProjectionVersion:
+                  transcript.transcriptProjectionVersion,
                 indexedAt: null,
               };
             },
@@ -139,33 +169,46 @@ export function buildSaveCommand(): Command {
           const candidate = liveCandidate === undefined
             ? await getSaveCandidate(conversation)
             : await getSaveCandidate(conversation, liveCandidate);
+          const relationshipCurrentConversation =
+            await reinspectSavedRelationshipsIfNeeded(
+              conversation,
+              candidate.path,
+              config,
+            );
           const rawPath =
-            !conversation.filePath
-              ? defaultSaveFilePath(conversation)
-              : conversation.filePath;
+            !relationshipCurrentConversation.filePath
+              ? defaultSaveFilePath(relationshipCurrentConversation)
+              : relationshipCurrentConversation.filePath;
 
-          if (!(await confirmRestoredOverwriteIfNeeded(conversation, candidate))) {
+          if (
+            !(await confirmRestoredOverwriteIfNeeded(
+              relationshipCurrentConversation,
+              candidate,
+            ))
+          ) {
             continue;
           }
 
           if (candidate.shouldRefreshRawCopy) {
-            await ensureRawCopy(conversation);
+            await ensureRawCopy(relationshipCurrentConversation);
           }
 
           const parsePath = candidate.shouldRefreshRawCopy ? rawPath : candidate.path;
-          const messages = await parseConversationMessagesFromPath(
+          const transcript = await parseConversationTranscriptFromPath(
             config,
             conversation.source,
             parsePath,
           );
           const timestamp = nowIso();
           const savedConversation: SavedConversationMeta = {
-            ...conversation,
+            ...relationshipCurrentConversation,
             filePath: rawPath,
-            saveVersion: conversation.saveVersion + 1,
+            saveVersion: relationshipCurrentConversation.saveVersion + 1,
             savedAt: timestamp,
             modifiedAt: timestamp,
-            savedMessageCount: messages.length,
+            savedMessageCount: transcript.messages.length,
+            transcriptProjectionVersion:
+              transcript.transcriptProjectionVersion,
             indexedAt: null,
           };
 
@@ -191,6 +234,40 @@ export function buildSaveCommand(): Command {
       await maybePrintUnindexedHint(config);
       await maybePrintSummarizationHint();
     });
+}
+
+async function reinspectSavedRelationshipsIfNeeded(
+  conversation: SavedConversationMeta,
+  inspectionPath: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<SavedConversationMeta> {
+  const versionClassification =
+    classifyInstalledRelationshipInspectionVersion(
+      conversation.source,
+      conversation.relationshipInspection.version,
+    );
+  if (versionClassification === "current") {
+    return conversation;
+  }
+  if (versionClassification === "version_skew") {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} was saved by a newer clog version. Upgrade clog before refreshing it.`,
+    );
+  }
+
+  const inspection = await getAdapter(
+    conversation.source,
+    config,
+  ).inspectRelationships(inspectionPath);
+  return {
+    ...conversation,
+    relationshipInspection: {
+      status: inspection.status,
+      version: inspection.version,
+      diagnostic: inspection.diagnostic,
+    },
+    relationships: inspection.relationships,
+  };
 }
 
 // A save that would replace filled/restored content with a live local source

@@ -59,6 +59,7 @@ export function buildStatusCommand(): Command {
       const readySaved: ConversationMeta[] = [];
       const sourceAheadSaved: ConversationMeta[] = [];
       const cleanSaved: ConversationMeta[] = [];
+      const versionSkewSaved: ConversationMeta[] = [];
       const showConversations = options.conversations === true || options.source === true;
 
       for (const conversation of saved) {
@@ -70,10 +71,26 @@ export function buildStatusCommand(): Command {
           readySaved.push(conversation);
         } else if (kind === "source_ahead") {
           sourceAheadSaved.push(conversation);
+        } else if (kind === "version_skew") {
+          versionSkewSaved.push(conversation);
         } else {
           cleanSaved.push(conversation);
         }
       }
+
+      renderWarnings(
+        versionSkewSaved.map((conversation) => ({
+          code: "adapter_version_skew",
+          message:
+            "A conversation was saved by a newer clog version.",
+          source: conversation.source,
+          conversation: {
+            id: conversation.id,
+            source: conversation.source,
+          },
+          guidance: "Upgrade clog before reading, refreshing, or indexing this conversation.",
+        })),
+      );
 
       const sections: Array<() => void> = [];
 

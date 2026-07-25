@@ -4,7 +4,10 @@ import path from "node:path";
 import readline from "node:readline";
 
 import type { Config } from "../config/schema.js";
-import type { Message } from "../models/conversation.js";
+import type {
+  Message,
+  RelationshipInspection,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
@@ -12,7 +15,9 @@ import {
   type DiscoverOptions,
   type DiscoveredConversation,
   type SourceAdapter,
+  type Transcript,
   globSourceFiles,
+  relationshipInspectionNotImplemented,
 } from "./adapter.js";
 
 interface CodexLine {
@@ -65,8 +70,17 @@ const KNOWN_WRAPPER_BLOCKS = ["environment_context", "user_shell_command"];
 const AGENTS_INSTRUCTIONS_PREFIX_REGEX =
   /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/;
 
+export const CODEX_CLI_ADAPTER_VERSIONS = {
+  relationshipInspection: 1,
+  transcriptProjection: 1,
+} as const;
+
 export class CodexCliAdapter implements SourceAdapter {
   readonly name = "codex-cli";
+  readonly relationshipInspectionVersion =
+    CODEX_CLI_ADAPTER_VERSIONS.relationshipInspection;
+  readonly transcriptProjectionVersion =
+    CODEX_CLI_ADAPTER_VERSIONS.transcriptProjection;
 
   constructor(private readonly config: Config) {}
 
@@ -91,7 +105,16 @@ export class CodexCliAdapter implements SourceAdapter {
     }
   }
 
-  async parseMessages(filePath: string): Promise<Message[]> {
+  async inspectRelationships(
+    _filePath: string,
+    _options?: DiscoverOptions,
+  ): Promise<RelationshipInspection> {
+    return relationshipInspectionNotImplemented(this.relationshipInspectionVersion);
+  }
+
+  async parseTranscript(
+    filePath: string,
+  ): Promise<Transcript> {
     const lines = await readCodexLines(filePath);
     const functionCalls = new Map<string, FunctionCallInfo>();
     const functionOutputs = new Map<string, FunctionCallOutputInfo>();
@@ -264,7 +287,7 @@ export class CodexCliAdapter implements SourceAdapter {
       }
     }
 
-    return messages;
+    return { messages, warnings: [] };
   }
 
   watchPaths(): string[] {
@@ -374,6 +397,8 @@ export class CodexCliAdapter implements SourceAdapter {
       state.finalTitle ?? state.pendingTitle?.text ?? "(untitled)",
     );
 
+    const inspection = await this.inspectRelationships(filePath, { onWarning });
+
     return {
       sourceId,
       sourcePath: filePath,
@@ -388,6 +413,12 @@ export class CodexCliAdapter implements SourceAdapter {
           state.firstTopLevelTimestamp ??
           fileStat.mtime.toISOString(),
       },
+      relationshipInspection: {
+        status: inspection.status,
+        version: inspection.version,
+        diagnostic: inspection.diagnostic,
+      },
+      relationships: inspection.relationships,
     };
   }
 }

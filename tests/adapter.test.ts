@@ -2,12 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { CodexCliAdapter } from "../src/adapters/codex-cli.js";
 import { getAdapter } from "../src/adapters/registry.js";
+import { scanLocalSources } from "../src/cli/scan.js";
 import { getDefaultConfig } from "../src/config/index.js";
 import type { ClogWarning } from "../src/models/warnings.js";
 import { writeJsonl, writeRawJsonlLines } from "./helpers/fixtures.js";
@@ -27,6 +28,79 @@ describe("adapters", () => {
     expect(() => getAdapter("constructor", getDefaultConfig("alice"))).toThrow(
       'Unsupported source "constructor"',
     );
+  });
+
+  it.each([
+    "claude-code",
+    "codex-cli",
+  ] as const)("%s satisfies the shared adapter contract", async (source) => {
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = source === "claude-code";
+    config.sources["codex-cli"].enabled = source === "codex-cli";
+    let filePath: string;
+
+    if (source === "claude-code") {
+      const sourceRoot = path.join(tempDir, "claude");
+      filePath = path.join(
+        sourceRoot,
+        "project",
+        "11111111-1111-1111-1111-111111111111.jsonl",
+      );
+      await writeJsonl(filePath, [{
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/project",
+        message: { role: "user", content: "Hello" },
+      }]);
+      config.sources["claude-code"].paths = [sourceRoot];
+    } else {
+      const sourceRoot = path.join(tempDir, "codex");
+      filePath = path.join(
+        sourceRoot,
+        "sessions",
+        "2026",
+        "02",
+        "01",
+        "rollout-22222222-2222-2222-2222-222222222222.jsonl",
+      );
+      await writeJsonl(filePath, [{
+        type: "session_meta",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          id: "22222222-2222-2222-2222-222222222222",
+          cwd: "/Users/alice/project",
+          timestamp: "2026-02-01T10:00:00.000Z",
+        },
+      }]);
+      config.sources["codex-cli"].paths = [sourceRoot];
+    }
+
+    const adapter = getAdapter(source, config);
+    const inspect = vi.spyOn(adapter, "inspectRelationships");
+    const discovered = [];
+    for await (const conversation of adapter.discover()) {
+      discovered.push(conversation);
+    }
+    const transcript = await adapter.parseTranscript(filePath);
+    const expectedSourceMtime = (await fs.stat(filePath)).mtime.toISOString();
+    const scan = await scanLocalSources(config);
+
+    expect(adapter.relationshipInspectionVersion).toBeGreaterThan(0);
+    expect(adapter.transcriptProjectionVersion).toBeGreaterThan(0);
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      relationshipInspection: {
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      relationships: [],
+    });
+    expect(Array.isArray(transcript.messages)).toBe(true);
+    expect(transcript.warnings).toEqual([]);
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.candidates[0]?.sourceMtime).toBe(expectedSourceMtime);
   });
 
   it("Claude discovery extracts metadata from the first cwd and summary line", async () => {
@@ -279,7 +353,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -324,7 +398,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -369,7 +443,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -781,7 +855,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -832,7 +906,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -993,7 +1067,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     const toolResult = messages.find((message) => message.role === "tool_result");
     expect(toolResult).toBeDefined();
@@ -1022,7 +1096,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
@@ -1049,7 +1123,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
     expect(messages).toEqual([]);
   });
 
@@ -1174,7 +1248,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     const toolResult = messages.find((message) => message.role === "tool_result");
     expect(toolResult?.content).toBe("exec_command: exit 2");
@@ -1206,7 +1280,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ role: "user", content: "Please help" });

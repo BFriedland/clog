@@ -58,6 +58,8 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
           adapterReportedIncomplete = true;
         },
       })) {
+        const stat = await fs.stat(discovered.sourcePath);
+
         if (conversationMatchesAnyClogIgnoreRule({
           sourceId: discovered.sourceId,
           projectName: discovered.metadata.projectName,
@@ -77,7 +79,10 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
               source: adapter.name,
               sourceId: discovered.sourceId,
               sourcePath: discovered.sourcePath,
+              sourceMtime: stat.mtime.toISOString(),
               metadata: discovered.metadata,
+              relationshipInspection: discovered.relationshipInspection,
+              relationships: discovered.relationships,
             });
           }
           continue;
@@ -97,13 +102,14 @@ export async function scanLocalSources(config: Config): Promise<ScanResult> {
           continue;
         }
 
-        const stat = await fs.stat(discovered.sourcePath);
         candidates.push({
           source: adapter.name,
           sourceId: discovered.sourceId,
           sourcePath: discovered.sourcePath,
           sourceMtime: stat.mtime.toISOString(),
           metadata: discovered.metadata,
+          relationshipInspection: discovered.relationshipInspection,
+          relationships: discovered.relationships,
         });
         counts.discovered += 1;
       }

@@ -3,7 +3,12 @@ import fs from "node:fs";
 import { glob, type GlobOptions } from "glob";
 
 import type { Config } from "../config/schema.js";
-import type { Message } from "../models/conversation.js";
+import type {
+  Message,
+  RelationshipInspection,
+  RelationshipInspectionState,
+  ConversationRelationship,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 
 export const SCAN_METADATA_MAX_LINES = 100;
@@ -19,6 +24,8 @@ export interface DiscoveredConversation {
     slug: string | null;
     createdAt: string;
   };
+  relationshipInspection: RelationshipInspectionState;
+  relationships: ConversationRelationship[];
 }
 
 export interface DiscoverOptions {
@@ -27,13 +34,56 @@ export interface DiscoverOptions {
 }
 
 export interface SourceAdapter {
-  name: string;
+  readonly name: string;
+  readonly relationshipInspectionVersion: number;
+  readonly transcriptProjectionVersion: number;
   discover(options?: DiscoverOptions): AsyncIterable<DiscoveredConversation>;
-  parseMessages(filePath: string): Promise<Message[]>;
+  inspectRelationships(
+    filePath: string,
+    options?: DiscoverOptions,
+  ): Promise<RelationshipInspection>;
+  parseTranscript(filePath: string): Promise<Transcript>;
   watchPaths(): string[];
 }
 
+export interface Transcript {
+  messages: Message[];
+  warnings: ClogWarning[];
+}
+
 export type SourceAdapterFactory = (config: Config) => SourceAdapter;
+
+export type AdapterVersionClassification =
+  | "current"
+  | "refreshable"
+  | "version_skew";
+
+export function classifyAdapterVersion(
+  storedVersion: number | null,
+  localVersion: number,
+): AdapterVersionClassification {
+  if (!Number.isInteger(localVersion) || localVersion < 1) {
+    throw new Error("Adapter contract versions must be positive integers.");
+  }
+  if (storedVersion === localVersion) {
+    return "current";
+  }
+  if (storedVersion == null || storedVersion < localVersion) {
+    return "refreshable";
+  }
+  return "version_skew";
+}
+
+export function relationshipInspectionNotImplemented(
+  version: number,
+): RelationshipInspection {
+  return {
+    status: "unknown",
+    version,
+    diagnostic: "relationship_inspection_not_implemented",
+    relationships: [],
+  };
+}
 
 export async function globSourceFiles(
   pattern: string,

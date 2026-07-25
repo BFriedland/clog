@@ -9,6 +9,7 @@ import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   isConversationSearchable,
   markConversationIndexStale,
+  maybeReindexUpdatedConversation,
   tryDeleteConversationVectors,
 } from "../src/search/coherence.js";
 import { SearchNotConfiguredError, SearchDepsError } from "../src/search/errors.js";
@@ -62,6 +63,22 @@ describe("isConversationSearchable (SPEC §10.7)", () => {
     });
     expect(isConversationSearchable(conversation)).toBe(false);
   });
+
+  it.each([
+    null,
+    2,
+  ])(
+    "returns false when transcript projection version is %s",
+    (transcriptProjectionVersion) => {
+      const conversation = makeConversation({
+        state: "saved",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+        transcriptProjectionVersion,
+      });
+      expect(isConversationSearchable(conversation)).toBe(false);
+    },
+  );
 
   it("returns false when state is not saved, even with a non-null indexedAt", () => {
     const conversation = makeConversation({
@@ -126,6 +143,25 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
     const next = await markConversationIndexStale(conversation);
     expect(next).toBe(conversation);
     await expect(getConversationById(conversation.id)).resolves.toBeNull();
+  });
+});
+
+describe("projection-aware reindexing", () => {
+  it("does not index a conversation stamped by a newer adapter", async () => {
+    mockedGetSearchProviders.mockClear();
+    const conversation = makeConversation({
+      state: "saved",
+      transcriptProjectionVersion: 2,
+      indexedAt: "2026-02-01T10:00:00.000Z",
+    });
+
+    await expect(
+      maybeReindexUpdatedConversation(conversation),
+    ).resolves.toMatchObject({
+      indexedAt: null,
+      transcriptProjectionVersion: 2,
+    });
+    expect(mockedGetSearchProviders).not.toHaveBeenCalled();
   });
 });
 
@@ -316,6 +352,12 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
   };
   return state === "saved"
     ? {
@@ -324,6 +366,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
         savedAt: now,
         savedMessageCount: 0,
         saveVersion: 1,
+        transcriptProjectionVersion: 1,
         ...overrides,
       } as ConversationMeta
     : {
@@ -332,6 +375,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
         savedAt: null,
         savedMessageCount: null,
         saveVersion: 0,
+        transcriptProjectionVersion: null,
         ...overrides,
       } as ConversationMeta;
 }

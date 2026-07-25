@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { DiscoveredConversation } from "../adapters/adapter.js";
+import { classifyAdapterVersion } from "../adapters/adapter.js";
 import type { Config } from "../config/schema.js";
 import {
   listConversations,
@@ -8,7 +11,10 @@ import type {
   ConversationMeta,
   ConversationState,
 } from "../models/conversation.js";
-import { summaryKindForDiscoveredSummary } from "../models/conversation.js";
+import {
+  preserveConfirmedRelationship,
+  summaryKindForDiscoveredSummary,
+} from "../models/conversation.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { pathMatchesBoundary } from "../cli/clogignore.js";
@@ -19,13 +25,18 @@ export interface LocalDiscoveryCandidate {
   sourcePath: string;
   sourceMtime: string;
   metadata: DiscoveredConversation["metadata"];
+  relationshipInspection: DiscoveredConversation["relationshipInspection"];
+  relationships: DiscoveredConversation["relationships"];
 }
 
 interface IgnoredLocalDiscoveryCandidate {
   source: string;
   sourceId: string;
   sourcePath: string;
+  sourceMtime: string;
   metadata: DiscoveredConversation["metadata"];
+  relationshipInspection: DiscoveredConversation["relationshipInspection"];
+  relationships: DiscoveredConversation["relationships"];
 }
 
 interface SourceDiscoveryStatus {
@@ -101,12 +112,15 @@ export function buildDiscoveredConversation(
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,
+    transcriptProjectionVersion: null,
     sourcePath: candidate.sourcePath,
     filePath: null,
     sourceMtime: candidate.sourceMtime,
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: candidate.relationshipInspection,
+    relationships: candidate.relationships,
   };
 }
 
@@ -236,6 +250,56 @@ export function attachCurrentSourceCandidate(
     ...conversation,
     sourcePath: candidate.sourcePath,
     sourceMtime: candidate.sourceMtime,
+  };
+}
+
+export function attachCurrentRelationshipInspection(
+  conversation: ConversationMeta,
+  candidate: LocalDiscoveryCandidate | null | undefined,
+): ConversationMeta {
+  if (
+    conversation.state !== "saved" ||
+    !candidate ||
+    candidate.relationshipInspection.version == null
+  ) {
+    return conversation;
+  }
+
+  const versionClassification = classifyAdapterVersion(
+    conversation.relationshipInspection.version,
+    candidate.relationshipInspection.version,
+  );
+  if (versionClassification === "version_skew") {
+    return conversation;
+  }
+
+  const refreshedInspection = preserveConfirmedRelationship(conversation, {
+    ...candidate.relationshipInspection,
+    relationships: candidate.relationships,
+  });
+  if (
+    versionClassification === "current" &&
+    !isDeepStrictEqual(
+      {
+        ...conversation.relationshipInspection,
+        relationships: conversation.relationships,
+      },
+      refreshedInspection,
+    )
+  ) {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} has conflicting saved and live relationship metadata for inspection version ${candidate.relationshipInspection.version}. The saved copy was left unchanged.`,
+    );
+  }
+
+  return {
+    ...conversation,
+    relationshipInspection: {
+      status: refreshedInspection.status,
+      version: refreshedInspection.version,
+      diagnostic: refreshedInspection.diagnostic,
+    },
+    relationships: refreshedInspection.relationships,
   };
 }
 

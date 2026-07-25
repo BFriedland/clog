@@ -5,7 +5,12 @@ import { z } from "zod";
 
 import { getAdapter, isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
-import type { ConversationMeta, Message, SummaryExtraction } from "../models/conversation.js";
+import type {
+  ConversationMeta,
+  Message,
+  RelationshipInspection,
+  SummaryExtraction,
+} from "../models/conversation.js";
 import { summaryExtractionSchema, summaryKindSchema } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
@@ -104,6 +109,8 @@ export interface ValidatedPair {
   jsonlPath: string;
   meta: PairMetadata;
   messageCount: number;
+  transcriptProjectionVersion: number;
+  relationshipInspection: RelationshipInspection & { version: number };
 }
 
 export type PairValidationResult =
@@ -311,9 +318,22 @@ export async function validatePair(
   }
 
   let messages: Message[];
+  let transcriptProjectionVersion: number;
+  let relationshipInspection: RelationshipInspection & { version: number };
   try {
     const adapter = getAdapter(meta.source, config);
-    messages = await adapter.parseMessages(pair.jsonlPath);
+    messages = (await adapter.parseTranscript(pair.jsonlPath)).messages;
+    transcriptProjectionVersion = adapter.transcriptProjectionVersion;
+    const inspection = await adapter.inspectRelationships(pair.jsonlPath);
+    if (inspection.version == null) {
+      throw new Error(
+        `${meta.source} returned an unexamined relationship inspection for an imported conversation.`,
+      );
+    }
+    relationshipInspection = {
+      ...inspection,
+      version: inspection.version,
+    };
   } catch (error) {
     // A filesystem read failure carries a stable code; keep the display path on
     // `path` rather than repeating it in the message. Content parse failures
@@ -345,6 +365,8 @@ export async function validatePair(
       jsonlPath: pair.jsonlPath,
       meta,
       messageCount: messages.length,
+      transcriptProjectionVersion,
+      relationshipInspection,
     },
   };
 }

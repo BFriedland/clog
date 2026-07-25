@@ -96,6 +96,84 @@ describe("git reconciliation planner", () => {
     expect(plan.deletedRowIds).toEqual([]);
   });
 
+  it("preserves a remote row stamped by a newer transcript projection", () => {
+    const existing = conversation({
+      id: "a7777777-7777-7777-7777-777777777777",
+      originKind: "git",
+      originRef: REMOTE_URL,
+      transcriptProjectionVersion: 2,
+    });
+    const incoming = pair({
+      id: existing.sourceId,
+      author: existing.author,
+      title: "Incoming older projection",
+    });
+
+    const plan = planGitReconciliation({
+      scan: scanOf(incoming),
+      existingRows: [existing],
+      remoteUrl: REMOTE_URL,
+    });
+
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "skip",
+        reason: "adapter_version_skew",
+        owner: existing,
+      }),
+    ]);
+    expect(plan.warnings).toEqual([
+      expect.objectContaining({
+        code: "adapter_version_skew",
+        conversation: {
+          id: existing.id,
+          source: existing.source,
+        },
+      }),
+    ]);
+  });
+
+  it("preserves a remote row stamped by a newer relationship inspection", () => {
+    const existing = conversation({
+      id: "a7878787-7878-7878-7878-787878787878",
+      originKind: "git",
+      originRef: REMOTE_URL,
+      relationshipInspection: {
+        status: "unknown",
+        version: 2,
+        diagnostic: "newer_inspection",
+      },
+    });
+    const incoming = pair({
+      id: existing.sourceId,
+      author: existing.author,
+      title: "Incoming older inspection",
+    });
+
+    const plan = planGitReconciliation({
+      scan: scanOf(incoming),
+      existingRows: [existing],
+      remoteUrl: REMOTE_URL,
+    });
+
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "skip",
+        reason: "adapter_version_skew",
+        owner: existing,
+      }),
+    ]);
+    expect(plan.warnings).toEqual([
+      expect.objectContaining({
+        code: "adapter_version_skew",
+        conversation: {
+          id: existing.id,
+          source: existing.source,
+        },
+      }),
+    ]);
+  });
+
   it("skips a git insert when a local scan candidate owns the identity", () => {
     const incoming = pair({
       id: "b1111111-1111-1111-1111-111111111111",
@@ -110,6 +188,12 @@ describe("git reconciliation planner", () => {
         sourceId: incoming.id,
         sourcePath: "/source/conversation.jsonl",
         sourceMtime: "2026-02-01T10:00:00.000Z",
+        relationshipInspection: {
+          status: "unknown",
+          version: 1,
+          diagnostic: "relationship_inspection_not_implemented",
+        },
+        relationships: [],
         metadata: {
           title: "Local source copy",
           summary: "",
@@ -360,6 +444,13 @@ function pair(options: {
         slug: null,
       },
       messageCount: options.messageCount ?? 1,
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+        relationships: [],
+      },
     },
   };
 }
@@ -398,5 +489,13 @@ function conversation(
     indexedAt: options.indexedAt ?? null,
     originKind: options.originKind,
     originRef: options.originRef,
+    relationshipInspection: options.relationshipInspection ?? {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    },
+    relationships: options.relationships ?? [],
+    transcriptProjectionVersion:
+      options.transcriptProjectionVersion ?? 1,
   };
 }

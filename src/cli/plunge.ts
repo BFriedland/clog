@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 import type { Database } from "sql.js";
 
+import { classifyAdapterVersion } from "../adapters/adapter.js";
 import { getAdapter } from "../adapters/registry.js";
 import { parseConfig } from "../config/schema.js";
 import { getDefaultConfig } from "../config/index.js";
@@ -94,6 +95,7 @@ interface RawConversationRow {
   saved_at: unknown;
   saved_message_count: unknown;
   save_version: unknown;
+  transcript_projection_version: unknown;
   file_path: unknown;
   source_path: unknown;
   originKind: OriginKind;
@@ -492,6 +494,15 @@ async function inspectDatabase(
       continue;
     }
 
+    const adapter = getAdapter(row.source, options.configForParsing);
+    const storedProjectionVersion = nullablePositiveInteger(
+      row.transcript_projection_version,
+    );
+    const projectionVersionSkew =
+      classifyAdapterVersion(
+        storedProjectionVersion,
+        adapter.transcriptProjectionVersion,
+      ) === "version_skew";
     const filePath = nullableString(row.file_path);
     const expectedPath = getRawConversationPath(row.source, row.id);
     const pathProblems: string[] = [];
@@ -513,18 +524,35 @@ async function inspectDatabase(
         subsystem: "raw",
         severity: "corruption",
         message: pathProblems.join("; "),
-        recovery: rawRecoveryForRow(row),
+        recovery: projectionVersionSkew
+          ? "Upgrade clog before attempting to recreate this conversation's curated raw file."
+          : rawRecoveryForRow(row),
         paths: [expectedPath, ...(filePath ? [filePath] : [])],
+        sortKey: row.id,
+      }));
+    }
+
+    if (projectionVersionSkew) {
+      findings.push(conversationFinding(row, {
+        check: 18,
+        subsystem: "checkpoints",
+        severity: "info",
+        message: `Saved transcript projection version ${storedProjectionVersion} is newer than the ${row.source} adapter's supported version ${adapter.transcriptProjectionVersion}; parse-based raw and checkpoint checks were skipped.`,
+        recovery: "Upgrade clog before reading, refreshing, or auditing this conversation's transcript.",
         sortKey: row.id,
       }));
       continue;
     }
+    if (pathProblems.length > 0) {
+      continue;
+    }
 
     const verifiedFilePath = filePath as string;
-
+    let parsedMessageCount: number;
     try {
-      const adapter = getAdapter(row.source, options.configForParsing);
-      await adapter.parseMessages(verifiedFilePath);
+      parsedMessageCount = (
+        await adapter.parseTranscript(verifiedFilePath)
+      ).messages.length;
     } catch (error) {
       findings.push(conversationFinding(row, {
         check: 8,
@@ -544,23 +572,18 @@ async function inspectDatabase(
     {
       const savedMessageCount = toFiniteNumber(row.saved_message_count);
 
-      if (savedMessageCount != null) {
-        try {
-          const adapter = getAdapter(row.source, options.configForParsing);
-          const parsedMessages = await adapter.parseMessages(verifiedFilePath);
-          if (parsedMessages.length < savedMessageCount) {
-            findings.push(conversationFinding(row, {
-              check: 9,
-              subsystem: "checkpoints",
-              severity: "info",
-              message: `Current parsed message count is ${parsedMessages.length}, below saved_message_count ${savedMessageCount}.`,
-              recovery: `Run "clog show ${row.id}" and then "clog save ${row.id}" after verification to refresh the stored message-count checkpoint.`,
-              sortKey: row.id,
-            }));
-          }
-        } catch {
-          // Check #8 already covers parse failure.
-        }
+      if (
+        savedMessageCount != null &&
+        parsedMessageCount < savedMessageCount
+      ) {
+        findings.push(conversationFinding(row, {
+          check: 9,
+          subsystem: "checkpoints",
+          severity: "info",
+          message: `Current parsed message count is ${parsedMessageCount}, below saved_message_count ${savedMessageCount}.`,
+          recovery: `Run "clog show ${row.id}" and then "clog save ${row.id}" after verification to refresh the stored message-count checkpoint.`,
+          sortKey: row.id,
+        }));
       }
     }
   }
@@ -843,6 +866,9 @@ function getConversationRows(
   options: { legacySavedOnly?: boolean } = {},
 ): RawConversationRow[] {
   const whereClause = options.legacySavedOnly ? "WHERE state = 'saved'" : "";
+  const transcriptProjectionVersionColumn = options.legacySavedOnly
+    ? "NULL AS transcript_projection_version"
+    : "transcript_projection_version";
   const result = db.exec(
     `
       SELECT
@@ -857,6 +883,7 @@ function getConversationRows(
         saved_at,
         saved_message_count,
         save_version,
+        ${transcriptProjectionVersionColumn},
         file_path,
         source_path,
         origin_kind AS originKind,
@@ -893,6 +920,7 @@ function getConversationRows(
       saved_at: record.saved_at,
       saved_message_count: record.saved_message_count,
       save_version: record.save_version,
+      transcript_projection_version: record.transcript_projection_version,
       file_path: record.file_path,
       source_path: record.source_path,
       originKind: parseOriginKind(record.originKind),
@@ -903,6 +931,10 @@ function getConversationRows(
 
 function isSqliteInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value);
+}
+
+function nullablePositiveInteger(value: unknown): number | null {
+  return isSqliteInteger(value) && value >= 1 ? value : null;
 }
 
 function formatConversationOrigin(row: RawConversationRow): string | null {

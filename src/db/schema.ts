@@ -1,6 +1,6 @@
 import type { Database } from "sql.js";
 
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 export function ensureCurrentSchema(db: Database): boolean {
   if (!tableExists(db, "schema_version")) {
@@ -56,6 +56,11 @@ export function ensureCurrentSchema(db: Database): boolean {
     setSchemaVersion(db, 9);
   }
 
+  if (currentVersion < 10) {
+    migrateToV10(db);
+    setSchemaVersion(db, 10);
+  }
+
   return currentVersion < CURRENT_SCHEMA_VERSION;
 }
 
@@ -67,6 +72,7 @@ function createLatestSchema(db: Database): void {
   `);
 
   createConversationsTable(db);
+  createConversationRelationshipsTable(db);
 }
 
 function createConversationsTable(db: Database): void {
@@ -98,12 +104,74 @@ function createConversationsTable(db: Database): void {
       origin_kind TEXT NOT NULL DEFAULT 'local'
         CHECK(origin_kind IN ('local','git','file')),
       origin_ref TEXT,
+      relationship_status TEXT NOT NULL DEFAULT 'unexamined'
+        CHECK(relationship_status IN ('unexamined','none_found','linked','unknown')),
+      relationship_inspection_version INTEGER,
+      relationship_diagnostic TEXT,
+      transcript_projection_version INTEGER,
       CHECK(
         (origin_kind = 'git' AND origin_ref IS NOT NULL)
         OR
         (origin_kind IN ('local','file') AND origin_ref IS NULL)
       ),
+      CHECK(
+        (
+          relationship_status = 'unexamined'
+          AND relationship_inspection_version IS NULL
+          AND relationship_diagnostic IS NULL
+        )
+        OR
+        (
+          relationship_status IN ('none_found','linked')
+          AND typeof(relationship_inspection_version) = 'integer'
+          AND relationship_inspection_version >= 1
+          AND relationship_diagnostic IS NULL
+        )
+        OR
+        (
+          relationship_status = 'unknown'
+          AND typeof(relationship_inspection_version) = 'integer'
+          AND relationship_inspection_version >= 1
+          AND relationship_diagnostic IS NOT NULL
+          AND typeof(relationship_diagnostic) = 'text'
+          AND relationship_diagnostic != ''
+        )
+      ),
+      CHECK(
+        transcript_projection_version IS NULL
+        OR (
+          typeof(transcript_projection_version) = 'integer'
+          AND transcript_projection_version >= 1
+        )
+      ),
       UNIQUE(source, source_id)
+    );
+  `);
+}
+
+function createConversationRelationshipsTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_relationships (
+      child_id TEXT NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+      relationship_kind TEXT NOT NULL
+        CHECK(relationship_kind = 'branch'),
+      parent_source TEXT NOT NULL CHECK(parent_source != ''),
+      parent_source_id TEXT NOT NULL CHECK(parent_source_id != ''),
+      evidence_kind TEXT NOT NULL
+        CHECK(evidence_kind IN ('source','inferred')),
+      branch_point_json TEXT
+        CHECK(
+          branch_point_json IS NULL
+          OR (
+            json_valid(branch_point_json)
+            AND json_extract(branch_point_json, '$.kind')
+              IN ('source-turn','source-message')
+            AND json_type(branch_point_json, '$.id') = 'text'
+            AND json_extract(branch_point_json, '$.id') != ''
+          )
+        ),
+      PRIMARY KEY(child_id, relationship_kind)
     );
   `);
 }
@@ -469,6 +537,111 @@ function migrateToV9(db: Database): void {
       DROP TABLE conversations;
       ALTER TABLE conversations_v9 RENAME TO conversations;
     `);
+    db.exec("COMMIT;");
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+function migrateToV10(db: Database): void {
+  if (!tableExists(db, "conversations")) {
+    return;
+  }
+
+  db.exec("BEGIN TRANSACTION;");
+  try {
+    db.exec(`
+      CREATE TABLE conversations_v10 (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT DEFAULT '',
+        summary_kind TEXT NOT NULL DEFAULT 'none'
+          CHECK(summary_kind IN ('none','imported','generated','curated')),
+        summary_extraction TEXT,
+        author TEXT NOT NULL,
+        project_name TEXT,
+        project_path TEXT,
+        tags_json TEXT DEFAULT '[]',
+        slug TEXT,
+        created_at TEXT NOT NULL,
+        discovered_at TEXT NOT NULL,
+        modified_at TEXT NOT NULL,
+        saved_at TEXT NOT NULL,
+        saved_message_count INTEGER NOT NULL CHECK(saved_message_count >= 0),
+        save_version INTEGER NOT NULL CHECK(save_version >= 1),
+        source_path TEXT NOT NULL,
+        file_path TEXT,
+        source_mtime TEXT,
+        indexed_at TEXT,
+        origin_kind TEXT NOT NULL DEFAULT 'local'
+          CHECK(origin_kind IN ('local','git','file')),
+        origin_ref TEXT,
+        relationship_status TEXT NOT NULL DEFAULT 'unexamined'
+          CHECK(relationship_status IN ('unexamined','none_found','linked','unknown')),
+        relationship_inspection_version INTEGER,
+        relationship_diagnostic TEXT,
+        transcript_projection_version INTEGER,
+        CHECK(
+          (origin_kind = 'git' AND origin_ref IS NOT NULL)
+          OR
+          (origin_kind IN ('local','file') AND origin_ref IS NULL)
+        ),
+        CHECK(
+          (
+            relationship_status = 'unexamined'
+            AND relationship_inspection_version IS NULL
+            AND relationship_diagnostic IS NULL
+          )
+          OR
+          (
+            relationship_status IN ('none_found','linked')
+            AND typeof(relationship_inspection_version) = 'integer'
+            AND relationship_inspection_version >= 1
+            AND relationship_diagnostic IS NULL
+          )
+          OR
+          (
+            relationship_status = 'unknown'
+            AND typeof(relationship_inspection_version) = 'integer'
+            AND relationship_inspection_version >= 1
+            AND relationship_diagnostic IS NOT NULL
+            AND typeof(relationship_diagnostic) = 'text'
+            AND relationship_diagnostic != ''
+          )
+        ),
+        CHECK(
+          transcript_projection_version IS NULL
+          OR (
+            typeof(transcript_projection_version) = 'integer'
+            AND transcript_projection_version >= 1
+          )
+        ),
+        UNIQUE(source, source_id)
+      );
+
+      INSERT INTO conversations_v10 (
+        id, source_id, source, title, summary, summary_kind, summary_extraction,
+        author, project_name, project_path, tags_json, slug, created_at,
+        discovered_at, modified_at, saved_at, saved_message_count, save_version,
+        source_path, file_path, source_mtime, indexed_at, origin_kind, origin_ref,
+        relationship_status, relationship_inspection_version,
+        relationship_diagnostic, transcript_projection_version
+      )
+      SELECT
+        id, source_id, source, title, summary, summary_kind, summary_extraction,
+        author, project_name, project_path, tags_json, slug, created_at,
+        discovered_at, modified_at, saved_at, saved_message_count, save_version,
+        source_path, file_path, source_mtime, indexed_at, origin_kind, origin_ref,
+        'unexamined', NULL, NULL, NULL
+      FROM conversations;
+
+      DROP TABLE conversations;
+      ALTER TABLE conversations_v10 RENAME TO conversations;
+    `);
+    createConversationRelationshipsTable(db);
     db.exec("COMMIT;");
   } catch (error) {
     db.exec("ROLLBACK;");

@@ -89,8 +89,16 @@ describe("clog fill", () => {
     });
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
       name: "claude-code",
+      relationshipInspectionVersion: 1,
+      transcriptProjectionVersion: 1,
       watchPaths: () => [],
-      parseMessages: async () => [],
+      inspectRelationships: async () => ({
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+        relationships: [],
+      }),
+      parseTranscript: async () => ({ messages: [], warnings: [] }),
       discover,
     }]);
 
@@ -180,6 +188,14 @@ describe("clog fill", () => {
       author: "bob",
       originKind: "file",
       savedMessageCount: 2,
+      sourceMtime: null,
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      relationships: [],
     });
   });
 
@@ -1260,6 +1276,44 @@ describe("clog fill", () => {
     });
     expect(singleAction({
       pair,
+      mode: "file",
+      owner: conversation({
+        originKind: "file",
+        originRef: null,
+        title: "Old",
+        transcriptProjectionVersion: 2,
+      }),
+    })).toMatchObject({
+      kind: "skip",
+      reason: "adapter_version_skew",
+      failure: true,
+      warning: {
+        code: "adapter_version_skew",
+      },
+    });
+    expect(singleAction({
+      pair,
+      mode: "file",
+      owner: conversation({
+        originKind: "file",
+        originRef: null,
+        title: "Old",
+        relationshipInspection: {
+          status: "unknown",
+          version: 2,
+          diagnostic: "newer_inspection",
+        },
+      }),
+    })).toMatchObject({
+      kind: "skip",
+      reason: "adapter_version_skew",
+      failure: true,
+      warning: {
+        code: "adapter_version_skew",
+      },
+    });
+    expect(singleAction({
+      pair,
       mode: "own",
       owner: conversation({ originKind: "file", originRef: null }),
     })).toMatchObject({
@@ -1393,6 +1447,12 @@ function singleAction(args: {
           sourceId: args.pair.meta.id,
           sourcePath: "/source/conversation.jsonl",
           sourceMtime: "2026-03-01T09:00:00.000Z",
+          relationshipInspection: {
+            status: "unknown",
+            version: 1,
+            diagnostic: "relationship_inspection_not_implemented",
+          },
+          relationships: [],
           metadata: {
             title: "Source conversation",
             summary: "",
@@ -1422,6 +1482,13 @@ function validatedPair(id: string, overrides: Partial<PairMetadata> = {}): Valid
     jsonlPath: `/tmp/pairs/${id}.jsonl`,
     meta: makePairMetadata(id, overrides),
     messageCount: 1,
+    transcriptProjectionVersion: 1,
+    relationshipInspection: {
+      status: "unknown",
+      version: 1,
+      diagnostic: "relationship_inspection_not_implemented",
+      relationships: [],
+    },
   };
 }
 
@@ -1466,6 +1533,13 @@ function conversation(overrides: Partial<ConversationMeta> = {}): ConversationMe
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
+    transcriptProjectionVersion: 1,
     ...overrides,
   };
 }

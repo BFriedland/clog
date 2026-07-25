@@ -107,6 +107,13 @@ describe("mcp handlers", () => {
       indexedAt: "2026-02-01T10:00:03.000Z",
       originKind: "local",
       originRef: null,
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+      relationships: [],
+      transcriptProjectionVersion: 1,
     });
   });
 
@@ -1293,6 +1300,13 @@ async function insertOtherSaved(
     indexedAt: "2026-02-01T10:00:00.000Z",
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    },
+    relationships: [],
+    transcriptProjectionVersion: 1,
     ...overrides,
   });
 }

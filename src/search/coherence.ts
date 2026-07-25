@@ -1,4 +1,5 @@
 import type { ConversationMeta } from "../models/conversation.js";
+import { classifyInstalledTranscriptProjectionVersion } from "../adapters/registry.js";
 import { setConversationIndexedAt } from "../db/index.js";
 import { parseConversationMessages } from "../cli/common.js";
 import { loadConfig } from "../config/index.js";
@@ -15,7 +16,11 @@ export function isConversationSearchable(
       conversation.state === "saved" &&
       conversation.indexedAt &&
       conversation.savedAt &&
-      conversation.indexedAt >= conversation.savedAt,
+      conversation.indexedAt >= conversation.savedAt &&
+      classifyInstalledTranscriptProjectionVersion(
+        conversation.source,
+        conversation.transcriptProjectionVersion,
+      ) === "current",
   );
 }
 
@@ -38,6 +43,18 @@ export async function maybeReindexUpdatedConversation<T extends ConversationMeta
 ): Promise<T> {
   if (conversation.state !== "saved") {
     return conversation;
+  }
+
+  if (
+    classifyInstalledTranscriptProjectionVersion(
+      conversation.source,
+      conversation.transcriptProjectionVersion,
+    ) !== "current"
+  ) {
+    return {
+      ...conversation,
+      indexedAt: null,
+    } as T;
   }
 
   const config = await loadConfig();
@@ -78,6 +95,18 @@ export async function maybeAutoIndexConversations(
 
     for (const conversation of conversations) {
       if (conversation.state !== "saved") {
+        continue;
+      }
+
+      if (
+        classifyInstalledTranscriptProjectionVersion(
+          conversation.source,
+          conversation.transcriptProjectionVersion,
+        ) !== "current"
+      ) {
+        failures.push(conversation.id);
+        completed += 1;
+        onProgress?.(completed, indexable.length);
         continue;
       }
 

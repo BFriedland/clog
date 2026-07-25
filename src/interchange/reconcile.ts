@@ -1,9 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { classifyAdapterVersion } from "../adapters/adapter.js";
 import { isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
-import type { ConversationMeta, SavedConversationMeta } from "../models/conversation.js";
+import {
+  preserveConfirmedRelationship,
+  type ConversationMeta,
+  type SavedConversationMeta,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import { nowIso } from "../utils/time.js";
@@ -52,7 +57,8 @@ type ReconcileSkipReason =
   | "local_saved_owner"
   | "file_owner"
   | "other_git_owner"
-  | "invalid_pair";
+  | "invalid_pair"
+  | "adapter_version_skew";
 
 export type ReconcileAction =
   | { kind: "insert"; pair: GitValidatedPair; conversation: SavedConversationMeta }
@@ -314,6 +320,38 @@ export function planGitReconciliation(
       continue;
     }
 
+    if (
+      classifyAdapterVersion(
+        existingForRemote.transcriptProjectionVersion,
+        pair.pair.transcriptProjectionVersion,
+      ) === "version_skew" ||
+      classifyAdapterVersion(
+        existingForRemote.relationshipInspection.version,
+        pair.pair.relationshipInspection.version,
+      ) === "version_skew"
+    ) {
+      const warning: ClogWarning = {
+        code: "adapter_version_skew",
+        message:
+          "Skipping a conversation that was saved by a newer clog version.",
+        source: existingForRemote.source,
+        conversation: {
+          id: existingForRemote.id,
+          source: existingForRemote.source,
+        },
+        guidance: "Upgrade clog before synchronizing this conversation again.",
+      };
+      warnings.push(warning);
+      actions.push({
+        kind: "skip",
+        reason: "adapter_version_skew",
+        message: warning.message,
+        pair,
+        owner: existingForRemote,
+      });
+      continue;
+    }
+
     const updated = mergeGitPairIntoConversation(existingForRemote, pair, remoteUrl);
     if (updated) {
       actions.push({
@@ -370,12 +408,19 @@ function buildConversationFromGitPair(
     savedAt: pair.pair.meta.savedAt,
     savedMessageCount: pair.pair.messageCount,
     saveVersion: 1,
+    transcriptProjectionVersion: pair.pair.transcriptProjectionVersion,
     sourcePath: pair.pair.jsonlPath,
     filePath: pair.pair.jsonlPath,
     sourceMtime: null,
     indexedAt: null,
     originKind: "git",
     originRef: remoteUrl,
+    relationshipInspection: {
+      status: pair.pair.relationshipInspection.status,
+      version: pair.pair.relationshipInspection.version,
+      diagnostic: pair.pair.relationshipInspection.diagnostic,
+    },
+    relationships: pair.pair.relationshipInspection.relationships,
   };
 }
 
@@ -387,6 +432,18 @@ function mergeGitPairIntoConversation(
   const titleChanged = existing.title !== pair.pair.meta.title;
   const summaryChanged = existing.summary !== pair.pair.meta.summary;
   const contentChanged = existing.savedMessageCount !== pair.pair.messageCount;
+  const projectionChanged =
+    existing.transcriptProjectionVersion !==
+    pair.pair.transcriptProjectionVersion;
+  const refreshedRelationshipInspection = preserveConfirmedRelationship(
+    existing,
+    pair.pair.relationshipInspection,
+  );
+  const relationshipChanged =
+    JSON.stringify({
+      ...existing.relationshipInspection,
+      relationships: existing.relationships,
+    }) !== JSON.stringify(refreshedRelationshipInspection);
   const pathChanged =
     existing.sourcePath !== pair.pair.jsonlPath ||
     existing.filePath !== pair.pair.jsonlPath;
@@ -408,7 +465,12 @@ function mergeGitPairIntoConversation(
     extractionChanged ||
     !tagsEqual(existing.tags, pair.pair.meta.tags);
 
-  if (!metadataChanged && !pathChanged) {
+  if (
+    !metadataChanged &&
+    !projectionChanged &&
+    !relationshipChanged &&
+    !pathChanged
+  ) {
     return null;
   }
 
@@ -426,10 +488,19 @@ function mergeGitPairIntoConversation(
     modifiedAt: pair.pair.meta.modifiedAt,
     savedAt: pair.pair.meta.savedAt,
     savedMessageCount: pair.pair.messageCount,
+    transcriptProjectionVersion: pair.pair.transcriptProjectionVersion,
+    relationshipInspection: {
+      status: refreshedRelationshipInspection.status,
+      version: refreshedRelationshipInspection.version,
+      diagnostic: refreshedRelationshipInspection.diagnostic,
+    },
+    relationships: refreshedRelationshipInspection.relationships,
     sourcePath: pair.pair.jsonlPath,
     filePath: pair.pair.jsonlPath,
     indexedAt:
-      titleChanged || summaryChanged || contentChanged ? null : existing.indexedAt,
+      titleChanged || summaryChanged || contentChanged || projectionChanged
+        ? null
+        : existing.indexedAt,
     originKind: "git",
     originRef: remoteUrl,
   };

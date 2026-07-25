@@ -6,6 +6,14 @@ import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import {
+  classifyAdapterVersion,
+  type Transcript,
+} from "../adapters/adapter.js";
+import {
+  classifyInstalledRelationshipInspectionVersion,
+  classifyInstalledTranscriptProjectionVersion,
+} from "../adapters/registry.js";
+import {
   type LocalConversation,
   requireLocalConversation,
 } from "../conversations/write-guards.js";
@@ -115,11 +123,30 @@ export async function parseConversationMessages(
   config: Config,
   conversation: ConversationMeta,
 ): Promise<Message[]> {
+  return (await parseConversationTranscript(config, conversation)).messages;
+}
+
+async function parseConversationTranscript(
+  config: Config,
+  conversation: ConversationMeta,
+): Promise<Transcript> {
   const adapter = getAdapter(conversation.source, config);
   const contentPath = resolveContentPath(conversation);
 
+  if (
+    conversation.state === "saved" &&
+    classifyAdapterVersion(
+      conversation.transcriptProjectionVersion,
+      adapter.transcriptProjectionVersion,
+    ) === "version_skew"
+  ) {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} was saved with transcript projection version ${conversation.transcriptProjectionVersion}, but this clog build supports version ${adapter.transcriptProjectionVersion}. Use a newer clog version to read or refresh it.`,
+    );
+  }
+
   try {
-    return await adapter.parseMessages(contentPath);
+    return await adapter.parseTranscript(contentPath);
   } catch (error) {
     throw wrapMissingContentError(error, conversation, contentPath);
   }
@@ -167,9 +194,22 @@ export async function parseConversationMessagesFromPath(
   source: string,
   filePath: string,
 ): Promise<Message[]> {
+  return (
+    await parseConversationTranscriptFromPath(config, source, filePath)
+  ).messages;
+}
+
+export async function parseConversationTranscriptFromPath(
+  config: Config,
+  source: string,
+  filePath: string,
+): Promise<Transcript & { transcriptProjectionVersion: number }> {
   const adapter = getAdapter(source, config);
   try {
-    return await adapter.parseMessages(filePath);
+    return {
+      ...(await adapter.parseTranscript(filePath)),
+      transcriptProjectionVersion: adapter.transcriptProjectionVersion,
+    };
   } catch (error) {
     throw wrapMissingPathError(error, filePath);
   }
@@ -631,7 +671,11 @@ export function getTerminalWidth(): number {
   return 100;
 }
 
-export type SavedDelta = "clean" | "ready" | "source_ahead";
+export type SavedDelta =
+  | "clean"
+  | "ready"
+  | "source_ahead"
+  | "version_skew";
 
 export async function classifySavedDelta(
   conversation: ConversationMeta,
@@ -639,6 +683,21 @@ export async function classifySavedDelta(
 ): Promise<SavedDelta> {
   if (conversation.state !== "saved") {
     return "clean";
+  }
+
+  const projectionVersion = classifyInstalledTranscriptProjectionVersion(
+    conversation.source,
+    conversation.transcriptProjectionVersion,
+  );
+  const relationshipVersion = classifyInstalledRelationshipInspectionVersion(
+    conversation.source,
+    conversation.relationshipInspection.version,
+  );
+  if (
+    projectionVersion === "version_skew" ||
+    relationshipVersion === "version_skew"
+  ) {
+    return "version_skew";
   }
 
   if (!conversation.filePath) {
@@ -660,6 +719,13 @@ export async function classifySavedDelta(
     if (sourceDiffers) {
       return "source_ahead";
     }
+  }
+
+  if (
+    projectionVersion === "refreshable" ||
+    relationshipVersion === "refreshable"
+  ) {
+    return "ready";
   }
 
   if (!conversation.savedAt) {
