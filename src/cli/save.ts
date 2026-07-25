@@ -24,6 +24,7 @@ import {
 } from "../db/index.js";
 import {
   isUnsummarized,
+  preserveConfirmedRelationship,
   type ConversationMeta,
   type SavedConversationMeta,
 } from "../models/conversation.js";
@@ -102,7 +103,15 @@ export function buildSaveCommand(): Command {
           ? findScanCandidateForConversation(originalConversation, scanResult)
           : undefined;
         const sourceCurrentConversation = scanResult
-          ? attachCurrentSourceCandidate(originalConversation, scanResult)
+          ? {
+              ...attachCurrentSourceCandidate(
+                originalConversation,
+                scanResult,
+              ),
+              ...(liveCandidate
+                ? { createdAt: liveCandidate.metadata.createdAt }
+                : {}),
+            }
           : originalConversation;
         const conversation = attachCurrentRelationshipInspection(
           sourceCurrentConversation,
@@ -259,14 +268,18 @@ async function reinspectSavedRelationshipsIfNeeded(
     conversation.source,
     config,
   ).inspectRelationships(inspectionPath);
+  const refreshedInspection = preserveConfirmedRelationship(
+    conversation,
+    inspection,
+  );
   return {
     ...conversation,
     relationshipInspection: {
-      status: inspection.status,
-      version: inspection.version,
-      diagnostic: inspection.diagnostic,
+      status: refreshedInspection.status,
+      version: refreshedInspection.version,
+      diagnostic: refreshedInspection.diagnostic,
     },
-    relationships: inspection.relationships,
+    relationships: refreshedInspection.relationships,
   };
 }
 

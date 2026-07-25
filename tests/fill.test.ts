@@ -191,9 +191,9 @@ describe("clog fill", () => {
       sourceMtime: null,
       transcriptProjectionVersion: 2,
       relationshipInspection: {
-        status: "unknown",
-        version: 1,
-        diagnostic: "relationship_inspection_not_implemented",
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
       },
       relationships: [],
     });

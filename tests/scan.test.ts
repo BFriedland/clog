@@ -181,9 +181,9 @@ describe("ephemeral local source scans", () => {
       sourceId: ignoredId,
       sourceMtime: expect.any(String),
       relationshipInspection: {
-        status: "unknown",
-        version: 1,
-        diagnostic: "relationship_inspection_not_implemented",
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
       },
       relationships: [],
     });
@@ -413,7 +413,7 @@ describe("ephemeral local source scans", () => {
     const conversation = savedConversation(id, sourcePath, {
       relationshipInspection: {
         status: "unknown",
-        version: 2,
+        version: 3,
         diagnostic: "newer_inspection",
       },
     });
@@ -429,9 +429,9 @@ describe("ephemeral local source scans", () => {
     );
     const conversation = savedConversation(id, sourcePath, {
       relationshipInspection: {
-        status: "unknown",
-        version: 1,
-        diagnostic: "relationship_inspection_not_implemented",
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
       },
     });
     vi.spyOn(adapterRegistry, "getAdapter").mockReturnValue({
@@ -527,12 +527,150 @@ describe("ephemeral local source scans", () => {
 
     await expect(getConversationById(id)).resolves.toMatchObject({
       relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [],
+      transcriptProjectionVersion: 2,
+    });
+  });
+
+  it("persists a Claude Code child's fork-time createdAt only when explicitly refreshed", async () => {
+    const id = "70a00000-0000-4000-8000-000000000000";
+    const parentId = "70b00000-0000-4000-8000-000000000000";
+    const copiedHistoryCreatedAt = "2026-01-01T09:00:00.000Z";
+    const forkCreatedAt = "2026-02-01T11:00:00.000Z";
+    const sourcePath = path.join(
+      sourceRoot,
+      "project",
+      `${id}.jsonl`,
+    );
+    const records = [
+      {
+        type: "user",
+        uuid: "10000000-0000-4000-8000-000000000001",
+        timestamp: copiedHistoryCreatedAt,
+        sessionId: id,
+        forkedFrom: {
+          sessionId: parentId,
+          messageUuid: "10000000-0000-4000-8000-000000000001",
+        },
+        cwd: "/Users/alice/work/app",
+        message: { role: "user", content: "Copied parent prompt" },
+      },
+      {
+        type: "user",
+        uuid: "10000000-0000-4000-8000-000000000002",
+        timestamp: forkCreatedAt,
+        sessionId: id,
+        cwd: "/Users/alice/work/app",
+        message: { role: "user", content: "Fork prompt" },
+      },
+    ];
+    await writeJsonl(sourcePath, records);
+    const rawPath = path.join(
+      process.env.CLOG_HOME!,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(rawPath, records);
+    await insertConversation(savedConversation(id, sourcePath, {
+      filePath: rawPath,
+      createdAt: copiedHistoryCreatedAt,
+      relationshipInspection: {
         status: "unknown",
         version: 1,
         diagnostic: "relationship_inspection_not_implemented",
       },
-      relationships: [],
-      transcriptProjectionVersion: 2,
+    }));
+    await saveConfig(scanConfig());
+
+    await scanLocalSources(scanConfig());
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      createdAt: copiedHistoryCreatedAt,
+    });
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([id], { from: "user" });
+    });
+
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      createdAt: forkCreatedAt,
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+      }],
+    });
+  });
+
+  it("does not downgrade source-confirmed evidence during bare-save reinspection", async () => {
+    const id = "70aaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const confirmedParentId = "70bbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const inferredParentId = "70cccccc-cccc-cccc-cccc-cccccccccccc";
+    const rawPath = path.join(
+      process.env.CLOG_HOME!,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(rawPath, [
+      {
+        type: "assistant",
+        uuid: "10000000-0000-4000-8000-000000000001",
+        sessionId: id,
+        session_id: inferredParentId,
+      },
+      {
+        type: "assistant",
+        uuid: "10000000-0000-4000-8000-000000000002",
+        sessionId: id,
+        session_id: id,
+      },
+    ]);
+    const confirmedRelationship = {
+      kind: "branch" as const,
+      parent: {
+        source: "claude-code",
+        sourceId: confirmedParentId,
+      },
+      evidence: "source" as const,
+      branchPoint: null,
+    };
+    await insertConversation(savedConversation(id, rawPath, {
+      relationshipInspection: {
+        status: "linked",
+        version: 1,
+        diagnostic: null,
+      },
+      relationships: [confirmedRelationship],
+    }));
+    await saveConfig(scanConfig());
+
+    await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [confirmedRelationship],
     });
   });
 

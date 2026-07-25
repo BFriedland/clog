@@ -21,6 +21,7 @@ import {
   conversationBranchPointSchema,
   conversationRelationshipSchema,
   type OriginKind,
+  preserveConfirmedRelationship,
   type RelationshipInspection,
   type SavedConversationMeta,
   savedConversationMetaSchema,
@@ -405,38 +406,26 @@ function replaceRelationshipInspectionInDb(
   inspection: RelationshipInspection,
 ): SavedConversationMeta {
   const id = current.id;
+  const replacement = preserveConfirmedRelationship(current, inspection);
   const wouldRemoveStoredVersion =
-    inspection.version == null &&
+    replacement.version == null &&
     current.relationshipInspection.version != null;
   const wouldDowngradeStoredVersion =
-    inspection.version != null &&
+    replacement.version != null &&
     classifyAdapterVersion(
       current.relationshipInspection.version,
-      inspection.version,
+      replacement.version,
     ) === "version_skew";
   if (wouldRemoveStoredVersion || wouldDowngradeStoredVersion) {
     throw new ClogError(
-      `Conversation "${id}" uses relationship inspection version ${current.relationshipInspection.version}, but this clog build can only write version ${inspection.version}. Upgrade clog before reinspecting it.`,
-    );
-  }
-  if (
-    current.relationships.some(
-      (relationship) => relationship.evidence === "source",
-    ) &&
-    inspection.relationships.length > 0 &&
-    inspection.relationships.every(
-      (relationship) => relationship.evidence === "inferred",
-    )
-  ) {
-    throw new ClogError(
-      `Conversation "${id}" has a source-confirmed relationship that cannot be replaced by an inferred relationship.`,
+      `Conversation "${id}" uses relationship inspection version ${current.relationshipInspection.version}, but this clog build can only write version ${replacement.version}. Upgrade clog before reinspecting it.`,
     );
   }
 
   const rowsModified = unsafeReplaceRelationshipInspectionInDb(
     db,
     id,
-    inspection,
+    replacement,
   );
   if (rowsModified !== 1) {
     throw new ClogError(`Conversation "${id}" not found.`);

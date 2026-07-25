@@ -27,7 +27,7 @@ interface SourceAdapterRegistration {
 const REGISTRY: Record<string, SourceAdapterRegistration> = {
   "claude-code": {
     factory: (config) => new ClaudeCodeAdapter(config),
-    relationshipInspectionRefresh: false,
+    relationshipInspectionRefresh: true,
     versions: CLAUDE_CODE_ADAPTER_VERSIONS,
   },
   "codex-cli": {

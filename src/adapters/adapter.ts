@@ -74,17 +74,6 @@ export function classifyAdapterVersion(
   return "version_skew";
 }
 
-export function relationshipInspectionNotImplemented(
-  version: number,
-): RelationshipInspection {
-  return {
-    status: "unknown",
-    version,
-    diagnostic: "relationship_inspection_not_implemented",
-    relationships: [],
-  };
-}
-
 export async function globSourceFiles(
   pattern: string,
   cwd: string,

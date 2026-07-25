@@ -3163,9 +3163,9 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
       saveVersion: 1,
       transcriptProjectionVersion: 2,
       relationshipInspection: {
-        status: "unknown",
-        version: 1,
-        diagnostic: "relationship_inspection_not_implemented",
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
       },
       ...overrides,
     } as ConversationMeta;

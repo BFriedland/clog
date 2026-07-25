@@ -5,6 +5,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CLAUDE_CODE_ADAPTER_VERSIONS,
+} from "../src/adapters/claude-code.js";
+import {
   CODEX_CLI_ADAPTER_VERSIONS,
   CodexCliAdapter,
 } from "../src/adapters/codex-cli.js";
@@ -223,19 +226,203 @@ describe("saved relationship inspection refresh", () => {
     expect(rendered).not.toContain("transcript projection version");
   });
 
-  it("does not refresh Claude Code until its relationship inspection is registered", async () => {
+  it("refreshes a version-1 Claude Code row from its managed transcript", async () => {
+    const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const parentId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const managedPath = path.join(
+      tempDir,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(managedPath, [
+      claudeForkedRecord(id, parentId),
+      {
+        type: "user",
+        timestamp: "2026-07-24T11:00:00.000Z",
+        sessionId: id,
+      },
+    ]);
+    const saved = makeSavedConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      filePath: managedPath,
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+      transcriptProjectionVersion:
+        CLAUDE_CODE_ADAPTER_VERSIONS.transcriptProjection,
+    });
+    await insertConversation(saved);
+    const rawBefore = await fs.readFile(managedPath);
+
+    const report = await refreshSavedRelationshipInspections(config);
+    const updated = await getConversationById(id);
+
+    expect(report).toEqual([]);
+    expect(updated).toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+        diagnostic: null,
+      },
+      relationships: [{
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    expect(withoutRelationshipState(updated!)).toEqual(
+      withoutRelationshipState(saved),
+    );
+    await expect(fs.readFile(managedPath)).resolves.toEqual(rawBefore);
+  });
+
+  it("advances Claude Code inspection without replacing source evidence with inference", async () => {
+    const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const confirmedParentId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const inferredParentId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const managedPath = path.join(
+      tempDir,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(managedPath, [
+      {
+        type: "assistant",
+        uuid: "10000000-0000-4000-8000-000000000001",
+        sessionId: id,
+        session_id: inferredParentId,
+      },
+      {
+        type: "assistant",
+        uuid: "10000000-0000-4000-8000-000000000002",
+        sessionId: id,
+        session_id: id,
+      },
+    ]);
+    const confirmedRelationship = {
+      kind: "branch" as const,
+      parent: {
+        source: "claude-code",
+        sourceId: confirmedParentId,
+      },
+      evidence: "source" as const,
+      branchPoint: null,
+    };
+    await insertConversation(makeSavedConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      filePath: managedPath,
+      relationshipInspection: {
+        status: "linked",
+        version: 1,
+        diagnostic: null,
+      },
+      relationships: [confirmedRelationship],
+      transcriptProjectionVersion:
+        CLAUDE_CODE_ADAPTER_VERSIONS.transcriptProjection,
+    }));
+
+    const report = await refreshSavedRelationshipInspections(config);
+
+    expect(report).toEqual([]);
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+      },
+      relationships: [confirmedRelationship],
+    });
+  });
+
+  it("replaces inferred Claude Code evidence when source provenance appears", async () => {
+    const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const inferredParentId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const confirmedParentId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const managedPath = path.join(
+      tempDir,
+      "raw",
+      "claude-code",
+      `${id}.jsonl`,
+    );
+    await writeJsonl(managedPath, [
+      claudeForkedRecord(id, confirmedParentId),
+      {
+        type: "user",
+        timestamp: "2026-07-24T11:00:00.000Z",
+        sessionId: id,
+      },
+    ]);
+    await insertConversation(makeSavedConversation({
+      id,
+      sourceId: id,
+      source: "claude-code",
+      filePath: managedPath,
+      relationshipInspection: {
+        status: "linked",
+        version: 1,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: inferredParentId,
+        },
+        evidence: "inferred",
+        branchPoint: null,
+      }],
+      transcriptProjectionVersion:
+        CLAUDE_CODE_ADAPTER_VERSIONS.transcriptProjection,
+    }));
+
+    const report = await refreshSavedRelationshipInspections(config);
+
+    expect(report).toEqual([]);
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+      },
+      relationships: [{
+        parent: { sourceId: confirmedParentId },
+        evidence: "source",
+      }],
+    });
+  });
+
+  it("preserves a Claude Code row stamped by a newer inspection contract", async () => {
     const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const saved = makeSavedConversation({
       id,
       sourceId: id,
       source: "claude-code",
       filePath: path.join(tempDir, "missing.jsonl"),
+      relationshipInspection: {
+        status: "unknown",
+        version: 99,
+        diagnostic: "future_claude_inspection",
+      },
+      transcriptProjectionVersion:
+        CLAUDE_CODE_ADAPTER_VERSIONS.transcriptProjection,
     });
     await insertConversation(saved);
 
     const report = await refreshSavedRelationshipInspections(config);
 
-    expect(report).toEqual([]);
+    expect(report).toEqual([expect.objectContaining({
+      code: "adapter_version_skew",
+      source: "claude-code",
+    })]);
     await expect(getConversationById(id)).resolves.toEqual(saved);
   });
 
@@ -439,6 +626,19 @@ function codexSessionMeta(id: string, parentId?: string): unknown {
       forked_from_id: parentId,
       cwd: "/Users/alice/clog",
       timestamp: "2026-02-01T10:00:00.000Z",
+    },
+  };
+}
+
+function claudeForkedRecord(id: string, parentId: string): unknown {
+  const uuid = "10000000-0000-4000-8000-000000000001";
+  return {
+    type: "assistant",
+    uuid,
+    sessionId: id,
+    forkedFrom: {
+      sessionId: parentId,
+      messageUuid: uuid,
     },
   };
 }
