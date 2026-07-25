@@ -46,6 +46,13 @@ class SourceFileMissingError extends ClogError {
   }
 }
 
+class ConversationContentUnavailableError extends ClogError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationContentUnavailableError";
+  }
+}
+
 export interface DisplayRow {
   id: string;
   createdAt: string;
@@ -148,7 +155,7 @@ async function parseConversationTranscript(
   try {
     return await adapter.parseTranscript(contentPath);
   } catch (error) {
-    throw wrapMissingContentError(error, conversation, contentPath);
+    throw wrapTranscriptContentError(error, conversation, contentPath);
   }
 }
 
@@ -252,6 +259,7 @@ export function renderWarnings(warnings: ClogWarning[]): void {
   for (const warning of warnings) {
     const details = [
       warning.source ? `source=${warning.source}` : null,
+      warning.diagnostic ? `diagnostic=${warning.diagnostic}` : null,
       warning.path ? `path=${warning.path}` : null,
       warning.paths ? `paths=${warning.paths.join(", ")}` : null,
       warning.guidance ? `hint: ${warning.guidance}` : null,
@@ -290,7 +298,9 @@ type WarningOutputItem =
   | { kind: "warning"; warning: ClogWarning }
   | { kind: "group"; group: AggregatableWarningGroup };
 
-function collapseAggregatableWarnings(warnings: ClogWarning[]): ClogWarning[] {
+export function collapseAggregatableWarnings(
+  warnings: ClogWarning[],
+): ClogWarning[] {
   const groups = new Map<string, AggregatableWarningGroup>();
   const output: WarningOutputItem[] = [];
 
@@ -324,6 +334,7 @@ function collapseAggregatableWarnings(warnings: ClogWarning[]): ClogWarning[] {
     return {
       code: first.code,
       message: `${first.message} (${count} occurrences)`,
+      ...(first.diagnostic ? { diagnostic: first.diagnostic } : {}),
       guidance: addVerboseWarningsGuidance(first.guidance),
     };
   });
@@ -337,6 +348,7 @@ function getAggregatableWarningKey(warning: ClogWarning): string {
   return JSON.stringify([
     warning.code,
     warning.source ?? null,
+    warning.diagnostic ?? null,
     warning.message,
     warning.guidance ?? null,
   ]);
@@ -673,6 +685,7 @@ export function getTerminalWidth(): number {
 
 export type SavedDelta =
   | "clean"
+  | "content_unavailable"
   | "ready"
   | "source_ahead"
   | "version_skew";
@@ -737,7 +750,15 @@ export async function classifySavedDelta(
   }
 
   const config = await loadConfig();
-  const messages = await parseConversationMessages(config, conversation);
+  let messages: Message[];
+  try {
+    messages = await parseConversationMessages(config, conversation);
+  } catch (error) {
+    if (error instanceof ConversationContentUnavailableError) {
+      return "content_unavailable";
+    }
+    throw error;
+  }
   return messages.length > conversation.savedMessageCount ? "ready" : "clean";
 }
 
@@ -819,6 +840,11 @@ function wrapMissingContentError(
   attemptedPath: string,
 ): Error {
   if (!isMissingFileError(error)) {
+    if (isContentFileAccessError(error)) {
+      return new ConversationContentUnavailableError(
+        `Conversation content file cannot be read at ${attemptedPath}.`,
+      );
+    }
     return error instanceof Error ? error : new Error(String(error));
   }
 
@@ -827,12 +853,27 @@ function wrapMissingContentError(
   }
 
   if (conversation.filePath && attemptedPath === conversation.filePath) {
-    return new ClogError(
+    return new ConversationContentUnavailableError(
       `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
     );
   }
 
-  return new ClogError(`Conversation content file is missing at ${attemptedPath}.`);
+  return new ConversationContentUnavailableError(
+    `Conversation content file is missing at ${attemptedPath}.`,
+  );
+}
+
+function wrapTranscriptContentError(
+  error: unknown,
+  conversation: ConversationMeta,
+  attemptedPath: string,
+): Error {
+  if (error instanceof SyntaxError) {
+    return new ConversationContentUnavailableError(
+      `Conversation content file cannot be parsed at ${attemptedPath}.`,
+    );
+  }
+  return wrapMissingContentError(error, conversation, attemptedPath);
 }
 
 function wrapMissingPathError(
@@ -852,5 +893,18 @@ function isMissingFileError(error: unknown): boolean {
     typeof error === "object" &&
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function isContentFileAccessError(error: unknown): boolean {
+  if (
+    error == null ||
+    typeof error !== "object" ||
+    !("code" in error)
+  ) {
+    return false;
+  }
+  return ["ENOENT", "EACCES", "EPERM", "EISDIR"].includes(
+    String((error as NodeJS.ErrnoException).code),
   );
 }

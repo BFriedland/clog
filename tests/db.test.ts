@@ -16,7 +16,10 @@ import {
   insertFirstSavedConversation,
   listConversations,
   listConversationsNeedingIndex,
+  listConversationsWithNoncurrentRelationshipInspection,
+  listConversationsWithUnknownRelationshipInspection,
   replaceRelationshipInspection,
+  replaceRelationshipInspectionIfVersionMatches,
   resolveConversationId,
   setConversationIndexedAt,
   withDb,
@@ -628,6 +631,110 @@ describe("db", () => {
       },
       relationships: [],
     });
+  });
+
+  it("does not conditionally replace inspection state after its version changes", async () => {
+    const conversation = makeConversation({
+      source: "codex-cli",
+      sourceId: "22222222-2222-2222-2222-222222222222",
+    });
+    await insertConversation(conversation);
+    const relationship = (parentSourceId: string) => ({
+      status: "linked" as const,
+      version: 2,
+      diagnostic: null,
+      relationships: [{
+        kind: "branch" as const,
+        parent: {
+          source: "codex-cli",
+          sourceId: parentSourceId,
+        },
+        evidence: "source" as const,
+        branchPoint: null,
+      }],
+    });
+    const current = relationship(
+      "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    );
+    await replaceRelationshipInspection(conversation.id, current);
+
+    const staleReplacement =
+      await replaceRelationshipInspectionIfVersionMatches(
+        conversation.id,
+        null,
+        relationship("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+      );
+
+    expect(staleReplacement).toMatchObject({
+      replaced: false,
+      conversation: {
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+        },
+        relationships: current.relationships,
+      },
+    });
+    await expect(getConversationById(conversation.id)).resolves.toMatchObject({
+      relationships: current.relationships,
+    });
+  });
+
+  it("selects only noncurrent and current-unknown relationship inspections", async () => {
+    const conversations = [
+      makeConversation({
+        id: "a1111111-1111-1111-1111-111111111111",
+        sourceId: "a1111111-1111-1111-1111-111111111111",
+        source: "codex-cli",
+        relationshipInspection: {
+          status: "unknown",
+          version: 2,
+          diagnostic: "current_unknown",
+        },
+      }),
+      makeConversation({
+        id: "b2222222-2222-2222-2222-222222222222",
+        sourceId: "b2222222-2222-2222-2222-222222222222",
+        source: "codex-cli",
+        relationshipInspection: {
+          status: "none_found",
+          version: 1,
+          diagnostic: null,
+        },
+      }),
+      makeConversation({
+        id: "c3333333-3333-3333-3333-333333333333",
+        sourceId: "c3333333-3333-3333-3333-333333333333",
+        source: "codex-cli",
+        relationshipInspection: {
+          status: "unknown",
+          version: 99,
+          diagnostic: "future_unknown",
+        },
+      }),
+    ];
+    for (const conversation of conversations) {
+      await insertConversation(conversation);
+    }
+
+    const noncurrent =
+      await listConversationsWithNoncurrentRelationshipInspection(
+        "codex-cli",
+        2,
+      );
+    expect(noncurrent.map((conversation) => conversation.id).sort()).toEqual([
+      conversations[1]!.id,
+      conversations[2]!.id,
+    ]);
+
+    const currentUnknown =
+      await listConversationsWithUnknownRelationshipInspection(
+        "codex-cli",
+        2,
+      );
+    expect(currentUnknown.map((conversation) => conversation.id)).toEqual([
+      conversations[0]!.id,
+    ]);
   });
 
   it("migrates legacy origin into origin_kind and origin_ref", async () => {

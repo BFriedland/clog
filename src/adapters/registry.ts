@@ -17,6 +17,7 @@ import {
 
 interface SourceAdapterRegistration {
   factory: SourceAdapterFactory;
+  relationshipInspectionRefresh: boolean;
   versions: {
     relationshipInspection: number;
     transcriptProjection: number;
@@ -26,10 +27,12 @@ interface SourceAdapterRegistration {
 const REGISTRY: Record<string, SourceAdapterRegistration> = {
   "claude-code": {
     factory: (config) => new ClaudeCodeAdapter(config),
+    relationshipInspectionRefresh: false,
     versions: CLAUDE_CODE_ADAPTER_VERSIONS,
   },
   "codex-cli": {
     factory: (config) => new CodexCliAdapter(config),
+    relationshipInspectionRefresh: true,
     versions: CODEX_CLI_ADAPTER_VERSIONS,
   },
 };
@@ -82,4 +85,12 @@ export function getEnabledAdapters(config: Config): SourceAdapter[] {
       ([source]) => config.sources[source as keyof Config["sources"]]?.enabled !== false,
     )
     .map(([, registration]) => registration.factory(config));
+}
+
+export function getRelationshipInspectionRefreshAdapters(
+  config: Config,
+): SourceAdapter[] {
+  return Object.values(REGISTRY)
+    .filter((registration) => registration.relationshipInspectionRefresh)
+    .map((registration) => registration.factory(config));
 }

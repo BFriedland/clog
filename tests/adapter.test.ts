@@ -68,6 +68,7 @@ describe("adapters", () => {
         timestamp: "2026-02-01T10:00:00.000Z",
         payload: {
           id: "22222222-2222-2222-2222-222222222222",
+          cli_version: "0.145.0",
           cwd: "/Users/alice/project",
           timestamp: "2026-02-01T10:00:00.000Z",
         },
@@ -91,9 +92,12 @@ describe("adapters", () => {
     expect(discovered).toHaveLength(1);
     expect(discovered[0]).toMatchObject({
       relationshipInspection: {
-        status: "unknown",
+        status: source === "codex-cli" ? "none_found" : "unknown",
         version: adapter.relationshipInspectionVersion,
-        diagnostic: "relationship_inspection_not_implemented",
+        diagnostic:
+          source === "codex-cli"
+            ? null
+            : "relationship_inspection_not_implemented",
       },
       relationships: [],
     });
@@ -101,6 +105,248 @@ describe("adapters", () => {
     expect(transcript.warnings).toEqual([]);
     expect(scan.candidates).toHaveLength(1);
     expect(scan.candidates[0]?.sourceMtime).toBe(expectedSourceMtime);
+  });
+
+  describe("Codex contextual branch inspection", () => {
+    const parentId = "11111111-1111-1111-1111-111111111111";
+    const childId = "22222222-2222-2222-2222-222222222222";
+    const grandchildId = "33333333-3333-3333-3333-333333333333";
+    const siblingId = "44444444-4444-4444-4444-444444444444";
+
+    it.each(["0.144.0", "0.145.0"])(
+      "marks a standalone Codex %s rollout as inspected with no relationship",
+      async (cliVersion) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, { cliVersion }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "none_found",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: null,
+          relationships: [],
+        });
+      },
+    );
+
+    it("does not treat spawned-agent ownership as a branch relationship", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentThreadId: parentId }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "none_found",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [],
+      });
+    });
+
+    it("uses only canonical metadata when copied ancestor metadata conflicts", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId }),
+        codexSessionMeta(parentId, { parentId: grandchildId }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "linked",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "codex-cli",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    });
+
+    it("preserves immediate parents for chains, siblings, and absent parents", async () => {
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const cases = [
+        { id: childId, parentId },
+        { id: grandchildId, parentId: childId },
+        { id: siblingId, parentId },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          parentId: "99999999-9999-9999-9999-999999999999",
+        },
+      ];
+
+      for (const fixture of cases) {
+        const filePath = path.join(tempDir, `rollout-${fixture.id}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(fixture.id, { parentId: fixture.parentId }),
+        ]);
+        const inspection = await adapter.inspectRelationships(filePath);
+        expect(inspection).toMatchObject({
+          status: "linked",
+          relationships: [{
+            parent: {
+              source: "codex-cli",
+              sourceId: fixture.parentId,
+            },
+          }],
+        });
+      }
+    });
+
+    it("keeps malformed canonical parent evidence reviewable without an edge", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId: "not-a-thread-id" }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_parent_id_invalid",
+        relationships: [],
+      });
+    });
+
+    it("rejects parent IDs that merely end with a UUID", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          parentId: `prefix${parentId}`,
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_parent_id_invalid",
+        relationships: [],
+      });
+    });
+
+    it("returns an unknown diagnostic for a structurally invalid JSONL record", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeRawJsonlLines(filePath, ["null"]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_malformed_jsonl",
+        relationships: [],
+      });
+    });
+
+    it("does not infer an edge for a first-prompt-style fresh thread", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId),
+        {
+          type: "response_item",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Same first prompt" }],
+          },
+        },
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.status).toBe("none_found");
+      expect(inspection.relationships).toEqual([]);
+    });
+
+    it("ignores replayed message timestamps when selecting the parent", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId }),
+        {
+          type: "response_item",
+          timestamp: "2030-01-01T00:00:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Replayed prompt" }],
+          },
+        },
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.relationships[0]?.parent.sourceId).toBe(parentId);
+      expect(inspection.relationships[0]?.branchPoint).toBeNull();
+    });
+
+    it("keeps relationship inspection within the metadata line bound", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeRawJsonlLines(filePath, [
+        jsonLine(codexSessionMeta(childId, { parentId })),
+        ...validJsonlPadding(SCAN_METADATA_MAX_LINES - 1),
+        "{not: valid json",
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.status).toBe("linked");
+      expect(inspection.relationships[0]?.parent.sourceId).toBe(parentId);
+    });
+
+    it("continues discovery after a structurally invalid Codex file", async () => {
+      const sessionsDir = path.join(
+        tempDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "02",
+        "01",
+      );
+      const malformedPath = path.join(
+        sessionsDir,
+        `rollout-${childId}.jsonl`,
+      );
+      const validPath = path.join(
+        sessionsDir,
+        `rollout-${grandchildId}.jsonl`,
+      );
+      await writeRawJsonlLines(malformedPath, ["null"]);
+      await writeJsonl(validPath, [
+        codexSessionMeta(grandchildId),
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Valid conversation",
+          },
+        },
+      ]);
+
+      const config = getDefaultConfig("alice");
+      config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+      const warnings: ClogWarning[] = [];
+      const adapter = new CodexCliAdapter(config);
+      const discovered = await collect(
+        adapter.discover({
+          onWarning: (warning) => warnings.push(warning),
+        }),
+      );
+
+      expect(discovered).toHaveLength(1);
+      expect(discovered[0]?.sourceId).toBe(grandchildId);
+      expect(warnings).toEqual([expect.objectContaining({
+        code: "malformed_jsonl",
+        path: malformedPath,
+      })]);
+    });
   });
 
   it("Claude discovery extracts metadata from the first cwd and summary line", async () => {
@@ -1330,6 +1576,28 @@ function validJsonlPadding(count: number): string[] {
   return Array.from({ length: count }, (_entry, index) =>
     jsonLine({ type: "progress", message: `padding ${index}` }),
   );
+}
+
+function codexSessionMeta(
+  id: string,
+  options: {
+    cliVersion?: string;
+    parentId?: string;
+    parentThreadId?: string;
+  } = {},
+): unknown {
+  return {
+    type: "session_meta",
+    timestamp: "2026-02-01T10:00:00.000Z",
+    payload: {
+      id,
+      cli_version: options.cliVersion ?? "0.145.0",
+      forked_from_id: options.parentId,
+      parent_thread_id: options.parentThreadId,
+      cwd: "/Users/alice/project",
+      timestamp: "2026-02-01T10:00:00.000Z",
+    },
+  };
 }
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {

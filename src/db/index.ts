@@ -171,6 +171,46 @@ export async function listConversations(
   return withDb((db) => listConversationsInDb(db, filters), { mode: "read" });
 }
 
+export async function listConversationsWithNoncurrentRelationshipInspection(
+  source: string,
+  inspectionVersion: number,
+): Promise<SavedConversationMeta[]> {
+  return withDb((db) => {
+    const result = db.exec(
+      `
+        SELECT *
+        FROM conversations
+        WHERE source = ?
+          AND (
+            relationship_inspection_version IS NULL
+            OR relationship_inspection_version <> ?
+          )
+      `,
+      [source, inspectionVersion],
+    );
+    return resultToConversations(db, result);
+  }, { mode: "read" });
+}
+
+export async function listConversationsWithUnknownRelationshipInspection(
+  source: string,
+  inspectionVersion: number,
+): Promise<SavedConversationMeta[]> {
+  return withDb((db) => {
+    const result = db.exec(
+      `
+        SELECT *
+        FROM conversations
+        WHERE source = ?
+          AND relationship_status = 'unknown'
+          AND relationship_inspection_version = ?
+      `,
+      [source, inspectionVersion],
+    );
+    return resultToConversations(db, result);
+  }, { mode: "read" });
+}
+
 export async function browseValues(
   field: "author" | "project_name" | "tags_json",
 ): Promise<Array<{ name: string; count: number }>> {
@@ -323,50 +363,91 @@ export async function replaceRelationshipInspection(
     if (!current) {
       throw new ClogError(`Conversation "${id}" not found.`);
     }
-    const wouldRemoveStoredVersion =
-      inspection.version == null &&
-      current.relationshipInspection.version != null;
-    const wouldDowngradeStoredVersion =
-      inspection.version != null &&
-      classifyAdapterVersion(
-        current.relationshipInspection.version,
-        inspection.version,
-      ) === "version_skew";
-    if (wouldRemoveStoredVersion || wouldDowngradeStoredVersion) {
-      throw new ClogError(
-        `Conversation "${id}" uses relationship inspection version ${current.relationshipInspection.version}, but this clog build can only write version ${inspection.version}. Upgrade clog before reinspecting it.`,
-      );
-    }
-    if (
-      current.relationships.some(
-        (relationship) => relationship.evidence === "source",
-      ) &&
-      inspection.relationships.length > 0 &&
-      inspection.relationships.every(
-        (relationship) => relationship.evidence === "inferred",
-      )
-    ) {
-      throw new ClogError(
-        `Conversation "${id}" has a source-confirmed relationship that cannot be replaced by an inferred relationship.`,
-      );
-    }
+    return replaceRelationshipInspectionInDb(db, current, inspection);
+  }, { mode: "write" });
+}
 
-    const rowsModified = unsafeReplaceRelationshipInspectionInDb(
-      db,
-      id,
-      inspection,
-    );
-    if (rowsModified !== 1) {
+interface ConditionalRelationshipInspectionReplacement {
+  replaced: boolean;
+  conversation: SavedConversationMeta;
+}
+
+export async function replaceRelationshipInspectionIfVersionMatches(
+  id: string,
+  expectedVersion: number | null,
+  inspection: RelationshipInspection,
+): Promise<ConditionalRelationshipInspectionReplacement> {
+  return withDb((db) => {
+    const current = getConversationByIdInDb(db, id);
+    if (!current) {
       throw new ClogError(`Conversation "${id}" not found.`);
     }
-    const updated = getConversationByIdInDb(db, id);
-    if (!updated) {
-      throw new ClogError(
-        `Conversation "${id}" not found after relationship inspection update.`,
-      );
+    if (current.relationshipInspection.version !== expectedVersion) {
+      return {
+        replaced: false,
+        conversation: current,
+      };
     }
-    return updated;
+    return {
+      replaced: true,
+      conversation: replaceRelationshipInspectionInDb(
+        db,
+        current,
+        inspection,
+      ),
+    };
   }, { mode: "write" });
+}
+
+function replaceRelationshipInspectionInDb(
+  db: Database,
+  current: SavedConversationMeta,
+  inspection: RelationshipInspection,
+): SavedConversationMeta {
+  const id = current.id;
+  const wouldRemoveStoredVersion =
+    inspection.version == null &&
+    current.relationshipInspection.version != null;
+  const wouldDowngradeStoredVersion =
+    inspection.version != null &&
+    classifyAdapterVersion(
+      current.relationshipInspection.version,
+      inspection.version,
+    ) === "version_skew";
+  if (wouldRemoveStoredVersion || wouldDowngradeStoredVersion) {
+    throw new ClogError(
+      `Conversation "${id}" uses relationship inspection version ${current.relationshipInspection.version}, but this clog build can only write version ${inspection.version}. Upgrade clog before reinspecting it.`,
+    );
+  }
+  if (
+    current.relationships.some(
+      (relationship) => relationship.evidence === "source",
+    ) &&
+    inspection.relationships.length > 0 &&
+    inspection.relationships.every(
+      (relationship) => relationship.evidence === "inferred",
+    )
+  ) {
+    throw new ClogError(
+      `Conversation "${id}" has a source-confirmed relationship that cannot be replaced by an inferred relationship.`,
+    );
+  }
+
+  const rowsModified = unsafeReplaceRelationshipInspectionInDb(
+    db,
+    id,
+    inspection,
+  );
+  if (rowsModified !== 1) {
+    throw new ClogError(`Conversation "${id}" not found.`);
+  }
+  const updated = getConversationByIdInDb(db, id);
+  if (!updated) {
+    throw new ClogError(
+      `Conversation "${id}" not found after relationship inspection update.`,
+    );
+  }
+  return updated;
 }
 
 export function updateLocalConversationInDb(

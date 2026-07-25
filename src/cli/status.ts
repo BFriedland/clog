@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { Command } from "commander";
 
+import { classifyInstalledTranscriptProjectionVersion } from "../adapters/registry.js";
 import { loadConfig } from "../config/index.js";
 import {
   attachCurrentSourceCandidate,
@@ -19,7 +20,7 @@ import {
 } from "./common.js";
 import { colorizeStatusLabel, dimText } from "./colors.js";
 
-type StatusLabel = "unsaved" | "modified" | "source";
+type StatusLabel = "unsaved" | "modified" | "source" | "unreadable";
 type StatusTone = "ready" | "attention";
 
 interface StatusEntry {
@@ -58,8 +59,9 @@ export function buildStatusCommand(): Command {
       );
       const readySaved: ConversationMeta[] = [];
       const sourceAheadSaved: ConversationMeta[] = [];
+      const unreadableSaved: ConversationMeta[] = [];
       const cleanSaved: ConversationMeta[] = [];
-      const versionSkewSaved: ConversationMeta[] = [];
+      const projectionVersionSkewSaved: ConversationMeta[] = [];
       const showConversations = options.conversations === true || options.source === true;
 
       for (const conversation of saved) {
@@ -69,20 +71,29 @@ export function buildStatusCommand(): Command {
         );
         if (kind === "ready") {
           readySaved.push(conversation);
+        } else if (kind === "content_unavailable") {
+          unreadableSaved.push(conversation);
         } else if (kind === "source_ahead") {
           sourceAheadSaved.push(conversation);
         } else if (kind === "version_skew") {
-          versionSkewSaved.push(conversation);
+          if (
+            classifyInstalledTranscriptProjectionVersion(
+              conversation.source,
+              conversation.transcriptProjectionVersion,
+            ) === "version_skew"
+          ) {
+            projectionVersionSkewSaved.push(conversation);
+          }
         } else {
           cleanSaved.push(conversation);
         }
       }
 
       renderWarnings(
-        versionSkewSaved.map((conversation) => ({
+        projectionVersionSkewSaved.map((conversation) => ({
           code: "adapter_version_skew",
           message:
-            "A conversation was saved by a newer clog version.",
+            "A conversation uses a transcript projection version from a newer clog version.",
           source: conversation.source,
           conversation: {
             id: conversation.id,
@@ -120,6 +131,22 @@ export function buildStatusCommand(): Command {
             includeSource: options.source === true,
             showConversations,
           });
+        });
+      }
+
+      if (unreadableSaved.length > 0) {
+        sections.push(() => {
+          process.stdout.write("Saved conversations whose content files cannot be read:\n");
+          process.stdout.write(
+            `${dimText('  (restore the content file from a backup, or remove the conversation from clog with "clog remove <id>")')}\n`,
+          );
+          renderStatusEntries(
+            toStatusEntries(unreadableSaved, "unreadable", "attention"),
+            {
+              includeSource: options.source === true,
+              showConversations: true,
+            },
+          );
         });
       }
 

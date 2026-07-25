@@ -421,6 +421,35 @@ describe("ephemeral local source scans", () => {
     await expect(classifySavedDelta(conversation)).resolves.toBe("version_skew");
   });
 
+  it("propagates unexpected transcript parser failures while classifying saved changes", async () => {
+    const id = "70778888-8888-8888-8888-888888888888";
+    const sourcePath = await writeClaudeConversation(
+      id,
+      "/Users/alice/work/app",
+    );
+    const conversation = savedConversation(id, sourcePath, {
+      relationshipInspection: {
+        status: "unknown",
+        version: 1,
+        diagnostic: "relationship_inspection_not_implemented",
+      },
+    });
+    vi.spyOn(adapterRegistry, "getAdapter").mockReturnValue({
+      ...TEST_ADAPTER_CONTRACT,
+      name: "claude-code",
+      transcriptProjectionVersion: 2,
+      watchPaths: () => [],
+      discover: async function* () {},
+      parseTranscript: async () => {
+        throw new Error("unexpected adapter failure");
+      },
+    });
+
+    await expect(classifySavedDelta(conversation)).rejects.toThrow(
+      "unexpected adapter failure",
+    );
+  });
+
   it("rejects same-version saved and live relationship disagreement", () => {
     const id = "70888888-8888-8888-8888-888888888888";
     const sourcePath = path.join(tempDir, `${id}.jsonl`);

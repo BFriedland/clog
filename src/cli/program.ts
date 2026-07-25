@@ -55,7 +55,17 @@ export function buildProgram(): Command {
         return;
       }
 
-      await preAction({ interactive: Boolean(process.stdin.isTTY) });
+      const isConfigCommand =
+        actionCommand.name() === "config" ||
+        actionCommand.parent?.name() === "config";
+      await preAction({
+        interactive: Boolean(process.stdin.isTTY),
+        refreshRelationshipInspections: !isConfigCommand,
+        showRelationshipWarnings: actionCommand.name() === "status",
+        verboseWarnings:
+          actionCommand.name() === "status" &&
+          actionCommand.opts().verboseWarnings === true,
+      });
     });
 
   // These command groups mirror the command tables in README.md. Until the
