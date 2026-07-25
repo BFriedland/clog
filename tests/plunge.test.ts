@@ -275,7 +275,7 @@ describe("plunge", () => {
         sourceId: id,
         state: "saved",
         filePath: rawPath,
-        transcriptProjectionVersion: 2,
+        transcriptProjectionVersion: 3,
       }),
     );
 

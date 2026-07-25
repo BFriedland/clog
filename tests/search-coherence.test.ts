@@ -66,7 +66,8 @@ describe("isConversationSearchable (SPEC §10.7)", () => {
 
   it.each([
     null,
-    2,
+    1,
+    3,
   ])(
     "returns false when transcript projection version is %s",
     (transcriptProjectionVersion) => {
@@ -151,7 +152,7 @@ describe("projection-aware reindexing", () => {
     mockedGetSearchProviders.mockClear();
     const conversation = makeConversation({
       state: "saved",
-      transcriptProjectionVersion: 2,
+      transcriptProjectionVersion: 3,
       indexedAt: "2026-02-01T10:00:00.000Z",
     });
 
@@ -159,7 +160,7 @@ describe("projection-aware reindexing", () => {
       maybeReindexUpdatedConversation(conversation),
     ).resolves.toMatchObject({
       indexedAt: null,
-      transcriptProjectionVersion: 2,
+      transcriptProjectionVersion: 3,
     });
     expect(mockedGetSearchProviders).not.toHaveBeenCalled();
   });
@@ -366,7 +367,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
         savedAt: now,
         savedMessageCount: 0,
         saveVersion: 1,
-        transcriptProjectionVersion: 1,
+        transcriptProjectionVersion: 2,
         ...overrides,
       } as ConversationMeta
     : {

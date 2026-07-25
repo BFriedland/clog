@@ -336,12 +336,15 @@ describe("ephemeral local source scans", () => {
   });
 
   it.each([
-    0,
-    1,
-    2,
-  ])(
-    "treats a missing transcript projection version as refreshable with saved count %s",
-    async (savedMessageCount) => {
+    [null, 0],
+    [null, 1],
+    [null, 2],
+    [1, 0],
+    [1, 1],
+    [1, 2],
+  ] as const)(
+    "treats transcript projection version %s as refreshable with saved count %s",
+    async (transcriptProjectionVersion, savedMessageCount) => {
       const id = `70000000-0000-0000-0000-00000000000${savedMessageCount}`;
       const sourcePath = await writeClaudeConversation(
         id,
@@ -349,7 +352,7 @@ describe("ephemeral local source scans", () => {
       );
       const conversation = savedConversation(id, sourcePath, {
         savedMessageCount,
-        transcriptProjectionVersion: null,
+        transcriptProjectionVersion,
       });
 
       await expect(classifySavedDelta(conversation)).resolves.toBe("ready");
@@ -363,7 +366,7 @@ describe("ephemeral local source scans", () => {
       "/Users/alice/work/app",
     );
     const conversation = savedConversation(id, sourcePath, {
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
       relationshipInspection: {
         status: "unexamined",
         version: null,
@@ -390,7 +393,7 @@ describe("ephemeral local source scans", () => {
     }]);
     const conversation = savedConversation(id, sourcePath, {
       filePath: rawPath,
-      transcriptProjectionVersion: 2,
+      transcriptProjectionVersion: 3,
       relationshipInspection: {
         status: "unknown",
         version: 1,
@@ -500,7 +503,7 @@ describe("ephemeral local source scans", () => {
         diagnostic: "relationship_inspection_not_implemented",
       },
       relationships: [],
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
     });
   });
 
@@ -511,7 +514,7 @@ describe("ephemeral local source scans", () => {
       "/Users/alice/work/app",
     );
     const conversation = savedConversation(id, sourcePath, {
-      transcriptProjectionVersion: 2,
+      transcriptProjectionVersion: 3,
     });
     const parse = vi.spyOn(ClaudeCodeAdapter.prototype, "parseTranscript");
 
@@ -543,7 +546,7 @@ describe("ephemeral local source scans", () => {
     }]);
     await insertConversation(savedConversation(id, sourcePath, {
       filePath: rawPath,
-      transcriptProjectionVersion: 2,
+      transcriptProjectionVersion: 3,
     }));
     await saveConfig(scanConfig());
     const beforeRow = await getConversationById(id);
@@ -937,7 +940,7 @@ describe("ephemeral local source scans", () => {
       state: "saved",
       author: "current-save-author",
       tags: ["current", "release"],
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
       relationshipInspection: {
         status: "unknown",
         version: 1,
@@ -1047,6 +1050,6 @@ function savedConversationBase(id: string, sourcePath: string) {
       diagnostic: null,
     },
     relationships: [],
-    transcriptProjectionVersion: 1,
+    transcriptProjectionVersion: 2,
   };
 }

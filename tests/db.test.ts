@@ -1177,7 +1177,7 @@ function baseConversation() {
       diagnostic: null,
     },
     relationships: [],
-    transcriptProjectionVersion: 1,
+    transcriptProjectionVersion: 2,
   };
 }
 

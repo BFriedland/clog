@@ -113,7 +113,7 @@ describe("mcp handlers", () => {
         diagnostic: null,
       },
       relationships: [],
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
     });
   });
 
@@ -1306,7 +1306,7 @@ async function insertOtherSaved(
       diagnostic: null,
     },
     relationships: [],
-    transcriptProjectionVersion: 1,
+    transcriptProjectionVersion: 2,
     ...overrides,
   });
 }

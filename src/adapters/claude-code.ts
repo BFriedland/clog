@@ -4,10 +4,7 @@ import readline from "node:readline";
 import { createReadStream } from "node:fs";
 
 import type { Config } from "../config/schema.js";
-import type {
-  Message,
-  RelationshipInspection,
-} from "../models/conversation.js";
+import type { RelationshipInspection } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
@@ -19,6 +16,7 @@ import {
   globSourceFiles,
   relationshipInspectionNotImplemented,
 } from "./adapter.js";
+import { projectClaudeCodeTranscript } from "./claude-code-transcript.js";
 
 interface ClaudeJsonLine {
   type?: string;
@@ -28,14 +26,9 @@ interface ClaudeJsonLine {
   message?: {
     id?: string;
     role?: string;
-    content?: string | ClaudeContentBlock[];
+    content?: unknown;
   };
 }
-
-type ClaudeContentBlock =
-  | { type: "text"; text: string }
-  | { type: "thinking"; thinking: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown };
 
 const KNOWN_HIDDEN_USER_WRAPPER_BLOCKS = ["local-command-caveat"];
 const LOCAL_COMMAND_WRAPPER_REGEX =
@@ -43,7 +36,7 @@ const LOCAL_COMMAND_WRAPPER_REGEX =
 
 export const CLAUDE_CODE_ADAPTER_VERSIONS = {
   relationshipInspection: 1,
-  transcriptProjection: 1,
+  transcriptProjection: 2,
 } as const;
 
 export class ClaudeCodeAdapter implements SourceAdapter {
@@ -99,102 +92,10 @@ export class ClaudeCodeAdapter implements SourceAdapter {
   async parseTranscript(
     filePath: string,
   ): Promise<Transcript> {
-    const lines = await readJsonlFile<ClaudeJsonLine>(filePath);
-    const toolNames = new Map<string, string>();
-    const mergedAssistants = new Map<
-      string,
-      {
-        index: number;
-        timestamp: string | null;
-        blocks: ClaudeContentBlock[];
-      }
-    >();
-    const items: Array<
-      | { kind: "user"; index: number; line: ClaudeJsonLine }
-      | { kind: "assistant"; key: string; index: number }
-    > = [];
-
-    for (const [index, line] of lines.entries()) {
-      if (line.type === "user") {
-        items.push({ kind: "user", index, line });
-        continue;
-      }
-
-      if (line.type !== "assistant" || !line.message) {
-        continue;
-      }
-
-      const content = Array.isArray(line.message.content) ? line.message.content : [];
-      const key =
-        typeof line.message.id === "string" && line.message.id
-          ? line.message.id
-          : `assistant-${index}`;
-
-      if (!mergedAssistants.has(key)) {
-        mergedAssistants.set(key, {
-          index,
-          timestamp: normalizeTimestamp(line.timestamp),
-          blocks: [],
-        });
-        items.push({ kind: "assistant", key, index });
-      }
-
-      const merged = mergedAssistants.get(key);
-      if (!merged) {
-        continue;
-      }
-
-      for (const block of content) {
-        merged.blocks.push(block);
-        if (block.type === "tool_use" && typeof block.id === "string") {
-          toolNames.set(block.id, block.name);
-        }
-      }
-    }
-
-    items.sort((left, right) => left.index - right.index);
-
-    const messages: Message[] = [];
-
-    for (const item of items) {
-      if (item.kind === "user") {
-        const projected = projectClaudeUserLine(item.line, toolNames);
-        if (projected) {
-          messages.push(projected);
-        }
-        continue;
-      }
-
-      const merged = mergedAssistants.get(item.key);
-      if (!merged) {
-        continue;
-      }
-
-      for (const block of merged.blocks) {
-        if (block.type === "thinking") {
-          continue;
-        }
-
-        if (block.type === "text") {
-          messages.push({
-            role: "assistant",
-            content: block.text,
-            timestamp: merged.timestamp,
-          });
-          continue;
-        }
-
-        messages.push({
-          role: "tool_use",
-          content: `${block.name}: ${summarizeToolInput(block.input)}`,
-          timestamp: merged.timestamp,
-          toolName: block.name,
-          toolInput: block.input,
-        });
-      }
-    }
-
-    return { messages, warnings: [] };
+    return projectClaudeCodeTranscript(
+      await readJsonlFile<unknown>(filePath),
+      filePath,
+    );
   }
 
   watchPaths(): string[] {
@@ -311,59 +212,6 @@ export class ClaudeCodeAdapter implements SourceAdapter {
   }
 }
 
-function projectClaudeUserLine(
-  line: ClaudeJsonLine,
-  toolNames: Map<string, string>,
-): Message | null {
-  const content = line.message?.content;
-  const timestamp = normalizeTimestamp(line.timestamp);
-
-  if (typeof content === "string") {
-    const projected = normalizeClaudeVisibleUserText(content);
-    if (!projected) {
-      return null;
-    }
-
-    return {
-      role: "user",
-      content: projected,
-      timestamp,
-    };
-  }
-
-  if (!Array.isArray(content)) {
-    return null;
-  }
-
-  const toolResultBlock = content.find(
-    (block) =>
-      typeof block === "object" &&
-      block !== null &&
-      "type" in block &&
-      (block as { type?: string }).type === "tool_result",
-  ) as
-    | {
-        tool_use_id?: string;
-        is_error?: boolean;
-      }
-    | undefined;
-
-  if (!toolResultBlock) {
-    return null;
-  }
-
-  const toolName =
-    (toolResultBlock.tool_use_id && toolNames.get(toolResultBlock.tool_use_id)) ?? "tool";
-  const status = toolResultBlock.is_error ? "error" : "ok";
-
-  return {
-    role: "tool_result",
-    content: `${toolName}: ${status}`,
-    timestamp,
-    toolName,
-  };
-}
-
 function truncateTitle(value: string): string {
   return value.length <= 100 ? value : value.slice(0, 100);
 }
@@ -436,15 +284,6 @@ function decodeClaudeWrapperText(text: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
-}
-
-function summarizeToolInput(input: unknown): string {
-  if (input == null) {
-    return "{}";
-  }
-
-  const json = JSON.stringify(input);
-  return json.length <= 120 ? json : `${json.slice(0, 117)}...`;
 }
 
 function normalizeTimestamp(value: unknown): string | null {

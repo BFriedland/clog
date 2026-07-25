@@ -7,7 +7,18 @@ export type ClogWarningCode =
   | "missing_source_file"
   | "source_discovery_incomplete"
   | "adapter_version_skew"
+  | ClaudeTranscriptWarningCode
   | PairWarningCode;
+
+type ClaudeTranscriptWarningCode =
+  | "claude_transcript_leaf_order_fallback"
+  | "claude_transcript_legacy_file_order"
+  | "claude_transcript_malformed_graph_record"
+  | "claude_transcript_missing_parent"
+  | "claude_transcript_duplicate_uuid"
+  | "claude_transcript_parent_cycle"
+  | "claude_transcript_tool_result_mismatch"
+  | "claude_transcript_compaction_history_missing";
 
 type PairWarningCode =
   | "pair_incomplete"

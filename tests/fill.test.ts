@@ -90,7 +90,7 @@ describe("clog fill", () => {
     vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
       name: "claude-code",
       relationshipInspectionVersion: 1,
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
       watchPaths: () => [],
       inspectRelationships: async () => ({
         status: "unknown",
@@ -189,7 +189,7 @@ describe("clog fill", () => {
       originKind: "file",
       savedMessageCount: 2,
       sourceMtime: null,
-      transcriptProjectionVersion: 1,
+      transcriptProjectionVersion: 2,
       relationshipInspection: {
         status: "unknown",
         version: 1,
@@ -1281,7 +1281,7 @@ describe("clog fill", () => {
         originKind: "file",
         originRef: null,
         title: "Old",
-        transcriptProjectionVersion: 2,
+        transcriptProjectionVersion: 3,
       }),
     })).toMatchObject({
       kind: "skip",
