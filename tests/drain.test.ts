@@ -67,7 +67,24 @@ describe("clog drain archive transport", () => {
 
   it("writes a deterministic zip by default and preserves pair bytes", async () => {
     const id = "d1111111-1111-1111-1111-111111111111";
-    const conversation = await seedSavedConversation(id, { title: "Default archive" });
+    const parentId = "d1010101-1010-1010-1010-101010101010";
+    const conversation = await seedSavedConversation(id, {
+      title: "Default archive",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
     process.chdir(tempDir);
 
     const first = await runBuiltCommandCapturingError(buildDrainCommand, [id]);
@@ -84,6 +101,24 @@ describe("clog drain archive transport", () => {
     expect(Buffer.from(decoded[`claude-code/${id}.jsonl`]!)).toEqual(
       await fs.readFile(conversation.filePath!),
     );
+    expect(JSON.parse(
+      Buffer.from(decoded[`claude-code/${id}.meta.json`]!).toString("utf8"),
+    )).toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
 
     await fs.rm(path.join(tempDir, "clog-export.zip"));
     await runBuiltCommandCapturingError(buildDrainCommand, [id]);
@@ -137,6 +172,54 @@ describe("clog drain archive transport", () => {
     expect(Object.keys(unzipSync(await fs.readFile(explicitOutput)))).toContain(
       `claude-code/${conversation.id}.meta.json`,
     );
+  });
+
+  it("exports every concrete branch selected by project", async () => {
+    const parentId = "d1313131-1313-1313-1313-131313131313";
+    const childId = "d1414141-1414-1414-1414-141414141414";
+    await seedSavedConversation(parentId, {
+      title: "Branch parent",
+      projectName: "branched-project",
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    });
+    await seedSavedConversation(childId, {
+      title: "Branch child",
+      projectName: "branched-project",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    const output = path.join(tempDir, "branched-project.zip");
+
+    const result = await runBuiltCommandCapturingError(buildDrainCommand, [
+      "project:branched-project",
+      "-o",
+      output,
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain("Exported 2 conversations");
+    expect(Object.keys(unzipSync(await fs.readFile(output)))).toEqual([
+      `claude-code/${parentId}.jsonl`,
+      `claude-code/${parentId}.meta.json`,
+      `claude-code/${childId}.jsonl`,
+      `claude-code/${childId}.meta.json`,
+    ]);
   });
 
   it("resolves saved IDs when filters exclude all unseen unsaved conversations", async () => {

@@ -427,7 +427,7 @@ function toClogWarning(warning: RelationshipGraphWarning): ClogWarning {
   return {
     code: warning.code,
     message:
-      "A conversation identifies itself as its branch parent. Clog ignored the invalid edge.",
+      "A conversation identifies itself as its branch parent. Clog ignored the invalid parent relationship.",
     guidance:
       "Inspect the conversation's branch metadata in its source file before saving the conversation again.",
     conversation: {

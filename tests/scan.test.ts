@@ -1559,6 +1559,101 @@ describe("ephemeral local source scans", () => {
     });
   });
 
+  it("save --all writes every concrete member of a discovered branch graph", async () => {
+    const parentId = "a7878787-7878-7878-7878-787878787878";
+    const childId = "a7979797-7979-7979-7979-797979797979";
+    const parentPath = await writeClaudeConversation(
+      parentId,
+      "/Users/alice/work/app",
+    );
+    const childPath = await writeClaudeConversation(
+      childId,
+      "/Users/alice/work/app",
+    );
+    const relationship = {
+      kind: "branch" as const,
+      parent: {
+        source: "claude-code",
+        sourceId: parentId,
+      },
+      evidence: "source" as const,
+      branchPoint: null,
+    };
+    const discovered = [
+      {
+        sourceId: parentId,
+        sourcePath: parentPath,
+        metadata: {
+          title: "Branch parent",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-01T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "none_found" as const,
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [],
+      },
+      {
+        sourceId: childId,
+        sourcePath: childPath,
+        metadata: {
+          title: "Branch child",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-02T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "linked" as const,
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [relationship],
+      },
+    ];
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
+      name: "claude-code",
+      relationshipInspectionVersion: 2,
+      watchPaths: () => [],
+      async *discover() {
+        yield* discovered;
+      },
+    }]);
+    await saveConfig(scanConfig());
+
+    const output = await captureOutput(async () => {
+      const command = buildSaveCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+
+    expect(output.stdout).toContain("Saved 2 conversation(s)");
+    await expect(getConversationById(parentId)).resolves.toMatchObject({
+      state: "saved",
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    });
+    await expect(getConversationById(childId)).resolves.toMatchObject({
+      state: "saved",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [relationship],
+    });
+  });
+
   it("does not discover local sources for bare save", async () => {
     const discover = vi.fn(async function* () {
       throw new Error("bare save must not scan");

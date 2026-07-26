@@ -174,7 +174,25 @@ describe("clog fill", () => {
 
   it("imports a clog archive through the existing pair plan and write pipeline", async () => {
     const id = "a0353535-3535-3535-3535-353535353535";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Archived pair" }, 2);
+    const parentId = "a0363636-3636-3636-3636-363636363636";
+    await writePairFixture(pairDir, id, {
+      author: "bob",
+      title: "Archived pair",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    }, 2);
     const archivePath = path.join(tempDir, "portable.bin");
     await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
 
@@ -191,11 +209,70 @@ describe("clog fill", () => {
       sourceMtime: null,
       transcriptProjectionVersion: 2,
       relationshipInspection: {
-        status: "none_found",
+        status: "linked",
         version: 2,
         diagnostic: null,
       },
-      relationships: [],
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    expect(await getConversationById(parentId)).toBeNull();
+  });
+
+  it("preserves abandoned Claude Code paths in managed JSONL during archive fill", async () => {
+    const id = "a0373737-3737-4373-8373-373737373737";
+    const fixtureDocument = JSON.parse(
+      await fs.readFile(
+        new URL("./fixtures/claude-code-transcript-projection.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      fixtures: Array<{
+        name: string;
+        sourceRecords: unknown[];
+        expected: { messages: unknown[] };
+      }>;
+    };
+    const rewind = fixtureDocument.fixtures.find(
+      (fixture) => fixture.name === "single-rewind",
+    );
+    if (!rewind) {
+      throw new Error("Missing single-rewind fixture.");
+    }
+    const rawJsonl =
+      `${rewind.sourceRecords.map((record) => JSON.stringify(record)).join("\n")}\n`;
+    await writePair({
+      metaPath: path.join(pairDir, `${id}.meta.json`),
+      jsonlPath: path.join(pairDir, `${id}.jsonl`),
+      meta: makePairMetadata(id, {
+        author: "bob",
+        title: "Rewind archive",
+      }),
+      jsonl: rawJsonl,
+    });
+    const archivePath = path.join(tempDir, "rewind.zip");
+    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [
+      archivePath,
+    ]);
+
+    expect(result.error).toBeNull();
+    expect(await fs.readFile(
+      getImportConversationPath("claude-code", id),
+      "utf8",
+    )).toBe(rawJsonl);
+    expect(rawJsonl).toContain("It has been updated.");
+    expect(await getConversationById(id)).toMatchObject({
+      savedMessageCount: rewind.expected.messages.length,
+      transcriptProjectionVersion: 2,
     });
   });
 
@@ -973,6 +1050,80 @@ describe("clog fill", () => {
     row = await getConversationById(id);
     expect(row?.savedMessageCount).toBe(2);
     expect(await fs.readFile(managedPath, "utf8")).toContain("Message 1");
+  });
+
+  it("copies incoming raw content and invalidates vectors when projection changes at the same message count", async () => {
+    const id = "aa9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a";
+    await writePairFixture(
+      pairDir,
+      id,
+      { author: "bob", title: "Projection refresh" },
+      1,
+      "New projection",
+    );
+    const managedPath = getImportConversationPath("claude-code", id);
+    await fs.mkdir(path.dirname(managedPath), { recursive: true });
+    await fs.writeFile(managedPath, "old managed bytes\n", "utf8");
+    const existing = conversation({
+      id,
+      sourceId: id,
+      author: "bob",
+      title: "Projection refresh",
+      originKind: "file",
+      originRef: null,
+      sourcePath: managedPath,
+      filePath: managedPath,
+      sourceMtime: null,
+      indexedAt: "2026-03-01T10:00:00.000Z",
+      transcriptProjectionVersion: 1,
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    });
+    await insertConversation(existing);
+
+    const incoming = validatedPairFromFixture(pairDir, id, {
+      author: "bob",
+      title: "Projection refresh",
+    });
+    incoming.transcriptProjectionVersion = 2;
+    incoming.relationshipInspection = {
+      status: "none_found",
+      version: 2,
+      diagnostic: null,
+      relationships: [],
+    };
+    const plan = planFill({
+      candidates: [{ kind: "valid", pair: incoming }],
+      existingRows: [existing],
+      mode: "file",
+      author: "alice",
+      importTime: "2026-03-01T11:00:00.000Z",
+      getManagedPath: () => managedPath,
+    });
+    const action = plan.actions[0];
+
+    expect(action).toMatchObject({
+      kind: "update",
+      copyContent: true,
+      conversation: {
+        savedMessageCount: 1,
+        transcriptProjectionVersion: 2,
+        indexedAt: null,
+      },
+    });
+    if (action?.kind !== "update") {
+      throw new Error("Expected a fill update.");
+    }
+    await withDb((db) => applyFillWriteAction(db, action), { mode: "write" });
+
+    expect(await fs.readFile(managedPath, "utf8")).toContain("New projection 0");
+    expect(await getConversationById(id)).toMatchObject({
+      transcriptProjectionVersion: 2,
+      indexedAt: null,
+    });
   });
 
   it("applies clogignore import rules and reports one detailed skip", async () => {

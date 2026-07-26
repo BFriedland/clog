@@ -498,7 +498,7 @@ function mergeFilePairIntoConversation(
   }
 
   return {
-    copyContent: contentChanged || pathChanged,
+    copyContent: contentChanged || projectionChanged || pathChanged,
     conversation: {
       ...existing,
       sourceId: pair.meta.id,

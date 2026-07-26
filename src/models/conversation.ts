@@ -110,7 +110,7 @@ export type ConversationRelationship = z.infer<
   typeof conversationRelationshipSchema
 >;
 
-const relationshipInspectionStateSchema = z.object({
+export const relationshipInspectionStateSchema = z.object({
   status: z.enum(["unexamined", "none_found", "linked", "unknown"]),
   version: z.number().int().positive().nullable(),
   diagnostic: z.string().min(1).nullable(),
@@ -146,7 +146,7 @@ export function preserveConfirmedRelationship(
     incoming.relationships.length > 0 &&
     incoming.relationships.every(
       (relationship) => relationship.evidence === "inferred",
-  );
+    );
   if (currentHasConfirmedRelationship && incomingHasOnlyInferredRelationships) {
     return {
       status: "linked",
