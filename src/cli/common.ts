@@ -61,6 +61,7 @@ export interface DisplayRow {
   projectName: string | null;
   author?: string | null;
   title: string;
+  titleSuffix?: string;
   dim?: boolean;
 }
 
@@ -259,6 +260,9 @@ export function renderWarnings(warnings: ClogWarning[]): void {
   for (const warning of warnings) {
     const details = [
       warning.source ? `source=${warning.source}` : null,
+      warning.conversation
+        ? `conversation=${formatWarningConversation(warning.conversation)}`
+        : null,
       warning.diagnostic ? `diagnostic=${warning.diagnostic}` : null,
       warning.path ? `path=${warning.path}` : null,
       warning.paths ? `paths=${warning.paths.join(", ")}` : null,
@@ -268,6 +272,12 @@ export function renderWarnings(warnings: ClogWarning[]): void {
     const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
     process.stderr.write(`warning: ${warning.message}${suffix}\n`);
   }
+}
+
+function formatWarningConversation(
+  conversation: NonNullable<ClogWarning["conversation"]>,
+): string {
+  return `${conversation.id.slice(0, 8)}@${conversation.source}`;
 }
 
 export function getScanWarningsForCommand(
@@ -395,7 +405,7 @@ export function formatForSingleLine(value: string): string {
 }
 
 export function renderConversationTable(
-  conversations: ConversationMeta[],
+  conversations: Array<ConversationMeta & { titleSuffix?: string }>,
   options: {
     emptyMessage?: string;
     includeState?: boolean;
@@ -418,6 +428,7 @@ export function renderConversationTable(
       projectName: conversation.projectName,
       author: conversation.author,
       title: conversation.title,
+      titleSuffix: conversation.titleSuffix,
     })),
     options,
   );
@@ -521,7 +532,10 @@ export function renderDisplayTable(
   for (const row of rows) {
     const line = computedColumns
       .map((column) => {
-        const value = padCell(column.value(row), column.width);
+        const value =
+          column.key === "title"
+            ? formatTitleCell(row.title, row.titleSuffix, column.width)
+            : padCell(column.value(row), column.width);
         if (options.stateLabelMode && column.key === "state") {
           return colorizeStateLabel(value, {
             state: row.state as ConversationMeta["state"],
@@ -558,6 +572,38 @@ function padCell(value: string, width: number): string {
   }
 
   return `${singleLine.slice(0, width - 3)}...`;
+}
+
+// Spaces between a truncated title's "..." and its right-anchored note, so the
+// note does not read as part of the cut-off title.
+const TITLE_SUFFIX_TRUNCATED_GAP = 2;
+
+// Render the title cell, keeping a short right-anchored note (e.g. a branch
+// count) visible by reserving its width before the title is truncated. Without
+// the reservation the note is appended to the title and is the first thing lost
+// to "..." on a long title.
+function formatTitleCell(
+  title: string,
+  titleSuffix: string | undefined,
+  width: number,
+): string {
+  if (!titleSuffix) {
+    return padCell(title, width);
+  }
+
+  const combined = `${title} ${titleSuffix}`;
+  if (formatForSingleLine(combined).length <= width) {
+    return padCell(combined, width);
+  }
+
+  const available = width - 3 - TITLE_SUFFIX_TRUNCATED_GAP - titleSuffix.length;
+  if (available < 1) {
+    // Column too narrow to reserve the note; fall back to plain truncation.
+    return padCell(combined, width);
+  }
+
+  const truncatedTitle = formatForSingleLine(title).slice(0, available);
+  return `${truncatedTitle}...${" ".repeat(TITLE_SUFFIX_TRUNCATED_GAP)}${titleSuffix}`;
 }
 
 function formatDate(value: string): string {

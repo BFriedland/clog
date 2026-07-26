@@ -20,7 +20,9 @@ import {
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import {
   attachCurrentRelationshipInspection,
+  buildRelatedConversationView,
   buildDiscoveredConversation,
+  composeConversationView,
   listConversationView,
   resolveConversationView,
 } from "../src/conversations/view.js";
@@ -303,9 +305,91 @@ describe("ephemeral local source scans", () => {
     );
 
     expect(all).toHaveLength(1);
-    expect(all[0]?.state).toBe("saved");
+    expect(all[0]).toMatchObject({
+      state: "saved",
+      sourceMtime: snapshot.candidates[0]?.sourceMtime,
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+      relationships: [],
+    });
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      sourceMtime: "2026-02-01T10:00:00.000Z",
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+    });
     await expect(resolveConversationView(id, { scanSnapshot: snapshot })).resolves.toMatchObject({
       state: "saved",
+    });
+  });
+
+  it("keeps known relatives outside a lifecycle filter in the graph universe", async () => {
+    const parentId = "67777777-7777-7777-7777-777777777777";
+    const childId = "68888888-8888-8888-8888-888888888888";
+    await insertConversation(savedConversation(parentId, "/managed/parent.jsonl"));
+    const snapshot = {
+      scanTime: "2026-02-02T10:00:00.000Z",
+      author: "alice",
+      candidates: [{
+        source: "claude-code",
+        sourceId: childId,
+        sourcePath: "/live/child.jsonl",
+        sourceMtime: "2026-02-02T10:00:00.000Z",
+        metadata: {
+          title: "Unsaved child",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-02T09:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "linked" as const,
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch" as const,
+          parent: { source: "claude-code", sourceId: parentId },
+          evidence: "source" as const,
+          branchPoint: null,
+        }],
+      }],
+      ignoredCandidates: [],
+      sourceStatuses: [{ source: "claude-code", complete: true }],
+    };
+
+    const saved = await composeConversationView(
+      { states: ["saved"] },
+      snapshot,
+    );
+    const unsaved = await composeConversationView(
+      { states: ["unsaved"] },
+      snapshot,
+    );
+    const [savedGraph] = buildRelatedConversationView(
+      saved.graphUniverse,
+      saved.conversations,
+    );
+    const [unsavedGraph] = buildRelatedConversationView(
+      unsaved.graphUniverse,
+      unsaved.conversations,
+    );
+
+    expect(savedGraph).toMatchObject({
+      conversation: { id: parentId },
+      memberCount: 1,
+      hasMoreMemberConversations: true,
+    });
+    expect(unsavedGraph).toMatchObject({
+      conversation: { id: childId },
+      memberCount: 1,
+      hasMoreMemberConversations: true,
     });
   });
 
@@ -500,6 +584,102 @@ describe("ephemeral local source scans", () => {
         }],
       }),
     ).toThrow(/conflicting saved and live relationship metadata/);
+  });
+
+  it("reports same-version saved and live disagreement in read-only graph views", async () => {
+    const id = "70889999-8888-8888-8888-888888888888";
+    const sourcePath = path.join(tempDir, `${id}.jsonl`);
+    const savedParentId = "saved-parent";
+    const liveParentId = "live-parent";
+    await insertConversation(savedConversation(id, sourcePath, {
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: savedParentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    }));
+    const snapshot = {
+      scanTime: "2026-02-01T11:00:00.000Z",
+      author: "alice",
+      candidates: [{
+        source: "claude-code",
+        sourceId: id,
+        sourcePath,
+        sourceMtime: "2026-02-01T11:00:00.000Z",
+        metadata: {
+          title: "Live title",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-01T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "linked" as const,
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch" as const,
+          parent: {
+            source: "claude-code",
+            sourceId: liveParentId,
+          },
+          evidence: "source" as const,
+          branchPoint: null,
+        }],
+      }],
+      ignoredCandidates: [],
+      sourceStatuses: [{ source: "claude-code", complete: true }],
+    };
+
+    const composition = await composeConversationView(
+      { states: ["saved"] },
+      snapshot,
+    );
+    const [related] = buildRelatedConversationView(
+      composition.graphUniverse,
+      composition.conversations,
+      { relationshipOverrides: composition.relationshipOverrides },
+    );
+
+    expect(composition.conversations[0]).toMatchObject({
+      sourceMtime: "2026-02-01T11:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        parent: {
+          source: "claude-code",
+          sourceId: savedParentId,
+        },
+      }],
+    });
+    expect(related).toMatchObject({
+      immediateParentRelationship: null,
+      relationshipCompleteness: "invalid",
+      relationshipWarnings: [{
+        code: "conversation_relationship_observation_conflict",
+        conversation: {
+          source: "claude-code",
+          sourceId: id,
+        },
+      }],
+    });
+    await expect(
+      resolveConversationView(id, { scanSnapshot: snapshot }),
+    ).resolves.toMatchObject({ id, state: "saved" });
   });
 
   it("reinspects a stale saved relationship during a bare save", async () => {
@@ -935,6 +1115,167 @@ describe("ephemeral local source scans", () => {
     expect(output.stdout).toContain("Ignored");
   });
 
+  it("collapses related ignored rows in list --all and restores them with --all-branches", async () => {
+    const parentId = "d5000001-4444-4444-4444-444444444444";
+    const childId = "d5000002-4444-4444-4444-444444444444";
+    const parentPath = await writeClaudeConversation(parentId, "/Users/alice/work/app");
+    const childPath = await writeClaudeConversation(childId, "/Users/alice/work/app");
+    const parentTime = new Date("2026-02-01T10:00:00.000Z");
+    const childTime = new Date("2026-02-02T10:00:00.000Z");
+    await fs.utimes(parentPath, parentTime, parentTime);
+    await fs.utimes(childPath, childTime, childTime);
+    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+    await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), `${childId}\n`);
+    const discover = async function* () {
+      yield {
+        sourceId: parentId,
+        sourcePath: parentPath,
+        metadata: {
+          title: "Visible parent",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-01T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "none_found" as const,
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [],
+      };
+      yield {
+        sourceId: childId,
+        sourcePath: childPath,
+        metadata: {
+          title: "Ignored child",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-02-02T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "linked" as const,
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch" as const,
+          parent: { source: "claude-code", sourceId: parentId },
+          evidence: "source" as const,
+          branchPoint: null,
+        }],
+      };
+    };
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
+      name: "claude-code",
+      watchPaths: () => [],
+      discover,
+    }]);
+    await saveConfig(scanConfig());
+
+    const collapsed = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+    const expanded = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all", "--all-branches"], { from: "user" });
+    });
+
+    expect(collapsed.stdout).not.toContain(parentId.slice(0, 8));
+    expect(collapsed.stdout).toContain(childId.slice(0, 8));
+    expect(collapsed.stdout).toContain("ignored");
+    expect(expanded.stdout).toContain(parentId.slice(0, 8));
+    expect(expanded.stdout).toContain(childId.slice(0, 8));
+    await expect(getConversationById(parentId)).resolves.toBeNull();
+    await expect(getConversationById(childId)).resolves.toBeNull();
+  });
+
+  it("merges a matching ignored source observation into its saved list row", async () => {
+    const parentId = "d5111111-4444-4444-4444-444444444444";
+    const childId = "d5222222-4444-4444-4444-444444444444";
+    const parentPath = await writeClaudeConversation(
+      parentId,
+      "/Users/alice/work/app",
+    );
+    const currentParentTime = new Date("2026-03-01T00:00:00.000Z");
+    await fs.utimes(parentPath, currentParentTime, currentParentTime);
+    await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
+    await fs.writeFile(
+      path.join(process.env.CLOG_HOME!, "clogignore"),
+      `${parentId}\n`,
+    );
+    await insertConversation(savedConversation(parentId, parentPath, {
+      title: "Curated saved parent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceMtime: "2026-01-01T00:00:00.000Z",
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    }));
+    await insertConversation(savedConversation(
+      childId,
+      "/managed/child.jsonl",
+      {
+        title: "Saved child",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        sourceMtime: "2026-02-02T00:00:00.000Z",
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      },
+    ));
+    await saveConfig(scanConfig());
+
+    const collapsed = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all"], { from: "user" });
+    });
+    const expanded = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--all-branches"],
+        { from: "user" },
+      );
+    });
+
+    expect(collapsed.stdout).toContain(parentId.slice(0, 8));
+    expect(collapsed.stdout).toContain("Curated saved parent");
+    expect(collapsed.stdout).not.toContain(childId.slice(0, 8));
+    expect(
+      expanded.stdout
+        .split("\n")
+        .filter((line) => line.startsWith(parentId.slice(0, 8))),
+    ).toHaveLength(1);
+    expect(expanded.stdout).toContain(childId.slice(0, 8));
+    expect(expanded.stdout).not.toContain("ignored");
+    expect(expanded.stdout).not.toContain("[2 branches]");
+    expect(expanded.stdout).toContain(
+      `[parent ${parentId.slice(0, 8)}]`,
+    );
+  });
+
   it("does not discover local sources for the default saved-only list", async () => {
     const discover = vi.fn(async function* () {
       throw new Error("saved-only list must not scan");
@@ -958,6 +1299,107 @@ describe("ephemeral local source scans", () => {
     });
 
     expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("collapses saved branch graphs in list and restores concrete rows with --all-branches", async () => {
+    const parentId = "e6000001-0000-0000-0000-000000000001";
+    const firstChildId = "e6000002-0000-0000-0000-000000000002";
+    const secondChildId = "e6000003-0000-0000-0000-000000000003";
+    const parent = savedConversation(parentId, "/managed/parent.jsonl", {
+      title: "Parent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceMtime: "2026-01-01T00:00:00.000Z",
+    });
+    const childRelationship = {
+      kind: "branch" as const,
+      parent: { source: "claude-code", sourceId: parentId },
+      evidence: "source" as const,
+      branchPoint: null,
+    };
+    await insertConversation(parent);
+    await insertConversation(savedConversation(firstChildId, "/managed/first.jsonl", {
+      title: "First child",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      sourceMtime: "2026-01-03T00:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [childRelationship],
+    }));
+    await insertConversation(savedConversation(secondChildId, "/managed/second.jsonl", {
+      title: "Second child",
+      createdAt: "2026-01-03T00:00:00.000Z",
+      sourceMtime: "2026-01-04T00:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [childRelationship],
+    }));
+
+    const collapsed = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+    const expanded = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(["--all-branches"], { from: "user" });
+    });
+
+    expect(collapsed.stdout).not.toContain(parentId.slice(0, 8));
+    expect(collapsed.stdout).not.toContain(firstChildId.slice(0, 8));
+    expect(collapsed.stdout).toContain(secondChildId.slice(0, 8));
+    expect(collapsed.stdout).toContain("[2 branches]");
+    expect(expanded.stdout).toContain(parentId.slice(0, 8));
+    expect(expanded.stdout).toContain(firstChildId.slice(0, 8));
+    expect(expanded.stdout).toContain(secondChildId.slice(0, 8));
+    expect(expanded.stdout).not.toContain("[2 branches]");
+    expect(
+      expanded.stdout.match(
+        new RegExp(`\\[parent ${parentId.slice(0, 8)}\\]`, "g"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("identifies conversations with invalid branch metadata in list warnings", async () => {
+    const id = "e6111111-0000-4000-8000-000000000001";
+    await insertConversation(savedConversation(id, "/managed/self-parent.jsonl", {
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: id,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    }));
+
+    const output = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    expect(output.stderr).toContain(
+      "A conversation identifies itself as its branch parent.",
+    );
+    expect(output.stderr).toContain(
+      `conversation=${id.slice(0, 8)}@claude-code`,
+    );
+    expect(output.stderr).toContain(
+      "hint: Inspect the conversation's branch metadata in its source file before saving the conversation again.",
+    );
   });
 
   it("leaves the current-schema database byte-identical after scan-backed reads", async () => {

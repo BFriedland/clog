@@ -2,9 +2,12 @@ import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
 import {
-  listConversationView,
+  buildRelatedConversationView,
+  composeConversationView,
+  findRelatedConversationView,
   resolveConversationView,
   type LocalScanSnapshot,
+  type RelatedConversationView,
 } from "../conversations/view.js";
 import {
   browseValues,
@@ -16,6 +19,7 @@ import {
   summaryExtractionInputSchema,
   type SummaryExtraction,
 } from "../models/conversation.js";
+import { conversationIdentityKey } from "../relationships/graph.js";
 import {
   ANALYSIS_SUGGESTIONS,
   ANALYSIS_SUGGESTIONS_VERSION,
@@ -75,6 +79,12 @@ export const listInputSchema = z
       .enum(["local", "remote"])
       .optional()
       .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    allBranches: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Return every branch and superseded generation instead of one representative conversation from each set of branches.",
+      ),
     limit: z
       .number()
       .int()
@@ -201,6 +211,16 @@ export async function handleGet(input: unknown) {
   }
 
   const messages = await parseConversationMessages(config, conversation);
+  const composition = await composeConversationView(
+    { states: ["saved"] },
+    scanSnapshot,
+  );
+  const related = findRelatedConversationView(
+    composition.graphUniverse,
+    conversation,
+    composition.conversations,
+    composition.relationshipOverrides,
+  );
   const selected = selectMessageRange(parsed, messages.length);
   const { range } = selected;
   const truncated = range.hasMoreBefore || range.hasMoreAfter;
@@ -219,6 +239,23 @@ export async function handleGet(input: unknown) {
     originRef: conversation.originRef,
     state: conversation.state,
     createdAt: conversation.createdAt,
+    immediateParentRelationship:
+      related?.immediateParentRelationship ?? null,
+    knownRootIdentity: related?.knownRootIdentity ?? {
+      source: conversation.source,
+      sourceId: conversation.sourceId,
+    },
+    childIds: related?.childIds ?? [],
+    branchConversationIds: related?.branchConversationIds ?? [conversation.id],
+    memberCount: related?.memberCount ?? 1,
+    branchCount: related?.branchCount ?? 1,
+    relationshipCompleteness:
+      related?.relationshipCompleteness ?? "complete",
+    hasMoreMemberConversations:
+      related?.hasMoreMemberConversations ?? false,
+    inheritedMessagesMayAppear:
+      related?.inheritedMessagesMayAppear ?? false,
+    relationshipWarnings: related?.relationshipWarnings ?? [],
     messages: messages.slice(range.startIndex, range.endIndex),
     totalMessages: messages.length,
     range,
@@ -535,51 +572,91 @@ async function listConversationsForStates(
   warnings: ReturnType<typeof getScanWarningsForCommand>,
   scanSnapshot?: LocalScanSnapshot,
 ) {
-  let conversations: ConversationMeta[] = await listConversationView({
+  const composition = await composeConversationView({
     states,
     origin: input.origin,
   }, scanSnapshot);
-  conversations = filterConversationsByMcpMetadata(conversations, input);
+  const visibleIdentityKeys = new Set(
+    composition.conversations.map((conversation) =>
+      conversationIdentityKey(conversation),
+    ),
+  );
+  let graphUniverse = filterConversationsByMcpMetadata(
+    composition.graphUniverse,
+    input,
+  );
 
   if (input.tags && input.tags.length > 0) {
     const tags = new Set(normalizeTags(input.tags));
-    conversations = conversations.filter((conversation) =>
+    graphUniverse = graphUniverse.filter((conversation) =>
       conversation.tags.some((tag) => tags.has(tag)),
     );
   }
 
   if (input.grep) {
-    conversations = await filterConversationsByGrep(config!, input.grep, conversations);
+    graphUniverse = await filterConversationsByGrep(
+      config!,
+      input.grep,
+      graphUniverse,
+    );
   }
+  const conversations = graphUniverse.filter((conversation) =>
+    visibleIdentityKeys.has(conversationIdentityKey(conversation)),
+  );
 
-  conversations = sortConversationsForMcpList(
+  const relatedConversations = buildRelatedConversationView(
+    graphUniverse,
     conversations,
+    {
+      allBranches: input.allBranches,
+      relationshipOverrides: composition.relationshipOverrides,
+    },
+  );
+  const sorted = sortRelatedConversationsForMcpList(
+    relatedConversations,
     input.sortBy,
     input.sortDirection,
   );
+  const relationshipWarnings = uniqueRelationshipWarnings(
+    relatedConversations.flatMap((conversation) =>
+      conversation.relationshipWarnings,
+    ),
+  );
 
-  const totalCount = conversations.length;
-  const page = conversations
+  const totalCount = sorted.length;
+  const page = sorted
     .slice(input.offset, input.offset + input.limit)
-    .map((conversation) => ({
-      id: conversation.id,
-      source: conversation.source,
-      title: conversation.title,
-      summary: conversation.summary,
-      summaryKind: conversation.summaryKind,
-      extraction: conversation.summaryExtraction,
-      tags: conversation.tags,
-      author: conversation.author,
-      project: conversation.projectName,
-      originKind: conversation.originKind,
-      originRef: conversation.originRef,
-      state: conversation.state,
-      createdAt: conversation.createdAt,
-      modifiedAt: conversation.modifiedAt,
-      savedAt: conversation.savedAt,
-      savedMessageCount: conversation.savedMessageCount,
-      sourceMtime: conversation.sourceMtime,
-    }));
+    .map((related) => {
+      const conversation = related.conversation;
+      return {
+        id: conversation.id,
+        source: conversation.source,
+        title: conversation.title,
+        summary: conversation.summary,
+        summaryKind: conversation.summaryKind,
+        extraction: conversation.summaryExtraction,
+        tags: conversation.tags,
+        author: conversation.author,
+        project: conversation.projectName,
+        originKind: conversation.originKind,
+        originRef: conversation.originRef,
+        state: conversation.state,
+        createdAt: conversation.createdAt,
+        modifiedAt: conversation.modifiedAt,
+        savedAt: conversation.savedAt,
+        savedMessageCount: conversation.savedMessageCount,
+        sourceMtime: conversation.sourceMtime,
+        knownRootIdentity: related.knownRootIdentity,
+        immediateParentIdentity: related.immediateParentIdentity,
+        immediateParentId: related.immediateParentId,
+        memberCount: related.memberCount,
+        branchCount: related.branchCount,
+        relationshipCompleteness: related.relationshipCompleteness,
+        hasMoreMemberConversations: related.hasMoreMemberConversations,
+        branchConversationIds: related.branchConversationIds,
+        inheritedMessagesMayAppear: related.inheritedMessagesMayAppear,
+      };
+    });
   const returnedCount = page.length;
   const nextOffset = input.offset + input.limit;
   const hasMore = nextOffset < totalCount;
@@ -599,18 +676,41 @@ async function listConversationsForStates(
       : undefined,
   };
 
-  return warnings.length > 0 ? { ...result, warnings } : result;
+  return {
+    ...result,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(relationshipWarnings.length > 0
+      ? { relationshipWarnings }
+      : {}),
+  };
 }
 
-function sortConversationsForMcpList(
-  conversations: ConversationMeta[],
+function sortRelatedConversationsForMcpList(
+  conversations: RelatedConversationView<ConversationMeta>[],
   sortBy: ListSortBy,
   sortDirection: ListSortDirection,
-): ConversationMeta[] {
+): RelatedConversationView<ConversationMeta>[] {
   return [...conversations].sort((left, right) => {
-    const compared = compareConversationListField(left, right, sortBy, sortDirection);
-    return compared === 0 ? left.id.localeCompare(right.id) : compared;
+    const compared = compareConversationListField(
+      left.conversation,
+      right.conversation,
+      sortBy,
+      sortDirection,
+    );
+    return compared === 0
+      ? left.conversation.id.localeCompare(right.conversation.id)
+      : compared;
   });
+}
+
+function uniqueRelationshipWarnings(
+  warnings: RelatedConversationView["relationshipWarnings"],
+): RelatedConversationView["relationshipWarnings"] {
+  const unique = new Map<string, RelatedConversationView["relationshipWarnings"][number]>();
+  for (const warning of warnings) {
+    unique.set(JSON.stringify(warning), warning);
+  }
+  return [...unique.values()];
 }
 
 function compareConversationListField(

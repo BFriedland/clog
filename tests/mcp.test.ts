@@ -132,6 +132,232 @@ describe("mcp handlers", () => {
     });
   });
 
+  it("collapses related conversations before pagination and restores them with allBranches", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b1111111-1111-1111-1111-111111111111";
+    const unrelatedId = "c2222222-2222-2222-2222-222222222222";
+    await insertOtherSaved(childId, {
+      title: "Newest branch",
+      createdAt: "2026-02-02T10:00:00.000Z",
+      sourceMtime: "2026-02-03T10:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: parentId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    await insertOtherSaved(unrelatedId, {
+      title: "Unrelated",
+      createdAt: "2026-01-01T10:00:00.000Z",
+    });
+
+    const collapsed = await handleList({ limit: 1 });
+    const expanded = await handleList({ allBranches: true, limit: 10 });
+
+    expect(collapsed).toMatchObject({
+      totalCount: 2,
+      returnedCount: 1,
+      hasMore: true,
+    });
+    expect(collapsed.conversations[0]).toMatchObject({
+      id: childId,
+      knownRootIdentity: {
+        source: "claude-code",
+        sourceId: parentId,
+      },
+      immediateParentIdentity: {
+        source: "claude-code",
+        sourceId: parentId,
+      },
+      immediateParentId: parentId,
+      memberCount: 2,
+      branchCount: 1,
+      relationshipCompleteness: "complete",
+      branchConversationIds: [parentId, childId].sort(),
+    });
+    expect(expanded.totalCount).toBe(3);
+    expect(expanded.conversations.map((conversation) => conversation.id)).toEqual(
+      expect.arrayContaining([parentId, childId, unrelatedId]),
+    );
+  });
+
+  it("separates an unavailable parent's identity from a navigable parent ID", async () => {
+    const childId = "b1222222-1111-4111-8111-111111111111";
+    const missingParentId = "b1333333-1111-4111-8111-111111111111";
+    await insertOtherSaved(childId, {
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: missingParentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    const result = await handleList({ limit: 10 });
+    const child = result.conversations.find(
+      (conversation) => conversation.id === childId,
+    );
+
+    expect(child).toMatchObject({
+      immediateParentIdentity: {
+        source: "claude-code",
+        sourceId: missingParentId,
+      },
+      immediateParentId: null,
+      relationshipCompleteness: "incomplete",
+    });
+  });
+
+  it("returns navigation metadata for the exact requested related conversation", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b3333333-3333-3333-3333-333333333333";
+    await insertOtherSaved(childId, {
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: parentId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    const parent = await handleGet({ id: parentId, head: 1 });
+
+    expect(parent).toMatchObject({
+      id: parentId,
+      immediateParentRelationship: null,
+      knownRootIdentity: {
+        source: "claude-code",
+        sourceId: parentId,
+      },
+      childIds: [childId],
+      branchConversationIds: [parentId, childId].sort(),
+      memberCount: 2,
+      branchCount: 1,
+      relationshipCompleteness: "complete",
+      inheritedMessagesMayAppear: true,
+    });
+  });
+
+  it("uses the current graph relationship when saved inspection is stale", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b3555555-3333-4333-8333-333333333333";
+    const childPath = path.join(
+      sourceDir,
+      "project",
+      `${childId}.jsonl`,
+    );
+    await writeJsonl(childPath, [
+      {
+        type: "assistant",
+        uuid: "c3555555-3333-4333-8333-333333333333",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        sessionId: childId,
+        forkedFrom: {
+          sessionId: parentId,
+          messageUuid: "c3555555-3333-4333-8333-333333333333",
+        },
+      },
+      {
+        type: "user",
+        uuid: "d3555555-3333-4333-8333-333333333333",
+        timestamp: "2026-02-02T10:00:00.000Z",
+        sessionId: childId,
+        cwd: "/tmp/api-service",
+        message: { role: "user", content: "Continue the saved branch" },
+      },
+    ]);
+    await insertOtherSaved(childId, {
+      sourcePath: childPath,
+      filePath: childPath,
+      relationshipInspection: {
+        status: "unexamined",
+        version: null,
+        diagnostic: null,
+      },
+      relationships: [],
+    });
+
+    const child = await handleGet({ id: childId, head: 1 });
+
+    expect(child).toMatchObject({
+      id: childId,
+      immediateParentRelationship: {
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      },
+      knownRootIdentity: {
+        source: "claude-code",
+        sourceId: parentId,
+      },
+      branchConversationIds: [parentId, childId].sort(),
+    });
+  });
+
+  it("reports known unsaved relatives without returning IDs that get_conversation cannot open", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b4444444-4444-4444-8444-444444444444";
+    await writeJsonl(path.join(sourceDir, "project", `${childId}.jsonl`), [
+      {
+        type: "assistant",
+        uuid: "c4444444-4444-4444-8444-444444444444",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        sessionId: childId,
+        forkedFrom: {
+          sessionId: parentId,
+          messageUuid: "c4444444-4444-4444-8444-444444444444",
+        },
+      },
+      {
+        type: "user",
+        uuid: "d4444444-4444-4444-8444-444444444444",
+        timestamp: "2026-02-02T10:00:00.000Z",
+        sessionId: childId,
+        cwd: "/tmp/api-service",
+        message: { role: "user", content: "Continue on the unsaved branch" },
+      },
+    ]);
+
+    const parent = await handleGet({ id: parentId, head: 1 });
+
+    expect(parent).toMatchObject({
+      id: parentId,
+      childIds: [],
+      branchConversationIds: [parentId],
+      memberCount: 1,
+      branchCount: 1,
+      relationshipCompleteness: "complete",
+      hasMoreMemberConversations: true,
+      inheritedMessagesMayAppear: true,
+    });
+    await expect(handleGet({ id: childId, head: 1 })).rejects.toThrow(
+      "get_conversation only works on saved conversations",
+    );
+  });
+
   it("leaves the current-schema database byte-identical across every non-writing MCP tool", async () => {
     const dbPath = path.join(tempDir, "clog.db");
     const before = await fs.readFile(dbPath);

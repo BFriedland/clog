@@ -40,7 +40,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Find conversations",
       description:
-        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Use `grep` for case-insensitive literal-text matching across titles, summaries, and transcript messages; use `search_conversations` for related meaning. Results are paginated; follow `hasMore` and `nextOffset`.",
+        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Related source branches collapse to one representative conversation unless `allBranches` is true. `immediateParentId` is present only when the parent is a concrete conversation in the returned view; `immediateParentIdentity` can identify an unavailable or filtered-out parent. Use `grep` for case-insensitive literal-text matching across titles, summaries, and transcript messages; use `search_conversations` for related meaning. Results are paginated after branch collapse; follow `hasMore` and `nextOffset`.",
       inputSchema: listInputSchema,
     },
     async (input) => toToolResult(await handleList(input), "Listed conversations."),
@@ -51,7 +51,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Get conversation",
       description:
-        "Get the messages and metadata for a saved clog conversation by ID. After `list_conversations` or `search_conversations` returns a candidate, use this tool to inspect and verify the relevant transcript messages for summarization, review, or follow-up analysis. An unsaved conversation must be saved before this tool can retrieve its messages.",
+        "Get the current transcript and relationship metadata for a saved clog conversation by ID. The `branchConversationIds` and `childIds` fields include only saved branches that this tool can open; `hasMoreMemberConversations` indicates when additional unsaved branches are known, and parent metadata may identify an unsaved or unavailable conversation. After `list_conversations` or `search_conversations` returns a candidate, use this tool to inspect and verify the relevant transcript messages for summarization, review, or follow-up analysis. An unsaved conversation must be saved before this tool can retrieve its messages.",
       inputSchema: getInputSchema,
     },
     async (input) => toToolResult(await handleGet(input), "Loaded conversation content."),

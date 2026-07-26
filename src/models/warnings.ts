@@ -9,6 +9,10 @@ export type ClogWarningCode =
   | "adapter_version_skew"
   | "relationship_inspection_refresh_failed"
   | "relationship_inspection_unknown"
+  | "conversation_relationship_self_parent"
+  | "conversation_relationship_parent_conflict"
+  | "conversation_relationship_cycle"
+  | "conversation_relationship_observation_conflict"
   | ClaudeTranscriptWarningCode
   | PairWarningCode;
 
