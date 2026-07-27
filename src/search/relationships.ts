@@ -15,6 +15,8 @@ import type { IndexedConversationHit } from "./indexer.js";
 export interface RelatedConversationSearchHit
   extends IndexedConversationHit {
   knownRootIdentity: ConversationIdentity;
+  memberCount: number;
+  branchCount: number;
   relationshipCompleteness: RelationshipCompleteness;
   snippetConversationId: string;
 }
@@ -96,6 +98,12 @@ export function collapseRelatedConversationSearchHits(
   for (const graph of buildRelatedConversationGraphs(
     graphUniverse.filter(hasCurrentSearchContracts),
   )) {
+    const projection = projectRelatedConversationGraph(
+      graph,
+      new Set(
+        graph.members.map((member) => conversationIdentityKey(member.identity)),
+      ),
+    );
     const matchingHits = graph.members
       .map((member) => hitsByConversationId.get(member.conversation.id))
       .filter((hit): hit is IndexedConversationHit => hit != null)
@@ -115,6 +123,8 @@ export function collapseRelatedConversationSearchHits(
       resultByConversationId.set(hit.conversationId, {
         ...hit,
         knownRootIdentity: graph.root,
+        memberCount: graph.members.length,
+        branchCount: projection?.branchCount ?? graph.members.length,
         relationshipCompleteness: graph.completeness,
         snippetConversationId: hit.conversationId,
       });

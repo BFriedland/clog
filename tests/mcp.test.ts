@@ -164,30 +164,25 @@ describe("mcp handlers", () => {
       totalCount: 2,
       returnedCount: 1,
       hasMore: true,
+      branchView: "collapsed",
     });
     expect(collapsed.conversations[0]).toMatchObject({
       id: childId,
-      knownRootIdentity: {
-        source: "claude-code",
-        sourceId: parentId,
-      },
-      immediateParentIdentity: {
-        source: "claude-code",
-        sourceId: parentId,
-      },
-      immediateParentId: parentId,
-      memberCount: 2,
       branchCount: 1,
-      relationshipCompleteness: "complete",
-      branchConversationIds: [parentId, childId].sort(),
     });
+    expect(collapsed.conversations[0]).not.toHaveProperty("knownRootIdentity");
+    expect(collapsed.conversations[0]).not.toHaveProperty("immediateParentIdentity");
+    expect(collapsed.conversations[0]).not.toHaveProperty("branchConversationIds");
+    expect(collapsed.conversations[0]).not.toHaveProperty("memberCount");
+    expect(collapsed.conversations[0]).not.toHaveProperty("relationshipCompleteness");
     expect(expanded.totalCount).toBe(3);
+    expect(expanded.branchView).toBe("all_branches");
     expect(expanded.conversations.map((conversation) => conversation.id)).toEqual(
       expect.arrayContaining([parentId, childId, unrelatedId]),
     );
   });
 
-  it("separates an unavailable parent's identity from a navigable parent ID", async () => {
+  it("keeps list rows lean while marking unavailable branch history", async () => {
     const childId = "b1222222-1111-4111-8111-111111111111";
     const missingParentId = "b1333333-1111-4111-8111-111111111111";
     await insertOtherSaved(childId, {
@@ -213,13 +208,11 @@ describe("mcp handlers", () => {
     );
 
     expect(child).toMatchObject({
-      immediateParentIdentity: {
-        source: "claude-code",
-        sourceId: missingParentId,
-      },
-      immediateParentId: null,
       relationshipCompleteness: "incomplete",
     });
+    expect(child).not.toHaveProperty("immediateParentIdentity");
+    expect(child).not.toHaveProperty("immediateParentId");
+    expect(child).not.toHaveProperty("branchConversationIds");
   });
 
   it("returns navigation metadata for the exact requested related conversation", async () => {
@@ -254,6 +247,59 @@ describe("mcp handlers", () => {
       branchCount: 1,
       relationshipCompleteness: "complete",
       inheritedMessagesMayAppear: true,
+    });
+  });
+
+  it("reads a linear representative from its opening turn without resolving the root", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b3444444-3333-4333-8333-333333333333";
+    const childPath = path.join(tempDir, "raw", "claude-code", `${childId}.jsonl`);
+    await writeJsonl(childPath, [
+      {
+        type: "user",
+        uuid: "c3444444-3333-4333-8333-333333333333",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        sessionId: childId,
+        message: { role: "user", content: "Original prompt copied into the branch" },
+      },
+      {
+        type: "user",
+        uuid: "d3444444-3333-4333-8333-333333333333",
+        timestamp: "2026-02-02T10:00:00.000Z",
+        sessionId: childId,
+        message: { role: "user", content: "Continue the branch" },
+      },
+    ]);
+    await insertOtherSaved(childId, {
+      sourcePath: childPath,
+      filePath: childPath,
+      savedMessageCount: 2,
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: parentId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    const child = await handleGet({ id: childId, head: 1 });
+
+    expect(child).toMatchObject({
+      id: childId,
+      inheritedMessagesMayAppear: true,
+      messages: [{
+        role: "user",
+        content: "Original prompt copied into the branch",
+      }],
+      range: {
+        startIndex: 0,
+        endIndex: 1,
+      },
     });
   });
 
@@ -407,6 +453,43 @@ describe("mcp handlers", () => {
           },
         },
       });
+      expect(listTool?.outputSchema).toMatchObject({
+        properties: {
+          conversations: {
+            type: "array",
+            items: {
+              properties: {
+                id: { type: "string" },
+                branchCount: { type: "integer" },
+                relationshipCompleteness: {
+                  type: "string",
+                  enum: ["incomplete", "invalid"],
+                },
+              },
+            },
+          },
+          branchView: {
+            type: "string",
+            enum: ["collapsed", "all_branches"],
+          },
+        },
+      });
+
+      const getTool = tools.find((tool) => tool.name === "get_conversation");
+      expect(getTool?.outputSchema).toMatchObject({
+        properties: {
+          id: { type: "string" },
+          knownRootIdentity: { type: "object" },
+          branchConversationIds: {
+            type: "array",
+            items: { type: "string" },
+          },
+          relationshipCompleteness: {
+            type: "string",
+            enum: ["complete", "incomplete", "invalid"],
+          },
+        },
+      });
 
       const searchTool = tools.find((tool) => tool.name === "search_conversations");
       expect(searchTool?.inputSchema).toMatchObject({
@@ -424,6 +507,133 @@ describe("mcp handlers", () => {
             default: 10,
           },
         },
+      });
+      expect(searchTool?.outputSchema).toMatchObject({
+        properties: {
+          results: {
+            type: "array",
+            items: {
+              properties: {
+                id: { type: "string" },
+                snippetConversationId: { type: "string" },
+                branchCount: { type: "integer" },
+              },
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("validates branch-rich list and search responses through the MCP SDK", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const firstChildId = "b3666666-3333-4333-8333-333333333333";
+    const secondChildId = "b3777777-3333-4333-8333-333333333333";
+    for (const [id, createdAt] of [
+      [firstChildId, "2026-02-02T10:00:00.000Z"],
+      [secondChildId, "2026-02-03T10:00:00.000Z"],
+    ] as const) {
+      await insertOtherSaved(id, {
+        createdAt,
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    }
+
+    mockedGetSearchProviders.mockResolvedValueOnce({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore([
+        {
+          id: `${firstChildId}:0`,
+          score: 0.8,
+          text: "first branch match",
+          metadata: { conversationId: firstChildId },
+        },
+        {
+          id: `${secondChildId}:0`,
+          score: 0.9,
+          text: "second branch match",
+          metadata: { conversationId: secondChildId },
+        },
+      ]),
+    });
+
+    const server = createMcpServer();
+    const client = new Client({ name: "clog-test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    try {
+      const collapsedList = await client.callTool({
+        name: "list_conversations",
+        arguments: {},
+      });
+      expect(collapsedList.isError).not.toBe(true);
+      expect(collapsedList.structuredContent).toMatchObject({
+        branchView: "collapsed",
+        conversations: [{
+          id: secondChildId,
+          branchCount: 2,
+        }],
+      });
+
+      const expandedList = await client.callTool({
+        name: "list_conversations",
+        arguments: { allBranches: true },
+      });
+      expect(expandedList.isError).not.toBe(true);
+      expect(expandedList.structuredContent).toMatchObject({
+        branchView: "all_branches",
+        conversations: expect.arrayContaining([
+          expect.objectContaining({
+            id: parentId,
+            branchCount: 2,
+            branchStatus: "superseded",
+          }),
+          expect.objectContaining({
+            id: firstChildId,
+            branchCount: 2,
+            branchStatus: "live",
+          }),
+        ]),
+      });
+
+      const search = await client.callTool({
+        name: "search_conversations",
+        arguments: { query: "branch" },
+      });
+      expect(search.isError).not.toBe(true);
+      expect(search.structuredContent).toMatchObject({
+        branchView: "collapsed",
+        results: [{
+          id: secondChildId,
+          snippetConversationId: secondChildId,
+          knownRootIdentity: {
+            source: "claude-code",
+            sourceId: parentId,
+          },
+          memberCount: 3,
+          branchCount: 2,
+          relationshipCompleteness: "complete",
+        }],
       });
     } finally {
       await client.close();
@@ -570,7 +780,22 @@ describe("mcp handlers", () => {
     expect(inventories[0]).toBe(inventories[1]);
   });
 
-  it("starts and handshakes through the import-based MCP setup launcher", async () => {
+  it("retrieves branch navigation metadata through the stdio MCP launcher", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "b3888888-3333-4333-8333-333333333333";
+    await insertOtherSaved(childId, {
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: parentId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
     const serverPath = fileURLToPath(new URL("../dist/mcp/server.js", import.meta.url));
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -587,6 +812,29 @@ describe("mcp handlers", () => {
       await client.connect(transport);
       const { tools } = await client.listTools();
       expect(tools.map((tool) => tool.name)).toContain("list_conversations");
+      expect(tools.find((tool) => tool.name === "get_conversation")?.outputSchema)
+        .toMatchObject({
+          properties: {
+            branchConversationIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+        });
+
+      const result = await client.callTool({
+        name: "get_conversation",
+        arguments: { id: parentId, head: 1 },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        id: parentId,
+        childIds: [childId],
+        branchConversationIds: [parentId, childId].sort(),
+        memberCount: 2,
+        branchCount: 1,
+        relationshipCompleteness: "complete",
+      });
     } finally {
       await client.close();
     }
@@ -698,7 +946,7 @@ describe("mcp handlers", () => {
       limit: 10,
     });
     expect(collapsed.conversations).toHaveLength(1);
-    expect(collapsed.conversations[0]?.memberCount).toBe(2);
+    expect(collapsed.conversations[0]?.branchCount).toBe(2);
 
     const expanded = await handleList({
       grep: "literal branch needle",
@@ -1539,6 +1787,7 @@ describe("mcp handlers", () => {
     expect(result.results[0]).not.toHaveProperty("projectName");
     expect(result.results[0]?.relevanceScore).toBe(0.9);
     expect(result.results[0]?.snippet).toContain("debug JWT refresh");
+    expect(result.branchView).toBe("collapsed");
     expect(result.indexCoverage.indexed).toBe(1);
     expect(result.warning).toBeUndefined();
   });
@@ -1592,9 +1841,12 @@ describe("mcp handlers", () => {
           source: "claude-code",
           sourceId: parentId,
         },
+        memberCount: 2,
+        branchCount: 1,
         relationshipCompleteness: "complete",
       }),
     ]);
+    expect(collapsed.branchView).toBe("collapsed");
 
     const expanded = await handleSearch({
       query: "auth",
@@ -1604,6 +1856,7 @@ describe("mcp handlers", () => {
       parentId,
       childId,
     ]);
+    expect(expanded.branchView).toBe("all_branches");
   });
 
   it("search_conversations filters project and author by case-insensitive substrings", async () => {

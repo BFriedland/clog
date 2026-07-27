@@ -35,7 +35,14 @@ import { scanLocalSources } from "./scan.js";
 import { ClogError } from "../utils/errors.js";
 
 export function buildListCommand(): Command {
-  const command = new Command("list").description("List conversations");
+  const command = new Command("list")
+    .description("List conversations")
+    .addHelpText(
+      "after",
+      "\nRelated branches collapse only for this read-only view. " +
+        "Use --all-branches to inspect every branch and superseded generation; " +
+        "commands that save, edit, drain, or remove conversations still act on concrete conversation IDs.\n",
+    );
 
   command
     .option("-s, --state <state>", "Filter by state: saved or unsaved")
@@ -127,15 +134,16 @@ export function buildListCommand(): Command {
           },
         );
         renderRelationshipWarnings(relatedRows.flatMap((row) => row.relationshipWarnings));
+        const displayRows = relatedRows
+          .map((related) => ({
+            ...related.conversation,
+            titleSuffix: options.allBranches
+              ? expandedBranchNote(related, fullGraphStatuses)
+              : collapsedBranchNote(related),
+          }))
+          .sort(compareDisplayRows);
         renderConversationTable(
-          relatedRows
-            .map((related) => ({
-              ...related.conversation,
-              titleSuffix: options.allBranches
-                ? expandedBranchNote(related, fullGraphStatuses)
-                : branchNote(related.branchCount),
-            }))
-            .sort(compareDisplayRows),
+          displayRows,
           {
             emptyMessage: hasFilters
               ? "No conversations found."
@@ -144,6 +152,7 @@ export function buildListCommand(): Command {
             columns,
           },
         );
+        renderCollapsedBranchHint(relatedRows, options.allBranches);
 
         // Team conversation hint: if a remote is configured and there are
         // remote rows NOT included in the current view, surface the count.
@@ -210,6 +219,7 @@ export function buildListCommand(): Command {
           stateLabelMode: true,
           columns,
         });
+        renderCollapsedBranchHint(relatedRows, options.allBranches);
       }
 
       if (config.remote.url) {
@@ -400,7 +410,7 @@ function toDisplayRow(
     ...conversation,
     titleSuffix: allBranches
       ? expandedBranchNote(related, fullGraphStatuses)
-      : branchNote(related.branchCount),
+      : collapsedBranchNote(related),
   };
 }
 
@@ -416,8 +426,34 @@ function expandedBranchNote(
     : parentNote(related.immediateParentIdentity);
 }
 
-function branchNote(branchCount: number): string | undefined {
-  return branchCount >= 2 ? `[${branchCount} branches]` : undefined;
+function collapsedBranchNote(
+  related: {
+    branchCount: number;
+    relationshipCompleteness: "complete" | "incomplete" | "invalid";
+  },
+): string | undefined {
+  const branchLabel =
+    related.branchCount >= 2 ? `${related.branchCount} branches` : null;
+  const incompleteLabel =
+    related.relationshipCompleteness === "incomplete"
+      ? "incomplete branch history"
+      : null;
+  const labels = [branchLabel, incompleteLabel].filter(Boolean);
+  return labels.length > 0 ? `[${labels.join("; ")}]` : undefined;
+}
+
+function renderCollapsedBranchHint(
+  rows: Array<{ branchCount: number }>,
+  allBranches: boolean | undefined,
+): void {
+  if (allBranches || !rows.some((row) => row.branchCount >= 2)) {
+    return;
+  }
+
+  process.stdout.write(
+    "\nRows marked with a branch count show the most recently updated branch. " +
+      "Use 'clog list --all-branches' to show every branch and superseded generation.\n",
+  );
 }
 
 function parentNote(

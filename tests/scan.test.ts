@@ -1494,16 +1494,58 @@ describe("ephemeral local source scans", () => {
     expect(collapsed.stdout).not.toContain(firstChildId.slice(0, 8));
     expect(collapsed.stdout).toContain(secondChildId.slice(0, 8));
     expect(collapsed.stdout).toContain("[2 branches]");
+    expect(collapsed.stdout).toContain(
+      "Rows marked with a branch count show the most recently updated branch.",
+    );
+    expect(collapsed.stdout).toContain("clog list --all-branches");
     expect(expanded.stdout).toContain(parentId.slice(0, 8));
     expect(expanded.stdout).toContain(firstChildId.slice(0, 8));
     expect(expanded.stdout).toContain(secondChildId.slice(0, 8));
     expect(expanded.stdout).not.toContain("[2 branches]");
+    expect(expanded.stdout).not.toContain(
+      "Rows marked with a branch count show the most recently updated branch.",
+    );
     expect(expanded.stdout).toContain("[superseded]");
     expect(
       expanded.stdout.match(
         new RegExp(`\\[parent ${parentId.slice(0, 8)}\\]`, "g"),
       ),
     ).toHaveLength(2);
+  });
+
+  it("marks a collapsed row whose branch history is incomplete", async () => {
+    const childId = "e6100001-0000-4000-8000-000000000001";
+    const missingParentId = "e6100002-0000-4000-8000-000000000002";
+    await insertConversation(savedConversation(
+      childId,
+      "/managed/missing-parent-child.jsonl",
+      {
+        title: "Child with unavailable parent",
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: missingParentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      },
+    ));
+
+    const output = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync([], { from: "user" });
+    });
+
+    expect(output.stdout).toContain(childId.slice(0, 8));
+    expect(output.stdout).toContain("[incomplete branch history]");
   });
 
   it("identifies conversations with invalid branch metadata in list warnings", async () => {

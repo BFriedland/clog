@@ -426,6 +426,29 @@ describe("cli", () => {
     });
   });
 
+  describe("list help", () => {
+    it("explains that branch collapse is read-only navigation", async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      let help = "";
+      command.configureOutput({
+        writeOut: (chunk) => {
+          help += chunk;
+        },
+      });
+
+      await expect(
+        command.parseAsync(["--help"], { from: "user" }),
+      ).rejects.toMatchObject({
+        code: "commander.helpDisplayed",
+      });
+
+      expect(help).toContain("--all-branches");
+      expect(help).toContain("collapse only for this read-only view");
+      expect(help).toContain("still act on concrete conversation IDs");
+    });
+  });
+
   describe("mcp", () => {
     it("reports a missing MCP server file", () => {
       expect(() => assertMcpServerFileExists(path.join(tempDir, "missing-server.js"))).toThrow(
