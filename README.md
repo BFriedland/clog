@@ -57,9 +57,8 @@ Saving a conversation records the user's intent to add it to clog's durable
 saved collection, where metadata edits, search indexing, export, and sync can
 operate on it.
 
-When a coding agent session is split across several resumable sessions, clog
-groups them and shows the conversation once by default; `clog list
---all-branches` expands the group.
+When a conversation is split across several branches, clog groups them and
+shows it once by default; `clog list --all-branches` expands the group.
 
 | Command | What it does |
 |---------|-------------|
@@ -153,8 +152,8 @@ This gives agents the following tools:
 
 | Tool | What it does |
 |------|-------------|
-| `list_conversations` | List saved conversations by default, collapsing branches unless `allBranches` is true |
-| `get_conversation` | Load one requested saved conversation's coherent current transcript and branch-navigation metadata |
+| `list_conversations` | List saved conversations by default, with each conversation's branches grouped into one row unless `allBranches` is true |
+| `get_conversation` | Load one saved conversation's messages, plus links to its other branches |
 | `update_conversation` | Edit title, summary, structured extraction, or tags on saved local conversations |
 | `browse_metadata` | List tags, projects, or authors |
 | `search_conversations` | Semantic search (requires `clog search --init`) |
@@ -191,9 +190,9 @@ clog search "authentication retry" --all-branches
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
-When coding-agent conversations branch from copied history, default semantic search and literal grep cover current branch endpoints rather than superseded generations. Semantic search returns one highest-scoring match from each branch graph. Copied history remains searchable through descendant branches; text unique to an abandoned generation remains available through direct retrieval or `clog list --grep "text" --all-branches`. Run `clog config set search.indexAllBranches true` to make superseded generations semantically searchable too, and pass `--all-branches` to `clog search` when each matching source conversation should appear separately.
+When a conversation is split across several branches, semantic search and `grep` return one result for it, not one per branch. Pass `--all-branches` to `clog search` (or `allBranches: true` to `list_conversations`) to see each branch separately.
 
-If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content. Set `allBranches: true` when that literal search should include superseded generations.
+If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
 
 ## Team Sharing
 
@@ -297,6 +296,18 @@ clog config set sources.codex-cli.paths '["~/.codex/sessions/"]'
 clog config set sources.claude-code.includePaths '["~/work/"]'
 clog config set sources.claude-code.excludePaths '["~/personal/"]'
 ```
+
+The settings you can edit:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `author` | your OS username | Name attached to conversations you save |
+| `defaultTags` | `[]` | Tags applied to every conversation you save |
+| `sources.<source>.enabled` | `true` | Whether clog discovers conversations from that source (`claude-code`, `codex-cli`) |
+| `sources.<source>.paths` | `~/.claude/projects/` or `~/.codex/sessions/` | Directories to scan for that source |
+| `sources.<source>.includePaths` | `[]` | If set, discover only conversations under these paths |
+| `sources.<source>.excludePaths` | `[]` | Skip conversations under these paths |
+| `search.indexAllBranches` | `false` | Index every branch for semantic search, not just the latest of each conversation |
 
 Use `~/.clog/clogignore` to keep projects or conversations out of clog:
 
