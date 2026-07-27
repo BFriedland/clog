@@ -40,6 +40,7 @@ import { isConversationSearchable, maybeReindexUpdatedConversation } from "../se
 import { searchConversations } from "../search/indexer.js";
 import {
   collapseRelatedConversationSearchHits,
+  selectIndexEligibleConversations,
   type RelatedConversationSearchHit,
 } from "../search/relationships.js";
 import { nowIso } from "../utils/time.js";
@@ -70,14 +71,19 @@ const relationshipCompletenessSchema = z.enum([
   "invalid",
 ]);
 const incompleteRelationshipSchema = z.enum(["incomplete", "invalid"]);
-const branchViewSchema = z.enum(["collapsed", "all_branches"]);
+const listBranchViewSchema = z.enum(["collapsed", "all_branches"]);
+const searchBranchViewSchema = z.enum([
+  "collapsed",
+  "all_branches",
+  "collapsed_with_branch_fallback",
+]);
 const mcpOriginKindSchema = z.enum(["local", "git", "file"]);
 const nullableSavedAtSchema = z.string().nullable();
 const listConversationOutputSchema = z.object({
   id: z
     .string()
     .describe(
-      "The displayed conversation ID. In a collapsed branch view, this is the representative conversation ID.",
+      "The representative branch ID in a collapsed view, or the returned concrete branch ID in an all-branches view.",
     ),
   source: z.string(),
   title: z.string(),
@@ -93,23 +99,23 @@ const listConversationOutputSchema = z.object({
   createdAt: z
     .string()
     .describe(
-      "The displayed conversation's source creation time, not the known root's creation time.",
+      "The displayed branch's source creation time, not the known root branch's creation time.",
     ),
   modifiedAt: z.string(),
   savedAt: nullableSavedAtSchema,
   savedMessageCount: z.number().int().nonnegative().nullable(),
   sourceMtime: z.string().nullable(),
-  branchCount: z
+  endpointCount: z
     .number()
     .int()
-    .positive()
+    .nonnegative()
     .describe(
-      "The number of live branch endpoints. A value of 1 includes both single conversations and linear chains of superseded generations.",
+      "The number of endpoints in the composed, filtered conversation view represented by this row.",
     ),
   branchStatus: z
-    .enum(["live", "superseded", "unproven"])
+    .enum(["endpoint", "superseded", "unproven"])
     .optional()
-    .describe("Present in all-branches views to identify each concrete conversation's status."),
+    .describe("Present in all-branches views to identify each concrete branch's status."),
   relationshipCompleteness: incompleteRelationshipSchema
     .optional()
     .describe(
@@ -128,8 +134,8 @@ export const listOutputSchema = z.object({
   hasMore: z.boolean(),
   nextOffset: z.number().int().nonnegative().optional(),
   paginationNote: z.string().optional(),
-  branchView: branchViewSchema.describe(
-    "Whether the response collapsed branches to representative conversations or returned every concrete conversation.",
+  branchView: listBranchViewSchema.describe(
+    "Whether pagination counts collapsed conversation rows or expanded branch rows.",
   ),
   warnings: z.array(z.unknown()).optional(),
   relationshipWarnings: z.array(z.unknown()).optional(),
@@ -151,7 +157,7 @@ export const getOutputSchema = z.object({
   id: z
     .string()
     .describe(
-      "The requested concrete conversation ID. get_conversation never substitutes a branch representative.",
+      "The requested branch ID. get_conversation never substitutes a representative branch.",
     ),
   source: z.string(),
   title: z.string(),
@@ -167,12 +173,30 @@ export const getOutputSchema = z.object({
   createdAt: z.string(),
   immediateParentRelationship: conversationRelationshipSchema.nullable(),
   knownRootIdentity: conversationIdentitySchema,
-  childIds: z.array(z.string()),
-  branchConversationIds: z.array(z.string()),
-  memberCount: z.number().int().positive(),
-  branchCount: z.number().int().positive(),
+  childBranchIds: z
+    .array(z.string())
+    .describe("Saved immediate-child branch IDs that this tool can open."),
+  branchIds: z
+    .array(z.string())
+    .describe(
+      "Every saved branch ID that this tool can open in the encompassing conversation, including the requested branch.",
+    ),
+  branchCount: z
+    .number()
+    .int()
+    .positive()
+    .describe("The number of openable saved branches in branchIds."),
+  endpointCount: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe("The number of endpoints in the same saved, openable branch view."),
   relationshipCompleteness: relationshipCompletenessSchema,
-  hasMoreMemberConversations: z.boolean(),
+  hasMoreBranches: z
+    .boolean()
+    .describe(
+      "True when the relationship view knows about additional branches that this saved-only tool cannot open.",
+    ),
   inheritedMessagesMayAppear: z.boolean().describe(
     "True when the coherent transcript includes a copied history prefix. Message content and order remain authoritative from index 0.",
   ),
@@ -217,7 +241,7 @@ export const listInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "Return every branch and superseded generation instead of one representative conversation from each set of branches. When grep is present, this also searches superseded generations.",
+        "Return every branch and superseded generation instead of one representative branch per conversation. When grep is present, this also searches superseded generations.",
       ),
     limit: z
       .number()
@@ -247,7 +271,9 @@ export const listInputSchema = z
 
 export const getInputSchema = z
   .object({
-    id: z.string(),
+    id: z
+      .string()
+      .describe("ID resolving to the exact saved clog branch to retrieve."),
     head: z.number().int().positive().max(200).optional(),
     tail: z.number().int().positive().max(200).optional(),
     offset: z.number().int().nonnegative().optional(),
@@ -279,7 +305,11 @@ type ListSortDirection = z.infer<typeof listSortDirectionSchema>;
 
 export const updateInputSchema = z
   .object({
-    id: z.string(),
+    id: z
+      .string()
+      .describe(
+        "ID resolving to one exact saved, locally writable clog branch. The update changes only the conversation record for this branch.",
+      ),
     title: z.string().optional(),
     summary: z.string().optional(),
     extraction: summaryExtractionInputSchema.nullable().optional(),
@@ -326,7 +356,7 @@ export const searchOutputSchema = z.object({
     id: z
       .string()
       .describe(
-        "The representative conversation ID for a collapsed result, or the concrete matching conversation ID in an all-branches result.",
+        "The highest-scoring in-scope matching branch ID for a collapsed result, or the concrete matching branch ID in an all-branches result.",
       ),
     source: z.string(),
     title: z.string(),
@@ -340,20 +370,39 @@ export const searchOutputSchema = z.object({
     originRef: z.string().nullable(),
     createdAt: z.string(),
     knownRootIdentity: conversationIdentitySchema,
-    memberCount: z.number().int().positive(),
-    branchCount: z.number().int().positive(),
+    endpointCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "The number of endpoints in the complete saved conversation graph whose branches satisfy the current adapter search contracts.",
+      ),
     relationshipCompleteness: relationshipCompletenessSchema,
-    snippetConversationId: z
+    snippetBranchId: z
       .string()
-      .describe("The concrete conversation whose indexed content supplied the snippet."),
+      .describe("The concrete branch whose indexed content supplied the snippet."),
     relevanceScore: z.number(),
     snippet: z.string(),
   })),
   totalCount: z.number().int().nonnegative(),
-  branchView: branchViewSchema,
+  branchView: searchBranchViewSchema.describe(
+    "collapsed when every result was safely collapsed by conversation, all_branches when requested, or collapsed_with_branch_fallback when invalid relationships forced branch-specific results.",
+  ),
   indexCoverage: z.object({
-    indexed: z.number().int().nonnegative(),
-    saved: z.number().int().nonnegative(),
+    searchableBranchCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "Filtered index-eligible branches that currently satisfy the searchability invariant.",
+      ),
+    eligibleBranchCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "Filtered saved branches that the current search.indexAllBranches setting intends to index.",
+      ),
   }),
   warning: z.string().optional(),
 });
@@ -422,14 +471,14 @@ export async function handleGet(input: unknown) {
       source: conversation.source,
       sourceId: conversation.sourceId,
     },
-    childIds: related?.childIds ?? [],
-    branchConversationIds: related?.branchConversationIds ?? [conversation.id],
-    memberCount: related?.memberCount ?? 1,
+    childBranchIds: related?.childBranchIds ?? [],
+    branchIds: related?.branchIds ?? [conversation.id],
     branchCount: related?.branchCount ?? 1,
+    endpointCount: related?.endpointCount ?? 1,
     relationshipCompleteness:
       related?.relationshipCompleteness ?? "complete",
-    hasMoreMemberConversations:
-      related?.hasMoreMemberConversations ?? false,
+    hasMoreBranches:
+      related?.hasMoreBranches ?? false,
     inheritedMessagesMayAppear:
       related?.inheritedMessagesMayAppear ?? false,
     relationshipWarnings: related?.relationshipWarnings ?? [],
@@ -649,6 +698,7 @@ export async function handleBrowse(input: unknown) {
 
 export async function handleSearch(input: unknown) {
   const parsed = searchInputSchema.parse(input);
+  const config = await loadConfig();
   const { embedding, vectorStore } = await requireSearchProviders();
   const graphUniverse = await listConversations();
   let saved = await listConversations({
@@ -663,20 +713,33 @@ export async function handleSearch(input: unknown) {
     );
   }
 
-  const searchableIds = new Set(
+  const searchableCandidateIds = new Set(
     saved
       .filter((conversation) => isConversationSearchable(conversation))
       .map((conversation) => conversation.id),
   );
+  const eligibleBranchIds = new Set(
+    selectIndexEligibleConversations(
+      graphUniverse,
+      { indexAllBranches: config.search?.indexAllBranches },
+    ).map((conversation) => conversation.id),
+  );
+  const filteredEligibleBranches = saved.filter((conversation) =>
+    eligibleBranchIds.has(conversation.id),
+  );
+  const eligibleBranchCount = filteredEligibleBranches.length;
+  const searchableBranchCount = filteredEligibleBranches.filter(
+    (conversation) => isConversationSearchable(conversation),
+  ).length;
 
-  if (searchableIds.size === 0) {
+  if (searchableCandidateIds.size === 0) {
     return {
       results: [],
       totalCount: 0,
       branchView: parsed.allBranches ? "all_branches" as const : "collapsed" as const,
       indexCoverage: {
-        indexed: 0,
-        saved: saved.length,
+        searchableBranchCount,
+        eligibleBranchCount,
       },
     };
   }
@@ -685,7 +748,8 @@ export async function handleSearch(input: unknown) {
   let hits;
   try {
     hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
-      isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      isConversationSearchable: (conversationId) =>
+        searchableCandidateIds.has(conversationId),
       composeResults: (candidateHits) =>
         collapseRelatedConversationSearchHits(
           graphUniverse,
@@ -735,33 +799,37 @@ export async function handleSearch(input: unknown) {
         originRef: conversation.originRef,
         createdAt: conversation.createdAt,
         knownRootIdentity: hit.knownRootIdentity,
-        memberCount: hit.memberCount,
-        branchCount: hit.branchCount,
+        endpointCount: hit.endpointCount,
         relationshipCompleteness: hit.relationshipCompleteness,
-        snippetConversationId: hit.snippetConversationId,
+        snippetBranchId: hit.snippetBranchId,
         relevanceScore: hit.score,
         snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
       };
     })
     .filter((result): result is NonNullable<typeof result> => Boolean(result));
-  if (
+  const usedBranchFallback =
+    !parsed.allBranches &&
     relatedHits.some(
       (hit) => hit.relationshipCompleteness === "invalid",
-    )
-  ) {
+    );
+  if (usedBranchFallback) {
     warning = [
       warning,
-      "Invalid conversation relationships were returned as conversation-specific results.",
+      "Invalid conversation relationships were returned as branch-specific results.",
     ].filter(Boolean).join(" ");
   }
 
   return {
     results,
     totalCount: results.length,
-    branchView: parsed.allBranches ? "all_branches" as const : "collapsed" as const,
+    branchView: parsed.allBranches
+      ? "all_branches" as const
+      : usedBranchFallback
+        ? "collapsed_with_branch_fallback" as const
+        : "collapsed" as const,
     indexCoverage: {
-      indexed: searchableIds.size,
-      saved: saved.length,
+      searchableBranchCount,
+      eligibleBranchCount,
     },
     warning,
   };
@@ -856,10 +924,11 @@ async function listConversationsForStates(
         savedAt: conversation.savedAt,
         savedMessageCount: conversation.savedMessageCount,
         sourceMtime: conversation.sourceMtime,
-        branchCount: related.branchCount,
+        endpointCount: related.endpointCount,
         ...(input.allBranches
           ? {
-              branchStatus: fullGraphStatus?.liveness ?? related.liveness,
+              branchStatus:
+                fullGraphStatus?.branchStatus ?? related.branchStatus,
             }
           : {}),
         ...(related.relationshipCompleteness === "complete"

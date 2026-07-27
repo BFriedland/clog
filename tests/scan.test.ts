@@ -383,13 +383,13 @@ describe("ephemeral local source scans", () => {
 
     expect(savedGraph).toMatchObject({
       conversation: { id: parentId },
-      memberCount: 1,
-      hasMoreMemberConversations: true,
+      branchCount: 1,
+      hasMoreBranches: true,
     });
     expect(unsavedGraph).toMatchObject({
       conversation: { id: childId },
-      memberCount: 1,
-      hasMoreMemberConversations: true,
+      branchCount: 1,
+      hasMoreBranches: true,
     });
   });
 

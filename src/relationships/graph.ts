@@ -25,8 +25,8 @@ export interface RelatedConversationRelationshipOverride
 }
 
 export type RelationshipCompleteness = "complete" | "incomplete" | "invalid";
-export type ConversationLiveness = "live" | "superseded" | "unproven";
-export type ConversationLivenessPolicy = "display" | "indexing";
+export type BranchStatus = "endpoint" | "superseded" | "unproven";
+export type BranchStatusPolicy = "display" | "indexing";
 
 export type RelationshipGraphWarning =
   | {
@@ -48,7 +48,7 @@ export type RelationshipGraphWarning =
       parents: ConversationIdentity[];
     };
 
-interface RelatedConversationMember<T extends RelatedConversationInput> {
+interface RelatedConversationBranch<T extends RelatedConversationInput> {
   conversation: T;
   identity: ConversationIdentity;
   parent: ConversationIdentity | null;
@@ -59,19 +59,19 @@ interface RelatedConversationMember<T extends RelatedConversationInput> {
 export interface RelatedConversationGraph<T extends RelatedConversationInput> {
   root: ConversationIdentity;
   completeness: RelationshipCompleteness;
-  members: RelatedConversationMember<T>[];
+  branches: RelatedConversationBranch<T>[];
   externalParents: ConversationIdentity[];
   warnings: RelationshipGraphWarning[];
 }
 
 export interface RelatedConversationProjection<T extends RelatedConversationInput> {
   graph: RelatedConversationGraph<T>;
-  visibleMembers: RelatedConversationMember<T>[];
-  representative: RelatedConversationMember<T>;
-  liveness: Map<string, ConversationLiveness>;
-  liveEndpoints: RelatedConversationMember<T>[];
-  branchCount: number;
-  hasHiddenMembers: boolean;
+  visibleBranches: RelatedConversationBranch<T>[];
+  representativeBranch: RelatedConversationBranch<T>;
+  branchStatuses: Map<string, BranchStatus>;
+  endpoints: RelatedConversationBranch<T>[];
+  endpointCount: number;
+  hasHiddenBranches: boolean;
 }
 
 interface NormalizedNode<T extends RelatedConversationInput> {
@@ -82,7 +82,7 @@ interface NormalizedNode<T extends RelatedConversationInput> {
 }
 
 interface ProjectedChild<T extends RelatedConversationInput> {
-  member: RelatedConversationMember<T>;
+  branch: RelatedConversationBranch<T>;
   forkCreatedAt: string;
 }
 
@@ -199,7 +199,7 @@ export function buildRelatedConversationGraphs<T extends RelatedConversationInpu
         : externalParents.length > 0
           ? "incomplete"
           : "complete",
-      members: concreteNodes.map((node) => ({
+      branches: concreteNodes.map((node) => ({
         conversation: node.conversation,
         identity: node.identity,
         parent: node.parent,
@@ -223,102 +223,103 @@ export function projectRelatedConversationGraph<
   graph: RelatedConversationGraph<T>,
   visibleIdentityKeys: ReadonlySet<string>,
   options: {
-    livenessPolicy?: ConversationLivenessPolicy;
+    branchStatusPolicy?: BranchStatusPolicy;
   } = {},
 ): RelatedConversationProjection<T> | null {
-  const visibleMembers = graph.members.filter((member) =>
-    visibleIdentityKeys.has(conversationIdentityKey(member.identity)),
+  const visibleBranches = graph.branches.filter((branch) =>
+    visibleIdentityKeys.has(conversationIdentityKey(branch.identity)),
   );
-  if (visibleMembers.length === 0) {
+  if (visibleBranches.length === 0) {
     return null;
   }
 
   const visibleKeys = new Set(
-    visibleMembers.map((member) => conversationIdentityKey(member.identity)),
+    visibleBranches.map((branch) => conversationIdentityKey(branch.identity)),
   );
-  const membersByKey = new Map(
-    graph.members.map((member) => [
-      conversationIdentityKey(member.identity),
-      member,
+  const branchesByKey = new Map(
+    graph.branches.map((branch) => [
+      conversationIdentityKey(branch.identity),
+      branch,
     ] as const),
   );
   const visibleChildren = new Map<string, ProjectedChild<T>[]>();
-  for (const member of visibleMembers) {
-    const memberKey = conversationIdentityKey(member.identity);
-    for (const childIdentity of member.children) {
-      const child = membersByKey.get(conversationIdentityKey(childIdentity));
+  for (const branch of visibleBranches) {
+    const branchKey = conversationIdentityKey(branch.identity);
+    for (const childIdentity of branch.children) {
+      const child = branchesByKey.get(conversationIdentityKey(childIdentity));
       if (!child) {
         continue;
       }
-      ensureArray(visibleChildren, memberKey).push(
+      ensureArray(visibleChildren, branchKey).push(
         ...findProjectedChildren(
           child,
           child.conversation.createdAt,
-          membersByKey,
+          branchesByKey,
           visibleKeys,
-          new Set([memberKey]),
+          new Set([branchKey]),
         ),
       );
     }
   }
 
-  const liveness = new Map<string, ConversationLiveness>();
-  for (const member of visibleMembers) {
-    const memberKey = conversationIdentityKey(member.identity);
-    const children = visibleChildren.get(memberKey) ?? [];
-    liveness.set(
-      memberKey,
-      classifyLiveness(
-        member.conversation,
+  const branchStatuses = new Map<string, BranchStatus>();
+  for (const branch of visibleBranches) {
+    const branchKey = conversationIdentityKey(branch.identity);
+    const children = visibleChildren.get(branchKey) ?? [];
+    branchStatuses.set(
+      branchKey,
+      classifyBranchStatus(
+        branch.conversation,
         children.map((child) => child.forkCreatedAt),
-        options.livenessPolicy ?? "display",
+        options.branchStatusPolicy ?? "display",
       ),
     );
   }
 
-  const liveEndpoints = visibleMembers.filter(
-    (member) =>
-      liveness.get(conversationIdentityKey(member.identity)) === "live",
+  const endpoints = visibleBranches.filter(
+    (branch) =>
+      branchStatuses.get(conversationIdentityKey(branch.identity)) === "endpoint",
   );
   const representativePool =
-    liveEndpoints.length > 0 ? liveEndpoints : visibleMembers;
-  const representative = [...representativePool].sort(compareMembersByRecency)[0]!;
+    endpoints.length > 0 ? endpoints : visibleBranches;
+  const representativeBranch =
+    [...representativePool].sort(compareBranchesByRecency)[0]!;
 
   return {
     graph,
-    visibleMembers,
-    representative,
-    liveness,
-    liveEndpoints,
-    branchCount: liveEndpoints.length,
-    hasHiddenMembers: visibleMembers.length < graph.members.length,
+    visibleBranches,
+    representativeBranch,
+    branchStatuses,
+    endpoints,
+    endpointCount: endpoints.length,
+    hasHiddenBranches: visibleBranches.length < graph.branches.length,
   };
 }
 
 function findProjectedChildren<T extends RelatedConversationInput>(
-  member: RelatedConversationMember<T>,
+  branch: RelatedConversationBranch<T>,
   forkCreatedAt: string,
-  membersByKey: ReadonlyMap<string, RelatedConversationMember<T>>,
+  branchesByKey: ReadonlyMap<string, RelatedConversationBranch<T>>,
   visibleKeys: ReadonlySet<string>,
   visited: Set<string>,
 ): ProjectedChild<T>[] {
-  const memberKey = conversationIdentityKey(member.identity);
-  if (visited.has(memberKey)) {
+  const branchKey = conversationIdentityKey(branch.identity);
+  if (visited.has(branchKey)) {
     return [];
   }
-  visited.add(memberKey);
+  visited.add(branchKey);
 
-  if (visibleKeys.has(memberKey)) {
-    return [{ member, forkCreatedAt }];
+  if (visibleKeys.has(branchKey)) {
+    return [{ branch, forkCreatedAt }];
   }
 
-  return member.children.flatMap((childIdentity) => {
-    const child = membersByKey.get(conversationIdentityKey(childIdentity));
+  return branch.children.flatMap((childIdentity) => {
+    const child = branchesByKey.get(conversationIdentityKey(childIdentity));
     return child
       ? findProjectedChildren(
           child,
           forkCreatedAt,
-          membersByKey,
+          branchesByKey,
           visibleKeys,
           new Set(visited),
         )
@@ -332,7 +333,7 @@ export function projectRelatedConversationGraphs<
   graphs: readonly RelatedConversationGraph<T>[],
   visibleConversations: readonly T[],
   options: {
-    livenessPolicy?: ConversationLivenessPolicy;
+    branchStatusPolicy?: BranchStatusPolicy;
   } = {},
 ): RelatedConversationProjection<T>[] {
   const visibleKeys = new Set(
@@ -586,13 +587,13 @@ function selectRoot<T extends RelatedConversationInput>(
   return nodes.map((node) => node.identity).sort(compareConversationIdentities)[0]!;
 }
 
-function classifyLiveness(
+function classifyBranchStatus(
   parent: RelatedConversationInput,
   childForkCreatedAt: readonly string[],
-  policy: ConversationLivenessPolicy,
-): ConversationLiveness {
+  policy: BranchStatusPolicy,
+): BranchStatus {
   if (childForkCreatedAt.length === 0) {
-    return "live";
+    return "endpoint";
   }
 
   const parentActivity =
@@ -608,7 +609,7 @@ function classifyLiveness(
   }
 
   return parentActivity > Math.max(...childForkTimes as number[])
-    ? "live"
+    ? "endpoint"
     : "superseded";
 }
 
@@ -616,9 +617,9 @@ function parseOptionalTimestamp(value: string | null): number | null {
   return value == null ? null : parseTimestamp(value);
 }
 
-function compareMembersByRecency<T extends RelatedConversationInput>(
-  left: RelatedConversationMember<T>,
-  right: RelatedConversationMember<T>,
+function compareBranchesByRecency<T extends RelatedConversationInput>(
+  left: RelatedConversationBranch<T>,
+  right: RelatedConversationBranch<T>,
 ): number {
   const leftTime = effectiveActivityTime(left.conversation);
   const rightTime = effectiveActivityTime(right.conversation);

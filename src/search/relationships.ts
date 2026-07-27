@@ -15,10 +15,9 @@ import type { IndexedConversationHit } from "./indexer.js";
 export interface RelatedConversationSearchHit
   extends IndexedConversationHit {
   knownRootIdentity: ConversationIdentity;
-  memberCount: number;
-  branchCount: number;
+  endpointCount: number;
   relationshipCompleteness: RelationshipCompleteness;
-  snippetConversationId: string;
+  snippetBranchId: string;
 }
 
 export function hasCurrentSearchContracts(
@@ -54,28 +53,28 @@ export function selectIndexEligibleConversations(
   const eligibleIds = new Set<string>();
   for (const graph of buildRelatedConversationGraphs(current)) {
     if (graph.completeness === "invalid") {
-      for (const member of graph.members) {
-        eligibleIds.add(member.conversation.id);
+      for (const branch of graph.branches) {
+        eligibleIds.add(branch.conversation.id);
       }
       continue;
     }
 
     const projection = projectRelatedConversationGraph(
       graph,
-      new Set(graph.members.map((member) =>
-        conversationIdentityKey(member.identity))),
-      { livenessPolicy: "indexing" },
+      new Set(graph.branches.map((branch) =>
+        conversationIdentityKey(branch.identity))),
+      { branchStatusPolicy: "indexing" },
     );
     if (!projection) {
       continue;
     }
 
-    for (const member of projection.visibleMembers) {
-      const liveness = projection.liveness.get(
-        conversationIdentityKey(member.identity),
+    for (const branch of projection.visibleBranches) {
+      const branchStatus = projection.branchStatuses.get(
+        conversationIdentityKey(branch.identity),
       );
-      if (liveness !== "superseded") {
-        eligibleIds.add(member.conversation.id);
+      if (branchStatus !== "superseded") {
+        eligibleIds.add(branch.conversation.id);
       }
     }
   }
@@ -101,11 +100,11 @@ export function collapseRelatedConversationSearchHits(
     const projection = projectRelatedConversationGraph(
       graph,
       new Set(
-        graph.members.map((member) => conversationIdentityKey(member.identity)),
+        graph.branches.map((branch) => conversationIdentityKey(branch.identity)),
       ),
     );
-    const matchingHits = graph.members
-      .map((member) => hitsByConversationId.get(member.conversation.id))
+    const matchingHits = graph.branches
+      .map((branch) => hitsByConversationId.get(branch.conversation.id))
       .filter((hit): hit is IndexedConversationHit => hit != null)
       .sort((left, right) =>
         right.score - left.score ||
@@ -123,10 +122,9 @@ export function collapseRelatedConversationSearchHits(
       resultByConversationId.set(hit.conversationId, {
         ...hit,
         knownRootIdentity: graph.root,
-        memberCount: graph.members.length,
-        branchCount: projection?.branchCount ?? graph.members.length,
+        endpointCount: projection?.endpointCount ?? graph.branches.length,
         relationshipCompleteness: graph.completeness,
-        snippetConversationId: hit.conversationId,
+        snippetBranchId: hit.conversationId,
       });
     }
   }

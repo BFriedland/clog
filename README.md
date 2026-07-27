@@ -190,7 +190,7 @@ clog search "authentication retry" --all-branches
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
-When a conversation is split across several branches, semantic search and `grep` return one result for it, not one per branch. Pass `--all-branches` to `clog search` (or `allBranches: true` to `list_conversations`) to see each branch separately.
+When a conversation is split across several branches, semantic search and `grep` return one result for it, not one per branch. Pass `--all-branches` to `clog search` or `allBranches: true` to the corresponding MCP search or list tool to see each branch separately.
 
 If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
 

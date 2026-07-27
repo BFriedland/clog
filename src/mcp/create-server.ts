@@ -43,7 +43,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Find conversations",
       description:
-        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Related source branches collapse to one representative conversation unless `allBranches` is true; each row's `id` is the displayed representative or concrete conversation ID, and `branchView` reports which view was requested. A `branchCount` greater than 1 signals divergent outcomes. List rows intentionally omit branch IDs and ancestry objects; call `get_conversation` on the displayed ID for navigation metadata. Default `grep` performs literal-text search across live branch endpoints and unrelated conversations; set `allBranches` to search superseded generations too. Results are paginated after branch collapse; follow `hasMore` and `nextOffset`.",
+        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Related source branches collapse to one conversation result unless `allBranches` is true; each row's `id` is the conversation's representative branch ID in a collapsed view or the returned branch ID in an all-branches view, and `branchView` reports which view was requested. An `endpointCount` greater than 1 signals divergent outcomes. List rows intentionally omit branch IDs and ancestry objects; call `get_conversation` on the displayed conversation ID for navigation metadata. Default `grep` performs literal-text search across conversation endpoints; set `allBranches` to search superseded generations too. Results are paginated after branch collapse; follow `hasMore` and `nextOffset`.",
       inputSchema: listInputSchema,
       outputSchema: listOutputSchema,
     },
@@ -55,7 +55,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Get conversation",
       description:
-        "Get the coherent current transcript and relationship metadata for the requested saved clog conversation ID; this tool never substitutes a branch representative. The transcript starts at the conversation's opening turn, including copied history in canonical order, so a linear conversation can be read in one call without resolving its root. The `branchConversationIds` and `childIds` fields include only saved branches that this tool can open; `hasMoreMemberConversations` indicates when additional unsaved branches are known, and parent metadata may identify an unsaved or unavailable conversation. When `branchCount` is greater than 1, inspect relevant branch IDs before summarizing divergent outcomes. An unsaved conversation must be saved before this tool can retrieve its messages.",
+        "Get the coherent current transcript and relationship metadata for the requested saved clog conversation ID. The ID selects one exact conversation path, and this tool never substitutes another representative branch. The transcript starts at the conversation's opening turn, including copied history in canonical order, so a linear conversation can be read in one call without resolving its root. The `branchIds` and `childBranchIds` fields include only saved branches that this tool can open; `hasMoreBranches` indicates when additional unavailable branches are known, and parent metadata may identify an unsaved or unavailable branch. When `endpointCount` is greater than 1, inspect relevant branch IDs before summarizing divergent outcomes. An unsaved conversation must be saved before this tool can retrieve its messages.",
       inputSchema: getInputSchema,
       outputSchema: getOutputSchema,
     },
@@ -67,7 +67,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Update conversation",
       description:
-        "Update a saved clog conversation's metadata: title, summary, tags, and structured extraction; the ID comes from `list_conversations` or `search_conversations`. For summarization work, pass `summary` and `extraction` together. Default summaryKind is 'generated'; pass 'curated' only when the user directs a specific edit.",
+        "Update title, summary, tags, or structured extraction on a saved, locally writable conversation. The ID selects one exact branch-backed conversation record, including when it came from a collapsed list or search result; metadata does not propagate to other branches in the conversation. For summarization work, pass `summary` and `extraction` together. Default summaryKind is 'generated'; pass 'curated' only when the user directs a specific edit.",
       inputSchema: updateInputSchema,
     },
     async (input) => toToolResult(await handleUpdate(input), "Updated conversation metadata."),
@@ -106,7 +106,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Search conversations by meaning",
       description:
-        "Semantic search across saved clog conversations; matches by meaning, not exact text. Related source branches collapse to the highest-scoring matching conversation unless `allBranches` is true. Each result's `id` identifies that representative, while `snippetConversationId` identifies the concrete conversation that supplied the snippet. When `branchCount` is greater than 1, call `get_conversation` and inspect relevant branch transcripts before summarizing divergent outcomes. For exact text, use the `grep` filter on `list_conversations`.",
+        "Semantic search across saved clog conversations; matches by meaning, not exact text. Related source branches collapse to one result per conversation unless `allBranches` is true. Each collapsed result's `id` identifies the highest-scoring matching branch, while `snippetBranchId` identifies the branch that supplied the snippet. An `endpointCount` greater than 1 signals divergent outcomes; call `get_conversation` and inspect relevant branch transcripts before summarizing them. Invalid relationship graphs fall back to branch-specific results and report `branchView` as `collapsed_with_branch_fallback`. For exact text, use the `grep` filter on `list_conversations`.",
       inputSchema: searchInputSchema,
       outputSchema: searchOutputSchema,
     },

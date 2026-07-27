@@ -421,19 +421,19 @@ function expandedBranchNote(
   const status = fullGraphStatuses.get(
     conversationIdentityKey(related.conversation),
   );
-  return status?.liveness === "superseded"
+  return status?.branchStatus === "superseded"
     ? "[superseded]"
     : parentNote(related.immediateParentIdentity);
 }
 
 function collapsedBranchNote(
   related: {
-    branchCount: number;
+    endpointCount: number;
     relationshipCompleteness: "complete" | "incomplete" | "invalid";
   },
 ): string | undefined {
   const branchLabel =
-    related.branchCount >= 2 ? `${related.branchCount} branches` : null;
+    related.endpointCount >= 2 ? `${related.endpointCount} branches` : null;
   const incompleteLabel =
     related.relationshipCompleteness === "incomplete"
       ? "incomplete branch history"
@@ -443,10 +443,10 @@ function collapsedBranchNote(
 }
 
 function renderCollapsedBranchHint(
-  rows: Array<{ branchCount: number }>,
+  rows: Array<{ endpointCount: number }>,
   allBranches: boolean | undefined,
 ): void {
-  if (allBranches || !rows.some((row) => row.branchCount >= 2)) {
+  if (allBranches || !rows.some((row) => row.endpointCount >= 2)) {
     return;
   }
 

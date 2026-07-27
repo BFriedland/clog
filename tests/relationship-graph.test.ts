@@ -35,16 +35,16 @@ describe("related conversation graphs", () => {
       root: { source: "codex-cli", sourceId: "root" },
       completeness: "complete",
     });
-    expect(graph?.members.map((member) => member.conversation.id)).toEqual([
+    expect(graph?.branches.map((branch) => branch.conversation.id)).toEqual([
       "child",
       "leaf",
       "root",
     ]);
-    expect(projection?.representative.conversation.id).toBe("leaf");
-    expect(projection?.branchCount).toBe(1);
+    expect(projection?.representativeBranch.conversation.id).toBe("leaf");
+    expect(projection?.endpointCount).toBe(1);
   });
 
-  it("keeps sibling leaves in one graph and chooses the newest live endpoint", () => {
+  it("keeps sibling leaves in one graph and chooses the newest endpoint", () => {
     const root = conversation("root", "2026-01-01T00:00:00.000Z");
     const older = conversation(
       "older",
@@ -65,11 +65,11 @@ describe("related conversation graphs", () => {
       new Set([root, older, newer].map(conversationIdentityKey)),
     );
 
-    expect(projection?.branchCount).toBe(2);
-    expect(projection?.representative.conversation.id).toBe("newer");
+    expect(projection?.endpointCount).toBe(2);
+    expect(projection?.representativeBranch.conversation.id).toBe("newer");
   });
 
-  it("treats a parent continued after its newest child fork as a live endpoint", () => {
+  it("treats a parent continued after its newest child fork as an endpoint", () => {
     const root = conversation(
       "root",
       "2026-01-01T00:00:00.000Z",
@@ -89,11 +89,11 @@ describe("related conversation graphs", () => {
       new Set([root, child].map(conversationIdentityKey)),
     );
 
-    expect(projection?.branchCount).toBe(2);
-    expect(projection?.representative.conversation.id).toBe("root");
+    expect(projection?.endpointCount).toBe(2);
+    expect(projection?.representativeBranch.conversation.id).toBe("root");
   });
 
-  it("uses visible members when lifecycle filters hide a newer child", () => {
+  it("uses visible branches when lifecycle filters hide a newer child", () => {
     const root = conversation("root", "2026-01-01T00:00:00.000Z");
     const child = conversation(
       "child",
@@ -106,9 +106,9 @@ describe("related conversation graphs", () => {
       new Set([conversationIdentityKey(root)]),
     );
 
-    expect(projection?.representative.conversation.id).toBe("root");
-    expect(projection?.branchCount).toBe(1);
-    expect(projection?.hasHiddenMembers).toBe(true);
+    expect(projection?.representativeBranch.conversation.id).toBe("root");
+    expect(projection?.endpointCount).toBe(1);
+    expect(projection?.hasHiddenBranches).toBe(true);
   });
 
   it("compresses hidden intermediaries without inventing another visible branch", () => {
@@ -135,9 +135,9 @@ describe("related conversation graphs", () => {
 
     const projection = projectRelatedConversationGraph(graph!, visibleKeys);
 
-    expect(projection?.branchCount).toBe(1);
-    expect(projection?.representative.conversation.id).toBe("leaf");
-    expect(projection?.liveness.get(conversationIdentityKey(root))).toBe(
+    expect(projection?.endpointCount).toBe(1);
+    expect(projection?.representativeBranch.conversation.id).toBe("leaf");
+    expect(projection?.branchStatuses.get(conversationIdentityKey(root))).toBe(
       "superseded",
     );
 
@@ -152,8 +152,8 @@ describe("related conversation graphs", () => {
       visibleKeys,
     );
 
-    expect(continued?.branchCount).toBe(2);
-    expect(continued?.representative.conversation.id).toBe("root");
+    expect(continued?.endpointCount).toBe(2);
+    expect(continued?.representativeBranch.conversation.id).toBe("root");
   });
 
   it("uses local source mtime and imported creation time", () => {
@@ -177,7 +177,7 @@ describe("related conversation graphs", () => {
       new Set([root, imported, local].map(conversationIdentityKey)),
     );
 
-    expect(projection?.representative.conversation.id).toBe("z-local");
+    expect(projection?.representativeBranch.conversation.id).toBe("z-local");
   });
 
   it("uses full source identity to break equal activity-time ties", () => {
@@ -200,7 +200,7 @@ describe("related conversation graphs", () => {
       new Set([root, first, second].map(conversationIdentityKey)),
     );
 
-    expect(projection?.representative.identity).toEqual({
+    expect(projection?.representativeBranch.identity).toEqual({
       source: "codex-cli",
       sourceId: "a-child",
     });
@@ -244,10 +244,10 @@ describe("related conversation graphs", () => {
       new Set([root, child].map(conversationIdentityKey)),
     );
 
-    expect(projection?.liveness.get(conversationIdentityKey(root))).toBe(
+    expect(projection?.branchStatuses.get(conversationIdentityKey(root))).toBe(
       "unproven",
     );
-    expect(projection?.representative.conversation.id).toBe("child");
+    expect(projection?.representativeBranch.conversation.id).toBe("child");
   });
 
   it("keeps a missing parent as an external root and marks ancestry incomplete", () => {
@@ -319,13 +319,19 @@ describe("related conversation graphs", () => {
       duplicate,
     ]);
     expect(statuses.get(conversationIdentityKey(first))).toEqual({
-      liveness: "unproven",
+      branchStatus: "unproven",
       relationshipCompleteness: "invalid",
     });
     expect(statuses.get(conversationIdentityKey(second))).toEqual({
-      liveness: "unproven",
+      branchStatus: "unproven",
       relationshipCompleteness: "invalid",
     });
+    const invalidViews = buildRelatedConversationView(
+      [second, first, conflicting, duplicate],
+      undefined,
+      { allBranches: true },
+    );
+    expect(invalidViews.every((view) => view.endpointCount >= 0)).toBe(true);
   });
 
   it("does not choose a parent when saved and live observations conflict", () => {
@@ -351,7 +357,7 @@ describe("related conversation graphs", () => {
     }]);
 
     expect(graph?.completeness).toBe("invalid");
-    expect(graph?.members[0]).toMatchObject({
+    expect(graph?.branches[0]).toMatchObject({
       parent: null,
       parentRelationship: null,
     });

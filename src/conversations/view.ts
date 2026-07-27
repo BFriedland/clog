@@ -21,8 +21,8 @@ import {
   buildRelatedConversationGraphs,
   conversationIdentityKey,
   projectRelatedConversationGraphs,
+  type BranchStatus,
   type ConversationIdentity,
-  type ConversationLiveness,
   type RelatedConversationInput,
   type RelatedConversationRelationshipOverride,
   type RelationshipCompleteness,
@@ -89,20 +89,20 @@ export interface RelatedConversationView<
   immediateParentRelationship: ConversationRelationship | null;
   immediateParentIdentity: ConversationIdentity | null;
   immediateParentId: string | null;
-  childIds: string[];
-  branchConversationIds: string[];
-  memberCount: number;
+  childBranchIds: string[];
+  branchIds: string[];
   branchCount: number;
+  endpointCount: number;
   relationshipCompleteness: RelationshipCompleteness;
-  hasMoreMemberConversations: boolean;
-  liveness: ConversationLiveness;
+  hasMoreBranches: boolean;
+  branchStatus: BranchStatus;
   isRepresentative: boolean;
   inheritedMessagesMayAppear: boolean;
   relationshipWarnings: RelationshipGraphWarning[];
 }
 
 export interface FullConversationGraphStatus {
-  liveness: ConversationLiveness;
+  branchStatus: BranchStatus;
   relationshipCompleteness: RelationshipCompleteness;
 }
 
@@ -270,46 +270,46 @@ export function buildRelatedConversationView<
 
   for (const projection of projections) {
     const projectedByKey = new Map(
-      projection.visibleMembers.map((member) => [
-        conversationIdentityKey(member.identity),
-        member,
+      projection.visibleBranches.map((branch) => [
+        conversationIdentityKey(branch.identity),
+        branch,
       ] as const),
     );
-    const members = options.allBranches
-      ? projection.visibleMembers
-      : [projection.representative];
+    const branches = options.allBranches
+      ? projection.visibleBranches
+      : [projection.representativeBranch];
 
-    for (const member of members) {
-      const memberKey = conversationIdentityKey(member.identity);
-      const presentParent = member.parent
-        ? projectedByKey.get(conversationIdentityKey(member.parent))
+    for (const branch of branches) {
+      const branchKey = conversationIdentityKey(branch.identity);
+      const presentParent = branch.parent
+        ? projectedByKey.get(conversationIdentityKey(branch.parent))
         : undefined;
-      const childIds = member.children
+      const childBranchIds = branch.children
         .map((child) => projectedByKey.get(conversationIdentityKey(child)))
         .filter((child) => child != null)
         .map((child) => child.conversation.id)
         .sort();
 
       rows.push({
-        conversation: member.conversation,
+        conversation: branch.conversation,
         knownRootIdentity: projection.graph.root,
-        immediateParentRelationship: member.parentRelationship,
-        immediateParentIdentity: member.parent,
+        immediateParentRelationship: branch.parentRelationship,
+        immediateParentIdentity: branch.parent,
         immediateParentId: presentParent?.conversation.id ?? null,
-        childIds,
-        branchConversationIds: projection.visibleMembers
+        childBranchIds,
+        branchIds: projection.visibleBranches
           .map((candidate) => candidate.conversation.id)
           .sort(),
-        memberCount: projection.visibleMembers.length,
-        branchCount: projection.branchCount,
+        branchCount: projection.visibleBranches.length,
+        endpointCount: projection.endpointCount,
         relationshipCompleteness: projection.graph.completeness,
-        hasMoreMemberConversations: projection.hasHiddenMembers,
-        liveness: projection.liveness.get(memberKey) ?? "unproven",
+        hasMoreBranches: projection.hasHiddenBranches,
+        branchStatus: projection.branchStatuses.get(branchKey) ?? "unproven",
         isRepresentative:
-          memberKey ===
-          conversationIdentityKey(projection.representative.identity),
+          branchKey ===
+          conversationIdentityKey(projection.representativeBranch.identity),
         inheritedMessagesMayAppear:
-          projection.graph.members.length > 1 ||
+          projection.graph.branches.length > 1 ||
           projection.graph.externalParents.length > 0,
         relationshipWarnings: projection.graph.warnings,
       });
@@ -332,10 +332,10 @@ export function buildFullConversationGraphStatusMap<
     }).map((related) => [
       conversationIdentityKey(related.conversation),
       {
-        liveness:
+        branchStatus:
           related.relationshipCompleteness === "invalid"
             ? "unproven"
-            : related.liveness,
+            : related.branchStatus,
         relationshipCompleteness: related.relationshipCompleteness,
       },
     ]),
@@ -350,7 +350,7 @@ export function isInDefaultLiteralSearchScope(
   return (
     status == null ||
     status.relationshipCompleteness === "invalid" ||
-    status.liveness === "live"
+    status.branchStatus === "endpoint"
   );
 }
 

@@ -55,7 +55,7 @@ describe("related-conversation search policy", () => {
     expect(selectIndexEligibleConversations([stale])).toEqual([]);
   });
 
-  it("restores superseded members when index-all-branches is enabled", () => {
+  it("restores superseded branches when index-all-branches is enabled", () => {
     const parent = conversation("parent", "2026-01-01T00:00:00.000Z");
     const child = conversation(
       "child",
@@ -89,7 +89,8 @@ describe("related-conversation search policy", () => {
     expect(results).toEqual([
       expect.objectContaining({
         conversationId: "child",
-        snippetConversationId: "child",
+        snippetBranchId: "child",
+        endpointCount: 1,
         knownRootIdentity: {
           source: "claude-code",
           sourceId: "parent",

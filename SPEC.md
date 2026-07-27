@@ -334,21 +334,29 @@ This is intentional. clog does not use a composite key for the built-in sources 
 
 **Timestamp roles:** `createdAt` is source chronology. For saved rows, `discoveredAt` is the first save or import time and `modifiedAt` is the latest successful metadata edit or save write. For an ephemeral unsaved scan view, `discoveredAt` is the invocation's scan time and `modifiedAt` is the source file's `sourceMtime`. `modifiedAt` is not a saved-conversation status marker. `savedAt` is the latest successful save time; `savedMessageCount` is the transcript and saved-status checkpoint, not a timestamp; `sourceMtime` is operational source-locator metadata; and `indexedAt` is the search cache freshness marker. MCP list responses omit `discoveredAt` for unsaved views.
 
-**Conversation, transcript, and branch relationship:** A conversation is one
-stable, source-native resumable session and one selectable clog ID. Its
-transcript is the coherent current message sequence projected by that source
-adapter. A branch relationship identifies one conversation's immediate parent;
-it does not merge the two transcripts or replace either conversation's
+**Conversation, transcript, and branch relationship:** A conversation is the
+whole user activity represented by one connected set of branch relationships
+and presented once by default. A branch is one concrete source-native path with
+its own selectable clog ID and coherent transcript. The existing
+`conversations` table and `ConversationMeta` model store one conversation
+record per branch. A branch relationship identifies one branch's immediate
+parent; it does not merge the two transcripts or replace either branch's
 identity. Same-file abandoned Claude Code rewind paths remain in the managed
-raw JSONL but are not separate clog conversations.
+raw JSONL but are not separate clog branches.
 
 Adapters own source-specific transcript reconstruction and relationship
 inspection. Core conversation views consume only the normalized transcript,
-inspection state, and generic relationship edges. A derived branch graph can
-report an immediate parent, the furthest known root, live endpoints, and
-incomplete or invalid history without persisting a graph or root ID. Branch
-counts are live-endpoint counts: a linear chain of superseded source sessions
-has one branch regardless of its member count.
+inspection state, and generic relationship edges. A derived conversation graph
+can report an immediate parent, the furthest known root, endpoints, and
+incomplete or invalid history without persisting a graph or root ID. An
+endpoint is a branch positively identified as a divergent path: a leaf, or a
+parent with observed source activity after its newest known fork. The most
+recently updated visible endpoint is the representative branch for collapsed
+list-style presentation.
+
+Ordinary command prose calls the selected ID a conversation ID. Branch IDs are
+named when an expanded or navigation surface needs to distinguish concrete
+paths within the conversation.
 
 `relationshipInspection.status = "none_found"` means the adapter completed its
 current inspection and found no observable parent; it does not prove that no
@@ -567,10 +575,17 @@ their diagnostics are reviewed. Refresh preserves curation, managed raw bytes,
 save checkpoints until content is explicitly reparsed, and current
 `sourceMtime`; it never downgrades a newer adapter stamp. Rows refreshed under a
 new transcript projection clear stale semantic-search state. `clog index` then
-rebuilds conversation-owned vectors for default-indexed live endpoints; vectors
-from older projections remain unsearchable.
+rebuilds conversation-record-owned vectors for default-indexed endpoints and
+conservatively retained branches; vectors from older projections remain
+unsearchable.
 
-Database membership means that a conversation is part of clog's durable saved collection. The database does not store lifecycle state or unsaved source conversations. It also does not store full message content, tool outputs, or raw conversation text. Saved local rows point at managed files under `~/.clog/raw/`, git rows point into `~/.clog/remote/`, and file-imported rows point into `~/.clog/imports/`. Unsaved conversations exist only as on-demand views whose `sourcePath` points at an enabled external source.
+Database membership means that a branch has a conversation record in clog's
+durable saved collection. The database does not store lifecycle state or
+unsaved source branches. It also does not store full message content, tool
+outputs, or raw conversation text. Saved local rows point at managed files
+under `~/.clog/raw/`, git rows point into `~/.clog/remote/`, and file-imported
+rows point into `~/.clog/imports/`. Unsaved branches exist only as on-demand
+views whose `sourcePath` points at an enabled external source.
 
 ### 3.5 Storage Location
 
@@ -1260,7 +1275,7 @@ commands do not repeat those maintenance warnings.
 | `--grep <text>` | `-g` | Filter by text match on title, summary, or message content |
 | `--columns <cols>` | `-c` | Columns to show (comma-separated: `id,date,state,source,project,author,title`, or `all`) |
 | `--origin <origin>` | | Filter by provenance view: `local` for `origin_kind = 'local'`, `remote` for imported rows (`origin_kind != 'local'`) |
-| `--all-branches` | | Show and search every branch and superseded generation instead of one representative conversation |
+| `--all-branches` | | Show and search every branch and superseded generation instead of one representative branch per conversation |
 
 ```bash
 # Filter by state
@@ -1285,26 +1300,27 @@ $ clog list -c id,date,title
 ```
 
 Default list output derives branch graphs after filtering and displays the most
-recently updated visible live endpoint as the conversation. For local-source
+recently updated visible endpoint as the representative branch. For local-source
 rows, representative ordering uses the current scan's `sourceMtime` when
 available; imported and remote rows, and local rows without a current source
 mtime, use source `createdAt`. Stable source identity breaks ties. A collapsed
 row's `createdAt` belongs to the displayed representative, not the known root.
 
-A linear chain of copied-history generations has `branchCount = 1` and receives
-no branch chrome because its live endpoint already contains the coherent
+A linear chain of copied-history generations has `endpointCount = 1` and
+receives no branch chrome because its endpoint already contains the coherent
 history from the opening turn. Divergent graphs display `[N branches]`; an
 unavailable ancestor displays `incomplete branch history`. When a branch count
 is shown, list explains that the row is the most recently updated branch and
 points to `clog list --all-branches`. Expanded output returns every concrete
-conversation, marks superseded generations, and shows each known immediate
-parent's short ID.
+branch, marks superseded generations, and shows each known immediate parent's
+short ID.
 
 Collapsing is a read-only navigation default. Direct conversation IDs remain
-resolvable, including nonrepresentative and superseded IDs. `clog show` and
-`clog diff` act on the exact resolved conversation. Metadata edits, tagging,
-save, drain, remove, sync, and indexing retain their command-specific concrete
-conversation scope; no collapsed row implies graph-wide mutation.
+resolvable, including IDs for nonrepresentative and superseded paths. `clog
+show` and `clog diff` act on the exact resolved conversation path. Metadata
+edits, tagging, save, drain, remove, sync, and indexing retain their
+command-specific conversation-record scope; no collapsed row implies
+graph-wide mutation.
 
 Columns are dynamically sized to the terminal width. For every non-terminal column, width is computed from the current result set as `max(header width, widest rendered cell width) + 1`, producing dense output without large fixed-width gaps. The final visible column absorbs the remaining terminal width. When that final column is truncated, it must still allow at least `1` visible character plus `...` (minimum width `4`). The `author` column is auto-shown when multiple distinct authors are present, even without `--columns`. The `source` column is auto-shown when the selected result set contains conversations from multiple distinct sources. `--columns` still overrides the default column set.
 
@@ -1518,7 +1534,7 @@ When called with no arguments, `clog save` performs no local-source scan. It sav
 
 When called with explicit selectors, `clog save [selectors...]` can save unsaved or already saved local conversations.
 
-Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below. For project selectors, "saveable" means conversations that `clog status` would report for that project: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs from it, and saved conversations selected by the no-argument checkpoint rule above. Metadata-only changes do not make clean saved conversations project-batch targets. A user may still explicitly pass a clean saved conversation ID to force a resave of that one row.
+Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below. For project selectors, "saveable" means conversations that `clog status` would report for that project: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs from it, and saved conversations selected by the no-argument checkpoint rule above. Metadata-only changes do not make clean saved conversations project-batch targets. A user may still explicitly pass a clean saved conversation ID to force a resave of that one conversation record.
 
 Per-conversation explicit save behavior:
 
@@ -1563,11 +1579,11 @@ A conversation is counted as lacking a structured summary when `summaryKind != "
 
 `clog show <id>` displays conversation metadata followed by parsed messages. Saved conversations read from the clog-managed raw copy. Unsaved conversations can be shown from the source file when the source file is still available.
 
-The ID selects one concrete source conversation even when default list output
-would display another branch representative. Parsed formats use that adapter's
-coherent current transcript. On a linear representative or other live
-endpoint, message index 0 is the opening turn and a copied-history prefix
-appears in canonical order, so callers do not resolve and concatenate ancestor
+The ID selects one exact conversation path even when default list output would
+represent the conversation with another path. Parsed formats use that adapter's
+coherent current transcript. On the representative path or another endpoint,
+message index 0 is the opening turn and a copied-history prefix appears in
+canonical order, so callers do not resolve and concatenate ancestor
 transcripts. Inherited message timestamps can reflect the child's copy time;
 message content and order, not inherited per-message timestamps, are
 authoritative.
@@ -1934,7 +1950,7 @@ publication, pair-directory partial success, summaries, or exit status.
 #### 5.7.3.4 Archive Safety and Resource Limits
 
 Archive creation validates prospective names before reading conversation
-content. Every stored conversation ID must contribute exactly one non-empty
+content. Every stored branch ID must contribute exactly one non-empty
 path component. The same selected-name validator used by fill rejects empty
 components, C0 controls, backslashes, Windows-forbidden characters, POSIX or
 Windows absolute paths, `.` and `..` components, trailing spaces or periods,
@@ -2487,8 +2503,8 @@ MCP tools that accept a conversation ID use the same resolver grammar as CLI com
 
 `list_conversations`, `get_conversation`, and `search_conversations` publish
 Model Context Protocol output schemas for their structured responses. Field
-descriptions distinguish a displayed representative ID, an exact requested ID,
-and the concrete conversation that supplied a search snippet.
+descriptions distinguish a representative branch ID, an exact requested branch
+ID, and the branch that supplied a search snippet.
 
 ```typescript
 // List conversations with optional state and metadata filters
@@ -2525,8 +2541,8 @@ returns: {
     savedAt: string | null;
     savedMessageCount: number | null;
     sourceMtime: string | null;
-    branchCount: number;   // Live endpoints, not stored member conversations
-    branchStatus?: "live" | "superseded" | "unproven"; // All-branches rows
+    endpointCount: number; // Endpoints in the composed, filtered view
+    branchStatus?: "endpoint" | "superseded" | "unproven"; // All-branches rows
     relationshipCompleteness?: "incomplete" | "invalid"; // Omitted when complete
   }>;
   totalCount: number;
@@ -2543,8 +2559,8 @@ returns: {
   relationshipWarnings?: RelationshipGraphWarning[];
 }
 
-// Get conversation content (parses raw JSONL on demand, truncated by default)
-// Only works on saved conversations — returns an error for unsaved.
+// Get conversation content and branch navigation (parses raw JSONL on demand,
+// truncated by default). Only works on saved conversations.
 tool: "get_conversation"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
@@ -2569,12 +2585,12 @@ returns: {
   createdAt: string;
   immediateParentRelationship: ConversationRelationship | null;
   knownRootIdentity: { source: string; sourceId: string };
-  childIds: string[];       // Saved child conversations this tool can open
-  branchConversationIds: string[]; // Saved members this tool can open
-  memberCount: number;      // Concrete members in this retrieval view
-  branchCount: number;      // Live endpoint count
+  childBranchIds: string[]; // Saved immediate-child branches this tool can open
+  branchIds: string[];      // Saved branches this tool can open, including id
+  branchCount: number;      // branchIds.length
+  endpointCount: number;    // Endpoints in the saved, openable branch view
   relationshipCompleteness: "complete" | "incomplete" | "invalid";
-  hasMoreMemberConversations: boolean;
+  hasMoreBranches: boolean;
   inheritedMessagesMayAppear: boolean;
   relationshipWarnings: RelationshipGraphWarning[];
   messages: Message[];       // Requested message slice
@@ -2624,7 +2640,7 @@ returns: {
 // Edit metadata on a saved local conversation
 tool: "update_conversation"
 input: {
-  id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
+  id: string;              // ID resolving to one exact saved local branch
   title?: string;          // New title
   summary?: string;        // New summary
   extraction?: SummaryExtraction | null; // Structured summary fields
@@ -2655,7 +2671,11 @@ returns: {
 If the requested update would not change the conversation's title, summary, summary kind, extraction, or tags, `update_conversation` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
 
 `update_conversation` operates only on saved local rows (`originKind = "local"`). It
-rejects both `git` and `file` rows as imported read-only conversations.
+rejects both `git` and `file` rows as imported read-only conversation records.
+The tool updates only the conversation record for the exact input branch ID.
+An ID returned by a collapsed list or search result updates the branch that
+supplied that result; metadata does not propagate to the conversation's other
+branches.
 
 `update_conversation` summary-kind rules are applied in order:
 
@@ -2720,23 +2740,24 @@ fails, broad list requests keep its already-yielded candidates and every other
 adapter's candidates while reporting that discovery was incomplete.
 
 Related branches collapse before pagination unless `allBranches` is true.
-Each list row's `id` is the displayed representative in a collapsed response
-or the concrete conversation in an all-branches response; `branchView` makes
-that distinction explicit. List rows deliberately remain lean: `branchCount`
+Each list row's `id` is the representative branch in a collapsed response or
+the concrete branch in an all-branches response; `branchView` makes that
+distinction explicit. List rows deliberately remain lean: `endpointCount`
 is the normal affordance, while incomplete or invalid history adds
 `relationshipCompleteness`. Full branch IDs, immediate-parent evidence, and
 known-root identity are returned by `get_conversation`, not repeated on every
 list row. All-branches rows add `branchStatus` so agents can identify
-superseded or unproven conversations.
+endpoint, superseded, or unproven branches.
 
-`get_conversation` returns the exact requested saved conversation, never a
-substituted representative. It returns the adapter-produced coherent current
-transcript plus navigation metadata for saved members. Parent identity can
-refer to an unavailable conversation; `branchConversationIds` contains only
-IDs that this tool can open, and `hasMoreMemberConversations` signals known
-unsaved members. On a linear live endpoint, the transcript already begins with
-the opening turn. When `branchCount > 1`, retrieval guidance requires agents to
-inspect the relevant branch transcripts before summarizing divergent outcomes.
+`get_conversation` returns the exact requested saved branch, never a
+substituted representative branch. It returns the adapter-produced coherent
+current transcript plus navigation metadata for saved branches. Parent identity
+can refer to an unavailable branch; `branchIds` contains only IDs that this
+tool can open, and `hasMoreBranches` signals additional known branches that the
+saved-only tool cannot open. On a linear endpoint, the transcript already
+begins with the opening turn. When `endpointCount > 1`, retrieval guidance
+requires agents to inspect the relevant branch transcripts before summarizing
+divergent outcomes.
 
 `list_conversations` always returns explicit pagination metadata. Agents should treat `hasMore: true` as an instruction to request the
 next page with `offset: nextOffset` and the same `limit` when the task requires
@@ -3035,7 +3056,7 @@ Conversations are naturally chunked by **turn** (user message + assistant respon
 
 - **Short turns:** Embedded as-is. A typical turn is 100–500 tokens.
 - **Long turns:** Split at ~800 token boundaries, with ~100 token overlap for context continuity.
-- **Each chunk stores:** conversation ID, chunk index, message index range — enough to reconstruct which part of the conversation matched.
+- **Each chunk stores:** branch ID, chunk index, message index range — enough to reconstruct which branch transcript matched.
 
 ### 10.5 Embedding Providers
 
@@ -3090,12 +3111,12 @@ The `indexed_at` column tracks vector DB state:
 
 **Searchability invariant:** The vector store is a derived cache of the subset of saved database conversations that are currently searchable. Database membership already implies saved state. A conversation is searchable only when it exists in the local database, has a non-null `indexed_at` at or after `saved_at`, and both its relationship-inspection and transcript-projection versions equal the installed adapter versions. A missing, older, or newer adapter stamp makes existing vectors unreachable until a compatible clog build explicitly refreshes and indexes the row. Semantic search must not return conversations that have been deleted, have a stale index, or otherwise dropped from the local database. Unsaved scan views are never indexed.
 
-Vectors remain owned by concrete conversation IDs. Default indexing covers
-unrelated conversations and live endpoints, including a parent continued after
-its newest fork, while skipping superseded generations. Setting
-`search.indexAllBranches = true` restores indexing for every concrete member.
-Query-time branch collapse remains the correctness layer even when every
-member is indexed.
+Vectors remain owned by concrete branch IDs. Default indexing covers endpoints,
+including a parent continued after its newest fork, plus branches retained
+conservatively because their status is unproven. It skips branches proven
+superseded. Setting `search.indexAllBranches = true` restores indexing for every
+branch. Query-time conversation-graph collapse remains the correctness layer
+even when every branch is indexed.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -3136,10 +3157,11 @@ $ clog index --rebuild    # Re-index all saved conversations from scratch
 `--rebuild` sets `indexed_at = null` on all saved conversations before indexing, forcing a full re-index.
 
 By default, semantic search returns the highest-scoring in-scope match from
-each branch graph, and literal `clog list --grep` searches live endpoints plus
-unrelated conversations. `--all-branches` restores conversation-specific
-results and literal matching of superseded generations. Invalid graphs fall
-back to concrete results because clog cannot safely choose a representative.
+each conversation graph, and literal `clog list --grep` searches endpoints
+plus unrelated branches. `--all-branches` restores branch-specific results and
+literal matching of superseded generations. Invalid graphs fall back to
+branch-specific results because clog cannot safely establish the conversation
+boundary.
 
 ### 10.8.1 Searchability Lifecycle
 
@@ -3192,30 +3214,53 @@ returns: {
     originRef: string | null;
     createdAt: string;
     knownRootIdentity: { source: string; sourceId: string };
-    memberCount: number;
-    branchCount: number;
+    endpointCount: number;
     relationshipCompleteness: "complete" | "incomplete" | "invalid";
-    snippetConversationId: string; // Concrete conversation that supplied the snippet
+    snippetBranchId: string; // Concrete branch that supplied the snippet
     relevanceScore: number;
     snippet: string;       // Matched content excerpt
   }>;
   totalCount: number;
-  branchView: "collapsed" | "all_branches";
+  branchView:
+    | "collapsed"
+    | "all_branches"
+    | "collapsed_with_branch_fallback";
   indexCoverage: {
-    indexed: number;     // How many saved conversations are indexed
-    saved: number;   // Total saved conversations
+    searchableBranchCount: number; // Eligible branches currently searchable
+    eligibleBranchCount: number;   // Branches the configured policy intends to index
   };
-  warning?: string;      // Present when search hit the scan cap and completeness is not guaranteed
+  warning?: string;      // Scan-cap or invalid-relationship fallback diagnostic
 }
 ```
 
 `search_conversations` only searches **saved** conversations, consistent with the default `list_conversations` population and with `browse_metadata`. If search is not configured, the tool returns an error explaining how to set it up.
 
-In collapsed results, `id` is the highest-scoring representative conversation
-and `snippetConversationId` identifies the conversation whose indexed content
-supplied the snippet. A `branchCount` greater than one tells the agent to call
-`get_conversation` and inspect relevant branch transcripts before summarizing
-divergent outcomes.
+In collapsed results, `id` is the highest-scoring in-scope matching branch and
+`snippetBranchId` identifies the branch whose indexed content supplied the
+snippet. `endpointCount` describes the complete saved conversation graph whose
+branches satisfy the current adapter search contracts, not only the branches
+that matched the query or its metadata filters. An `endpointCount` greater than
+one tells the agent to call `get_conversation` and inspect relevant branch
+transcripts before summarizing divergent outcomes.
+
+`indexCoverage.eligibleBranchCount` counts filtered saved branches that the
+current `search.indexAllBranches` setting intends to index.
+`indexCoverage.searchableBranchCount` counts the subset that currently
+satisfies the searchability invariant. Eligibility is classified from the
+complete saved conversation graph before project, author, tag, or origin
+filters are applied, then intersected with the filtered rows. The request's
+`allBranches` option changes result expansion but not this denominator.
+
+The eligible branch-ID set is used only for `indexCoverage`. Semantic-search
+candidate filtering continues to admit every filtered branch that satisfies
+the searchability invariant, including a branch whose still-current vectors
+remain available after it becomes superseded. Query-time conversation-graph
+collapse handles those candidates.
+
+When invalid relationships prevent safe collapse,
+`branchView = "collapsed_with_branch_fallback"` and the affected matches remain
+branch-specific. `branchView = "all_branches"` remains reserved for an explicit
+`allBranches` request.
 
 `search_conversations` uses the same MCP metadata filter semantics as `list_conversations`:
 `project` and `author` are trimmed case-insensitive substring filters, tags are
@@ -3408,7 +3453,7 @@ The git remote path tuple is `(author, source, id)`. The source directory and fi
 
 - `<author>` is the author directory for the person who saved the conversation
 - `<source>` must be a syntactically valid source key such as `claude-code` or `codex-cli`
-- `<id>` is the source-native conversation ID and must match `meta.id`
+- `<id>` is the source-native branch ID and must match `meta.id`
 - `meta.source` must match the `<source>` directory
 - the `.jsonl` and `.meta.json` paths for a conversation must share the same `(author, source, id)` tuple
 
@@ -3537,7 +3582,7 @@ Archive drain, pair-directory drain, fill, and Git synchronization preserve a
 child's immediate-parent relationship even when the parent pair is absent.
 They copy the exact managed raw bytes, including abandoned same-file Claude
 Code paths that are excluded from the normalized current transcript. Sync
-retraction remains conversation-specific: removing or retracting one child
+retraction remains branch-specific: removing or retracting one child
 does not delete its parent or sibling branches, and a missing parent does not
 invalidate the child's portable relationship.
 
@@ -3923,7 +3968,7 @@ If vector cleanup fails after the database transaction commits, reconciliation
 remains successful and prints a warning naming the affected short ID.
 
 The scanner walks the checkout by author directory, source directory, and
-conversation ID in code-point lexicographic order. Parse-supported source
+branch ID in code-point lexicographic order. Parse-supported source
 directories are reconciled. Syntactically valid source directories whose source
 keys are not parse-supported emit one `unsupported_source` warning per
 `<author>/<source>` directory; any conversation pairs found there are skipped,
