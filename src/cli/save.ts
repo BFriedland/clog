@@ -19,7 +19,6 @@ import {
 import {
   insertFirstSavedConversation,
   listConversations,
-  listConversationsNeedingIndex,
   saveLocalConversation,
 } from "../db/index.js";
 import {
@@ -28,7 +27,10 @@ import {
   type ConversationMeta,
   type SavedConversationMeta,
 } from "../models/conversation.js";
-import { maybeAutoIndexConversations } from "../search/coherence.js";
+import {
+  listIndexEligibleConversationsNeedingIndex,
+  maybeAutoIndexConversations,
+} from "../search/coherence.js";
 import { searchAvailable } from "../search/deps.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
@@ -334,11 +336,11 @@ async function printSaveIndexingOutcome(
   }
 
   process.stdout.write(
-    `Indexing ${savedConversations.length} conversation(s) for vector search. Safe to interrupt; run "clog index" to resume.\n`,
+    'Indexing saved content for vector search. Safe to interrupt; run "clog index" to resume.\n',
   );
 
   const showProgress = process.stdout.isTTY && savedConversations.length > 1;
-  const indexedFailures = await maybeAutoIndexConversations(
+  const indexing = await maybeAutoIndexConversations(
     savedConversations,
     showProgress
       ? (completed, total) => {
@@ -350,16 +352,21 @@ async function printSaveIndexingOutcome(
       : undefined,
   );
 
-  for (const failedId of indexedFailures) {
+  for (const failedId of indexing.failedIds) {
     process.stderr.write(
       `warning: saved ${failedId.slice(0, 8)} but failed to index it for search\n`,
     );
   }
 
-  const indexedCount = savedConversations.length - indexedFailures.length;
+  const indexedCount = indexing.indexedIds.length;
   process.stdout.write(
     `Indexed ${indexedCount}/${savedConversations.length} conversation(s) for vector search.\n`,
   );
+  if (indexing.skippedIds.length > 0) {
+    process.stdout.write(
+      `Skipped ${indexing.skippedIds.length} superseded conversation(s); current branches remain searchable.\n`,
+    );
+  }
 }
 
 async function resolveSaveSelectors(
@@ -451,7 +458,9 @@ async function maybePrintUnindexedHint(
     return;
   }
 
-  const count = (await listConversationsNeedingIndex()).length;
+  const count = (await listIndexEligibleConversationsNeedingIndex({
+    indexAllBranches: config.search.indexAllBranches,
+  })).length;
   if (count === 0) {
     return;
   }

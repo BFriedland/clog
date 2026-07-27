@@ -3,9 +3,12 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
+  buildFullConversationGraphStatusMap,
   buildCurrentGraphRelationshipOverride,
   buildRelatedConversationView,
   composeConversationView,
+  isInDefaultLiteralSearchScope,
+  type FullConversationGraphStatus,
   type LocalScanSnapshot,
 } from "../conversations/view.js";
 import { gitOriginFilter, listConversations } from "../db/index.js";
@@ -43,7 +46,7 @@ export function buildListCommand(): Command {
     .option("-c, --columns <cols>", "Comma-separated columns to display")
     .option("--origin <origin>", "Filter by origin: local or remote")
     .option("--all", "Include unsaved and ignored conversations, plus imported conversations from other authors")
-    .option("--all-branches", "Show every branch and superseded generation")
+    .option("--all-branches", "Show and search every branch and superseded generation")
     .action(async (options) => {
       const config = await loadConfig();
       const columns = parseColumnsOption(options.columns);
@@ -76,44 +79,51 @@ export function buildListCommand(): Command {
           ? { author: authorName }
           : null;
 
+      const requestedStates: Array<"saved" | "unsaved"> | undefined = stateFilter
+        ? [stateFilter]
+        : options.all
+          ? undefined
+          : ["saved"];
       const composition = await composeConversationView({
-        states: stateFilter
-          ? [stateFilter]
-          : options.all
-            ? undefined
-            : ["saved"],
+        states: requestedStates,
         projectName: options.project,
         author: options.author,
         tag: options.tag,
         origin: originFilter,
         curatedDefault,
       }, scanResult);
-      const visibleIdentityKeys = new Set(
-        composition.conversations.map((conversation) =>
-          conversationIdentityKey(conversation),
-        ),
+      const relationshipComposition = await composeConversationView(
+        { states: requestedStates },
+        scanResult,
       );
-      let graphUniverse = composition.graphUniverse;
+      const fullGraphStatuses = buildFullConversationGraphStatusMap(
+        relationshipComposition.graphUniverse,
+        relationshipComposition.relationshipOverrides,
+      );
+      let conversations = composition.conversations;
 
       if (options.grep) {
-        graphUniverse = await filterConversationsByGrep(
+        if (!options.allBranches && !options.all) {
+          conversations = conversations.filter((conversation) =>
+            isInDefaultLiteralSearchScope(conversation, fullGraphStatuses),
+          );
+        }
+        conversations = await filterConversationsByGrep(
           config,
           options.grep,
-          graphUniverse,
+          conversations,
         );
       }
-      const conversations = graphUniverse.filter((conversation) =>
-        visibleIdentityKeys.has(conversationIdentityKey(conversation)),
-      );
 
       const concreteConversations = conversations;
       if (!options.all) {
         const relatedRows = buildRelatedConversationView(
-          graphUniverse,
+          relationshipComposition.graphUniverse,
           conversations,
           {
             allBranches: options.allBranches,
-            relationshipOverrides: composition.relationshipOverrides,
+            relationshipOverrides:
+              relationshipComposition.relationshipOverrides,
           },
         );
         renderRelationshipWarnings(relatedRows.flatMap((row) => row.relationshipWarnings));
@@ -122,7 +132,7 @@ export function buildListCommand(): Command {
             .map((related) => ({
               ...related.conversation,
               titleSuffix: options.allBranches
-                ? parentNote(related.immediateParentIdentity)
+                ? expandedBranchNote(related, fullGraphStatuses)
                 : branchNote(related.branchCount),
             }))
             .sort(compareDisplayRows),
@@ -150,14 +160,36 @@ export function buildListCommand(): Command {
           }
         }
       } else {
-        const ignoredRows = discoverIgnoredDisplayRows(scanResult!, options);
+        const visibleIgnoredRows = discoverIgnoredDisplayRows(
+          scanResult!,
+          options,
+        );
+        const allIgnoredRows = discoverIgnoredDisplayRows(scanResult!, {});
         const mergedGraphRows = mergeRelatedDisplayRows([
-          ...graphUniverse.map(conversationToDisplayRow),
-          ...ignoredRows,
-        ], composition.relationshipOverrides);
+          ...relationshipComposition.graphUniverse.map(conversationToDisplayRow),
+          ...allIgnoredRows,
+        ], relationshipComposition.relationshipOverrides);
+        const visibleIdentityKeys = new Set(
+          [
+            ...conversations.map(conversationIdentityKey),
+            ...visibleIgnoredRows.map(conversationIdentityKey),
+          ],
+        );
+        const mergedGraphStatuses = buildFullConversationGraphStatusMap(
+          mergedGraphRows.rows,
+          mergedGraphRows.relationshipOverrides,
+        );
+        let visibleRows = mergedGraphRows.rows.filter((row) =>
+          visibleIdentityKeys.has(conversationIdentityKey(row)),
+        );
+        if (options.grep && !options.allBranches) {
+          visibleRows = visibleRows.filter((row) =>
+            isInDefaultLiteralSearchScope(row, mergedGraphStatuses),
+          );
+        }
         const relatedRows = buildRelatedConversationView(
           mergedGraphRows.rows,
-          mergedGraphRows.rows,
+          visibleRows,
           {
             allBranches: options.allBranches,
             relationshipOverrides: mergedGraphRows.relationshipOverrides,
@@ -165,7 +197,12 @@ export function buildListCommand(): Command {
         );
         renderRelationshipWarnings(relatedRows.flatMap((row) => row.relationshipWarnings));
         const displayRows = relatedRows
-          .map((related) => toDisplayRow(related, options.allBranches))
+          .map((related) =>
+            toDisplayRow(
+              related,
+              options.allBranches,
+              mergedGraphStatuses,
+            ))
           .sort(compareDisplayRows);
 
         renderDisplayTable(displayRows, {
@@ -356,14 +393,27 @@ function displayStatePriority(state: string): number {
 function toDisplayRow(
   related: ReturnType<typeof buildRelatedConversationView<RelatedDisplayRow>>[number],
   allBranches: boolean | undefined,
+  fullGraphStatuses: ReadonlyMap<string, FullConversationGraphStatus>,
 ): DisplayRow {
   const conversation = related.conversation;
   return {
     ...conversation,
     titleSuffix: allBranches
-      ? parentNote(related.immediateParentIdentity)
+      ? expandedBranchNote(related, fullGraphStatuses)
       : branchNote(related.branchCount),
   };
+}
+
+function expandedBranchNote(
+  related: ReturnType<typeof buildRelatedConversationView<RelatedDisplayRow>>[number],
+  fullGraphStatuses: ReadonlyMap<string, FullConversationGraphStatus>,
+): string | undefined {
+  const status = fullGraphStatuses.get(
+    conversationIdentityKey(related.conversation),
+  );
+  return status?.liveness === "superseded"
+    ? "[superseded]"
+    : parentNote(related.immediateParentIdentity);
 }
 
 function branchNote(branchCount: number): string | undefined {

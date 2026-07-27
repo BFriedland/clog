@@ -103,6 +103,7 @@ export function buildProgram(): Command {
     .option("-p, --project <name>", "Filter by project")
     .option("-a, --author <name>", "Filter by author")
     .option("-t, --tag <tag>", "Filter by tag")
+    .option("--all-branches", "Show every matching branch and superseded generation")
     .option("-l, --limit <n>", "Maximum results", (value) => Number(value))
     .action(async (query: string | undefined, options) => {
       if (options.init) {

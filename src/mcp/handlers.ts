@@ -2,9 +2,11 @@ import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
 import {
+  buildFullConversationGraphStatusMap,
   buildRelatedConversationView,
   composeConversationView,
   findRelatedConversationView,
+  isInDefaultLiteralSearchScope,
   resolveConversationView,
   type LocalScanSnapshot,
   type RelatedConversationView,
@@ -32,6 +34,10 @@ import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { searchConversations } from "../search/indexer.js";
+import {
+  collapseRelatedConversationSearchHits,
+  type RelatedConversationSearchHit,
+} from "../search/relationships.js";
 import { nowIso } from "../utils/time.js";
 import {
   filterConversationsByGrep,
@@ -83,7 +89,7 @@ export const listInputSchema = z
       .boolean()
       .default(false)
       .describe(
-        "Return every branch and superseded generation instead of one representative conversation from each set of branches.",
+        "Return every branch and superseded generation instead of one representative conversation from each set of branches. When grep is present, this also searches superseded generations.",
       ),
     limit: z
       .number()
@@ -177,6 +183,12 @@ export const searchInputSchema = z
       .enum(["local", "remote"])
       .optional()
       .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    allBranches: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Return every matching branch and superseded generation instead of one result from each set of branches.",
+      ),
     limit: z.number().int().positive().max(50).default(10),
   })
   .strict();
@@ -473,6 +485,7 @@ export async function handleBrowse(input: unknown) {
 export async function handleSearch(input: unknown) {
   const parsed = searchInputSchema.parse(input);
   const { embedding, vectorStore } = await requireSearchProviders();
+  const graphUniverse = await listConversations();
   let saved = await listConversations({
     origin: parsed.origin,
   });
@@ -507,6 +520,12 @@ export async function handleSearch(input: unknown) {
   try {
     hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
       isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      composeResults: (candidateHits) =>
+        collapseRelatedConversationSearchHits(
+          graphUniverse,
+          candidateHits,
+          { allBranches: parsed.allBranches },
+        ),
       onScanCapReached: () => {
         warning = "Search hit the maximum scan window; completeness is not guaranteed.";
       },
@@ -528,7 +547,8 @@ export async function handleSearch(input: unknown) {
   const conversationsById = new Map(
     saved.map((conversation) => [conversation.id, conversation] as const),
   );
-  const results = hits
+  const relatedHits: RelatedConversationSearchHit[] = hits;
+  const results = relatedHits
     .map((hit) => {
       const conversation = conversationsById.get(hit.conversationId);
       if (!conversation || !isConversationSearchable(conversation)) {
@@ -548,11 +568,24 @@ export async function handleSearch(input: unknown) {
         originKind: conversation.originKind,
         originRef: conversation.originRef,
         createdAt: conversation.createdAt,
+        knownRootIdentity: hit.knownRootIdentity,
+        relationshipCompleteness: hit.relationshipCompleteness,
+        snippetConversationId: hit.snippetConversationId,
         relevanceScore: hit.score,
         snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
       };
     })
     .filter((result): result is NonNullable<typeof result> => Boolean(result));
+  if (
+    relatedHits.some(
+      (hit) => hit.relationshipCompleteness === "invalid",
+    )
+  ) {
+    warning = [
+      warning,
+      "Invalid conversation relationships were returned as conversation-specific results.",
+    ].filter(Boolean).join(" ");
+  }
 
   return {
     results,
@@ -572,40 +605,45 @@ async function listConversationsForStates(
   warnings: ReturnType<typeof getScanWarningsForCommand>,
   scanSnapshot?: LocalScanSnapshot,
 ) {
-  const composition = await composeConversationView({
-    states,
-    origin: input.origin,
-  }, scanSnapshot);
-  const visibleIdentityKeys = new Set(
-    composition.conversations.map((conversation) =>
-      conversationIdentityKey(conversation),
-    ),
-  );
-  let graphUniverse = filterConversationsByMcpMetadata(
+  const composition = await composeConversationView({ states }, scanSnapshot);
+  const fullGraphStatuses = buildFullConversationGraphStatusMap(
     composition.graphUniverse,
+    composition.relationshipOverrides,
+  );
+  let conversations = filterConversationsByMcpMetadata(
+    composition.conversations,
     input,
   );
+  if (input.origin) {
+    conversations = conversations.filter((conversation) =>
+      input.origin === "local"
+        ? conversation.originKind === "local"
+        : conversation.originKind !== "local",
+    );
+  }
 
   if (input.tags && input.tags.length > 0) {
     const tags = new Set(normalizeTags(input.tags));
-    graphUniverse = graphUniverse.filter((conversation) =>
+    conversations = conversations.filter((conversation) =>
       conversation.tags.some((tag) => tags.has(tag)),
     );
   }
 
   if (input.grep) {
-    graphUniverse = await filterConversationsByGrep(
+    if (!input.allBranches) {
+      conversations = conversations.filter((conversation) =>
+        isInDefaultLiteralSearchScope(conversation, fullGraphStatuses),
+      );
+    }
+    conversations = await filterConversationsByGrep(
       config!,
       input.grep,
-      graphUniverse,
+      conversations,
     );
   }
-  const conversations = graphUniverse.filter((conversation) =>
-    visibleIdentityKeys.has(conversationIdentityKey(conversation)),
-  );
 
   const relatedConversations = buildRelatedConversationView(
-    graphUniverse,
+    composition.graphUniverse,
     conversations,
     {
       allBranches: input.allBranches,
@@ -628,6 +666,9 @@ async function listConversationsForStates(
     .slice(input.offset, input.offset + input.limit)
     .map((related) => {
       const conversation = related.conversation;
+      const fullGraphStatus = fullGraphStatuses.get(
+        conversationIdentityKey(conversation),
+      );
       return {
         id: conversation.id,
         source: conversation.source,
@@ -651,6 +692,7 @@ async function listConversationsForStates(
         immediateParentId: related.immediateParentId,
         memberCount: related.memberCount,
         branchCount: related.branchCount,
+        branchStatus: fullGraphStatus?.liveness ?? related.liveness,
         relationshipCompleteness: related.relationshipCompleteness,
         hasMoreMemberConversations: related.hasMoreMemberConversations,
         branchConversationIds: related.branchConversationIds,

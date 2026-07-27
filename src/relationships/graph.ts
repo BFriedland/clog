@@ -26,6 +26,7 @@ export interface RelatedConversationRelationshipOverride
 
 export type RelationshipCompleteness = "complete" | "incomplete" | "invalid";
 export type ConversationLiveness = "live" | "superseded" | "unproven";
+export type ConversationLivenessPolicy = "display" | "indexing";
 
 export type RelationshipGraphWarning =
   | {
@@ -221,6 +222,9 @@ export function projectRelatedConversationGraph<
 >(
   graph: RelatedConversationGraph<T>,
   visibleIdentityKeys: ReadonlySet<string>,
+  options: {
+    livenessPolicy?: ConversationLivenessPolicy;
+  } = {},
 ): RelatedConversationProjection<T> | null {
   const visibleMembers = graph.members.filter((member) =>
     visibleIdentityKeys.has(conversationIdentityKey(member.identity)),
@@ -267,6 +271,7 @@ export function projectRelatedConversationGraph<
       classifyLiveness(
         member.conversation,
         children.map((child) => child.forkCreatedAt),
+        options.livenessPolicy ?? "display",
       ),
     );
   }
@@ -326,6 +331,9 @@ export function projectRelatedConversationGraphs<
 >(
   graphs: readonly RelatedConversationGraph<T>[],
   visibleConversations: readonly T[],
+  options: {
+    livenessPolicy?: ConversationLivenessPolicy;
+  } = {},
 ): RelatedConversationProjection<T>[] {
   const visibleKeys = new Set(
     visibleConversations.map((conversation) =>
@@ -333,7 +341,9 @@ export function projectRelatedConversationGraphs<
     ),
   );
   return graphs
-    .map((graph) => projectRelatedConversationGraph(graph, visibleKeys))
+    .map((graph) =>
+      projectRelatedConversationGraph(graph, visibleKeys, options),
+    )
     .filter(
       (projection): projection is RelatedConversationProjection<T> =>
         projection != null,
@@ -579,12 +589,16 @@ function selectRoot<T extends RelatedConversationInput>(
 function classifyLiveness(
   parent: RelatedConversationInput,
   childForkCreatedAt: readonly string[],
+  policy: ConversationLivenessPolicy,
 ): ConversationLiveness {
   if (childForkCreatedAt.length === 0) {
     return "live";
   }
 
-  const parentActivity = effectiveActivityTime(parent);
+  const parentActivity =
+    policy === "indexing"
+      ? parseOptionalTimestamp(parent.sourceMtime)
+      : effectiveActivityTime(parent);
   const childForkTimes = childForkCreatedAt.map(parseTimestamp);
   if (
     parentActivity == null ||
@@ -596,6 +610,10 @@ function classifyLiveness(
   return parentActivity > Math.max(...childForkTimes as number[])
     ? "live"
     : "superseded";
+}
+
+function parseOptionalTimestamp(value: string | null): number | null {
+  return value == null ? null : parseTimestamp(value);
 }
 
 function compareMembersByRecency<T extends RelatedConversationInput>(

@@ -101,6 +101,11 @@ export interface RelatedConversationView<
   relationshipWarnings: RelationshipGraphWarning[];
 }
 
+export interface FullConversationGraphStatus {
+  liveness: ConversationLiveness;
+  relationshipCompleteness: RelationshipCompleteness;
+}
+
 export function passesConfigPathFilters(
   source: string,
   config: Config,
@@ -312,6 +317,41 @@ export function buildRelatedConversationView<
   }
 
   return rows;
+}
+
+export function buildFullConversationGraphStatusMap<
+  T extends RelatedConversationInput,
+>(
+  graphUniverse: readonly T[],
+  relationshipOverrides: readonly RelatedConversationRelationshipOverride[] = [],
+): Map<string, FullConversationGraphStatus> {
+  return new Map(
+    buildRelatedConversationView(graphUniverse, graphUniverse, {
+      allBranches: true,
+      relationshipOverrides,
+    }).map((related) => [
+      conversationIdentityKey(related.conversation),
+      {
+        liveness:
+          related.relationshipCompleteness === "invalid"
+            ? "unproven"
+            : related.liveness,
+        relationshipCompleteness: related.relationshipCompleteness,
+      },
+    ]),
+  );
+}
+
+export function isInDefaultLiteralSearchScope(
+  conversation: Pick<RelatedConversationInput, "source" | "sourceId">,
+  statuses: ReadonlyMap<string, FullConversationGraphStatus>,
+): boolean {
+  const status = statuses.get(conversationIdentityKey(conversation));
+  return (
+    status == null ||
+    status.relationshipCompleteness === "invalid" ||
+    status.liveness === "live"
+  );
 }
 
 export function findRelatedConversationView<

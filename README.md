@@ -182,11 +182,14 @@ Then just search:
 ```bash
 clog search "JWT refresh token race condition"
 clog search "database migration" --project myproject --limit 5
+clog search "authentication retry" --all-branches
 ```
 
 Once configured, conversations are auto-indexed whenever you `clog save`, and save output reports whether indexing ran, was unavailable, or was not configured. Editing a conversation's title or summary re-indexes it. Use `clog index` to resume missing or stale indexing, and `clog index --rebuild` to re-index everything from scratch.
 
-If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content.
+When coding-agent conversations branch from copied history, default semantic search and literal grep cover current branch endpoints rather than superseded generations. Semantic search returns one highest-scoring match from each branch graph. Copied history remains searchable through descendant branches; text unique to an abandoned generation remains available through direct retrieval or `clog list --grep "text" --all-branches`. Run `clog config set search.indexAllBranches true` to make superseded generations semantically searchable too, and pass `--all-branches` to `clog search` when each matching source conversation should appear separately.
+
+If you skip vector search setup, `search_conversations` is unavailable, but agents can still use the `grep` filter on the `list_conversations` MCP tool for dependency-free keyword search across conversation titles, summaries, and message content. Set `allBranches: true` when that literal search should include superseded generations.
 
 ## Team Sharing
 

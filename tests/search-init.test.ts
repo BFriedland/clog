@@ -22,6 +22,7 @@ vi.mock("../src/config/index.js", async () => {
 
 vi.mock("../src/db/index.js", () => ({
   listConversationsNeedingIndex: vi.fn(),
+  listConversations: vi.fn(),
 }));
 
 vi.mock("../src/search/embeddings/transformers.js", async () => {
@@ -67,6 +68,7 @@ const mockedSaveConfig = vi.mocked(configModule.saveConfig);
 
 const dbModule = await import("../src/db/index.js");
 const mockedListConversationsNeedingIndex = vi.mocked(dbModule.listConversationsNeedingIndex);
+const mockedListConversations = vi.mocked(dbModule.listConversations);
 
 const transformersModule = await import("../src/search/embeddings/transformers.js");
 const mockedWarmTransformersModel = vi.mocked(transformersModule.warmTransformersModel);
@@ -90,6 +92,8 @@ beforeEach(() => {
   mockedLoadConfig.mockReset();
   mockedSaveConfig.mockReset();
   mockedListConversationsNeedingIndex.mockReset();
+  mockedListConversations.mockReset();
+  mockedListConversations.mockResolvedValue([]);
   mockedWarmTransformersModel.mockReset();
   mockedCheckPackages.mockReset();
   mockedAssertSearchRuntimePackagesImportable.mockReset();
@@ -191,6 +195,7 @@ describe("search setup config persistence", () => {
         search: {
           embedding: { type: "transformers", model: "Xenova/all-MiniLM-L6-v2" },
           vectorStore: { type: "vectra" },
+          indexAllBranches: false,
         },
       }),
     );
@@ -230,6 +235,26 @@ describe("search setup config persistence", () => {
     mockedListConversationsNeedingIndex.mockResolvedValue([
       { id: "conversation-needing-index" },
     ] as Awaited<ReturnType<typeof dbModule.listConversationsNeedingIndex>>);
+    mockedListConversations.mockResolvedValue([
+      {
+        id: "conversation-needing-index",
+        sourceId: "conversation-needing-index",
+        source: "claude-code",
+        state: "saved",
+        savedAt: "2026-02-01T00:00:00.000Z",
+        indexedAt: null,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        sourceMtime: "2026-02-01T00:00:00.000Z",
+        originKind: "local",
+        relationshipInspection: {
+          status: "none_found",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [],
+        transcriptProjectionVersion: 2,
+      },
+    ] as Awaited<ReturnType<typeof dbModule.listConversations>>);
 
     try {
       await runSearchInitCommand();

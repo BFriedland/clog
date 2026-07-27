@@ -40,7 +40,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Find conversations",
       description:
-        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Related source branches collapse to one representative conversation unless `allBranches` is true. `immediateParentId` is present only when the parent is a concrete conversation in the returned view; `immediateParentIdentity` can identify an unavailable or filtered-out parent. Use `grep` for case-insensitive literal-text matching across titles, summaries, and transcript messages; use `search_conversations` for related meaning. Results are paginated after branch collapse; follow `hasMore` and `nextOffset`.",
+        "Find and list saved Claude Code and Codex conversations by default, or explicitly list unsaved conversations or both lifecycle states. Related source branches collapse to one representative conversation unless `allBranches` is true. Default `grep` searches live branch endpoints and unrelated conversations; set `allBranches` to search superseded generations too. `branchStatus` identifies live, superseded, or unproven branch state. `immediateParentId` is present only when the parent is a concrete conversation in the returned view; `immediateParentIdentity` can identify an unavailable or filtered-out parent. Use `grep` for case-insensitive literal-text matching across titles, summaries, and transcript messages; use `search_conversations` for related meaning. Results are paginated after branch collapse; follow `hasMore` and `nextOffset`.",
       inputSchema: listInputSchema,
     },
     async (input) => toToolResult(await handleList(input), "Listed conversations."),
@@ -101,7 +101,7 @@ export function createMcpServer(): McpServer {
     {
       title: "Search conversations by meaning",
       description:
-        "Semantic search across saved clog conversations; matches by meaning, not exact text. For exact text, use the `grep` filter on `list_conversations`.",
+        "Semantic search across saved clog conversations; matches by meaning, not exact text. Related source branches collapse to the highest-scoring matching conversation unless `allBranches` is true. For exact text, use the `grep` filter on `list_conversations`.",
       inputSchema: searchInputSchema,
     },
     async (input) => toToolResult(await handleSearch(input), "Searched saved conversations."),

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { ConversationMeta } from "../src/models/conversation.js";
-import { buildRelatedConversationView } from "../src/conversations/view.js";
+import {
+  buildFullConversationGraphStatusMap,
+  buildRelatedConversationView,
+} from "../src/conversations/view.js";
 import {
   buildRelatedConversationGraphs,
   conversationIdentityKey,
@@ -308,6 +311,21 @@ describe("related conversation graphs", () => {
       }),
     ]));
     expect(graphs.some((graph) => graph.completeness === "invalid")).toBe(true);
+
+    const statuses = buildFullConversationGraphStatusMap([
+      second,
+      first,
+      conflicting,
+      duplicate,
+    ]);
+    expect(statuses.get(conversationIdentityKey(first))).toEqual({
+      liveness: "unproven",
+      relationshipCompleteness: "invalid",
+    });
+    expect(statuses.get(conversationIdentityKey(second))).toEqual({
+      liveness: "unproven",
+      relationshipCompleteness: "invalid",
+    });
   });
 
   it("does not choose a parent when saved and live observations conflict", () => {

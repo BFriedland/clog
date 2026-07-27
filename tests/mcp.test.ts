@@ -108,8 +108,8 @@ describe("mcp handlers", () => {
       originKind: "local",
       originRef: null,
       relationshipInspection: {
-        status: "unexamined",
-        version: null,
+        status: "none_found",
+        version: 2,
         diagnostic: null,
       },
       relationships: [],
@@ -665,6 +665,131 @@ describe("mcp handlers", () => {
     expect((await handleList({ state: "unsaved", origin: "remote" })).totalCount).toBe(0);
   });
 
+  it("collapses literal matches through a nonmatching parent", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const firstId = "a2100000-0000-0000-0000-000000000001";
+    const secondId = "a2200000-0000-0000-0000-000000000001";
+    for (const [id, createdAt] of [
+      [firstId, "2026-02-02T00:00:00.000Z"],
+      [secondId, "2026-02-03T00:00:00.000Z"],
+    ] as const) {
+      await insertOtherSaved(id, {
+        title: `literal branch needle ${id}`,
+        createdAt,
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    }
+
+    const collapsed = await handleList({
+      grep: "literal branch needle",
+      limit: 10,
+    });
+    expect(collapsed.conversations).toHaveLength(1);
+    expect(collapsed.conversations[0]?.memberCount).toBe(2);
+
+    const expanded = await handleList({
+      grep: "literal branch needle",
+      allBranches: true,
+      limit: 10,
+    });
+    expect(expanded.conversations).toHaveLength(2);
+  });
+
+  it("searches superseded literal content only when allBranches is true", async () => {
+    const parentId = "a2300000-0000-0000-0000-000000000001";
+    const childId = "a2400000-0000-0000-0000-000000000001";
+    await insertOtherSaved(parentId, {
+      title: "Unique abandoned literal",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceMtime: "2026-01-01T00:00:00.000Z",
+    });
+    await insertOtherSaved(childId, {
+      title: "Current child",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      sourceMtime: "2026-01-02T00:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    const defaultResult = await handleList({
+      grep: "unique abandoned literal",
+    });
+    expect(defaultResult.conversations).toEqual([]);
+
+    const expanded = await handleList({
+      grep: "unique abandoned literal",
+      allBranches: true,
+    });
+    expect(expanded.conversations).toEqual([
+      expect.objectContaining({
+        id: parentId,
+        branchStatus: "superseded",
+      }),
+    ]);
+  });
+
+  it("reports branch status as unproven when relationship data contains a cycle", async () => {
+    const firstId = "a2500000-0000-0000-0000-000000000001";
+    const secondId = "a2500000-0000-0000-0000-000000000002";
+    const linkedInspection = {
+      status: "linked" as const,
+      version: 2,
+      diagnostic: null,
+    };
+    await insertOtherSaved(firstId, {
+      relationshipInspection: linkedInspection,
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: secondId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    await insertOtherSaved(secondId, {
+      relationshipInspection: linkedInspection,
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: firstId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+
+    const result = await handleList({ allBranches: true, limit: 10 });
+    for (const id of [firstId, secondId]) {
+      expect(result.conversations.find((conversation) => conversation.id === id))
+        .toMatchObject({
+          branchStatus: "unproven",
+          relationshipCompleteness: "invalid",
+        });
+    }
+  });
+
   it("places unsaved savedAt values last in both sort directions", async () => {
     await writeUnsavedClaudeConversation(
       sourceDir,
@@ -886,14 +1011,14 @@ describe("mcp handlers", () => {
     expect(conversation?.indexedAt).toBe("2026-02-01T10:00:03.000Z");
   });
 
-  it("leaves indexedAt unchanged when search is not configured", async () => {
+  it("clears indexedAt after a metadata edit when search is not configured", async () => {
     await handleUpdate({
       id: "abc12345",
       title: "Updated title",
     });
 
     const conversation = await getConversationById("abc12345-1234-1234-1234-123456789012");
-    expect(conversation?.indexedAt).toBe("2026-02-01T10:00:03.000Z");
+    expect(conversation?.indexedAt).toBeNull();
   });
 
   it("leaves modifiedAt unchanged for no-op updates", async () => {
@@ -1418,6 +1543,69 @@ describe("mcp handlers", () => {
     expect(result.warning).toBeUndefined();
   });
 
+  it("search_conversations collapses branches to the highest-scoring match", async () => {
+    const parentId = "abc12345-1234-1234-1234-123456789012";
+    const childId = "ba100000-0000-0000-0000-000000000001";
+    await insertOtherSaved(childId, {
+      title: "Auth branch",
+      createdAt: "2026-02-02T10:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    const hits: SearchHit[] = [
+      {
+        id: `${parentId}:0`,
+        score: 0.8,
+        text: "parent auth match",
+        metadata: { conversationId: parentId },
+      },
+      {
+        id: `${childId}:0`,
+        score: 0.9,
+        text: "child auth match",
+        metadata: { conversationId: childId },
+      },
+    ];
+    mockedGetSearchProviders.mockResolvedValue({
+      embedding: makeEmbedding(),
+      vectorStore: makeVectorStore(hits),
+    });
+
+    const collapsed = await handleSearch({ query: "auth" });
+    expect(collapsed.results).toEqual([
+      expect.objectContaining({
+        id: childId,
+        snippetConversationId: childId,
+        knownRootIdentity: {
+          source: "claude-code",
+          sourceId: parentId,
+        },
+        relationshipCompleteness: "complete",
+      }),
+    ]);
+
+    const expanded = await handleSearch({
+      query: "auth",
+      allBranches: true,
+    });
+    expect(expanded.results.map((result) => result.id)).toEqual([
+      parentId,
+      childId,
+    ]);
+  });
+
   it("search_conversations filters project and author by case-insensitive substrings", async () => {
     const otherId = "ba111111-1111-1111-1111-111111111111";
     await insertOtherSaved(otherId, {
@@ -1527,8 +1715,8 @@ async function insertOtherSaved(
     originKind: "local",
     originRef: null,
     relationshipInspection: {
-      status: "unexamined",
-      version: null,
+      status: "none_found",
+      version: 2,
       diagnostic: null,
     },
     relationships: [],

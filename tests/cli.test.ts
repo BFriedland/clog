@@ -628,8 +628,7 @@ describe("cli", () => {
       ).rejects.toThrow(/imported conversations are read-only/i);
     });
 
-    it("leaves indexedAt untouched when search is not configured (SPEC §10.8.1)", async () => {
-      // "If search is not set up, the metadata update succeeds and Phase 2 remains inert."
+    it("clears indexedAt after a metadata edit when search is not configured", async () => {
       const convId = "15151515-1515-1515-1515-151515151515";
       const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
       await writeMinimalClaudeJsonl(sourcePath, "Initial");
@@ -654,7 +653,7 @@ describe("cli", () => {
 
       const reloaded = await getConversationById(convId);
       expect(reloaded?.title).toBe("Different");
-      expect(reloaded?.indexedAt).toBe("2026-02-01T10:00:00.000Z");
+      expect(reloaded?.indexedAt).toBeNull();
     });
 
     it("leaves indexedAt untouched on a no-op edit of a saved conversation", async () => {
@@ -1001,7 +1000,7 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildSaveCommand, [id]);
 
       expect(stdout).toContain("Saved 1 conversation(s)");
-      expect(stdout).toContain("Indexing 1 conversation(s) for vector search");
+      expect(stdout).toContain("Indexing saved content for vector search.");
       expect(stdout).toContain("Indexed 1/1 conversation(s) for vector search.");
       expect(stdout).not.toContain("still unindexed");
       expect(upsert).toHaveBeenCalledTimes(1);
@@ -1030,6 +1029,100 @@ describe("cli", () => {
   });
 
   describe("search optional dependencies", () => {
+    it("collapses related CLI search results unless --all-branches is present", async () => {
+      const parentId = "c5100000-0000-0000-0000-000000000001";
+      const childId = "c5200000-0000-0000-0000-000000000001";
+      await insertConversation(makeConversation({
+        id: parentId,
+        sourceId: parentId,
+        title: "Parent search result",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        sourceMtime: "2026-01-01T00:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+      }));
+      await insertConversation(makeConversation({
+        id: childId,
+        sourceId: childId,
+        title: "Child search result",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        sourceMtime: "2026-02-01T00:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: { source: "claude-code", sourceId: parentId },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      }));
+      mockedGetSearchProviders.mockResolvedValue({
+        embedding: {
+          name: "stub",
+          dimensions: 3,
+          embed: async () => [[0.1, 0.2, 0.3]],
+        },
+        vectorStore: {
+          upsert: async () => undefined,
+          search: async () => [
+            {
+              id: `${childId}:0`,
+              score: 0.9,
+              text: "child auth match",
+              metadata: { conversationId: childId },
+            },
+            {
+              id: `${parentId}:0`,
+              score: 0.8,
+              text: "parent auth match",
+              metadata: { conversationId: parentId },
+            },
+          ],
+          delete: async () => undefined,
+        },
+      });
+
+      const collapsed = await runBuiltCommand(
+        buildProgram,
+        ["search", "auth"],
+      );
+      const expanded = await runBuiltCommand(
+        buildProgram,
+        ["search", "auth", "--all-branches"],
+      );
+
+      expect(collapsed.stdout).toContain(childId.slice(0, 8));
+      expect(collapsed.stdout).not.toContain(parentId.slice(0, 8));
+      expect(expanded.stdout).toContain(childId.slice(0, 8));
+      expect(expanded.stdout).toContain(parentId.slice(0, 8));
+    });
+
+    it("describes indexing completion in terms of the current settings", async () => {
+      mockedGetSearchProviders.mockResolvedValue({
+        embedding: {
+          name: "stub",
+          dimensions: 3,
+          embed: async (texts: string[]) =>
+            texts.map(() => [0.1, 0.2, 0.3]),
+        },
+        vectorStore: {
+          upsert: async () => undefined,
+          search: async () => [],
+          delete: async () => undefined,
+        },
+      });
+
+      const result = await captureOutputWithError(() => runIndexCommand({}));
+
+      expect(result.error).toBeNull();
+      expect(result.stdout).toContain(
+        "All saved conversations are indexed.",
+      );
+    });
+
     it("search reports missing search packages", async () => {
       mockedGetSearchProviders.mockRejectedValue(new SearchDepsError(["vectra"]));
 
@@ -2134,6 +2227,52 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildListCommand, ["--grep", "jwt"]);
       expect(stdout).toContain("Debug JWT refresh race");
       expect(stdout).not.toContain("Unrelated work");
+    });
+
+    it("--grep searches superseded generations only with --all-branches", async () => {
+      const parentId = "a8900000-0000-0000-0000-000000000001";
+      const childId = "a8900000-0000-0000-0000-000000000002";
+      await insertConversation(makeConversation({
+        id: parentId,
+        sourceId: parentId,
+        title: "Unique abandoned literal",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        sourceMtime: "2026-01-01T00:00:00.000Z",
+      }));
+      await insertConversation(makeConversation({
+        id: childId,
+        sourceId: childId,
+        title: "Current child",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        sourceMtime: "2026-01-02T00:00:00.000Z",
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "claude-code",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      }));
+
+      const defaultResult = await runBuiltCommand(
+        buildListCommand,
+        ["--grep", "unique abandoned literal"],
+      );
+      expect(defaultResult.stdout).not.toContain("Unique abandoned literal");
+
+      const expanded = await runBuiltCommand(
+        buildListCommand,
+        ["--grep", "unique abandoned literal", "--all-branches"],
+      );
+      expect(expanded.stdout).toContain("Unique abandoned literal");
+      expect(expanded.stdout).toContain("[superseded]");
     });
 
     it("--origin rejects unknown values with a clear error", async () => {

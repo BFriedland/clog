@@ -53,6 +53,7 @@ export const SearchConfigSchema = z
   .object({
     embedding: SearchEmbeddingConfigSchema,
     vectorStore: SearchVectorStoreConfigSchema,
+    indexAllBranches: z.boolean().optional(),
   })
   .nullable()
   .default(null);

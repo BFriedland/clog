@@ -1116,17 +1116,42 @@ describe("ephemeral local source scans", () => {
   });
 
   it("collapses related ignored rows in list --all and restores them with --all-branches", async () => {
+    const rootId = "d5000000-4444-4444-4444-444444444444";
     const parentId = "d5000001-4444-4444-4444-444444444444";
     const childId = "d5000002-4444-4444-4444-444444444444";
+    const rootPath = await writeClaudeConversation(rootId, "/Users/alice/work/app");
     const parentPath = await writeClaudeConversation(parentId, "/Users/alice/work/app");
     const childPath = await writeClaudeConversation(childId, "/Users/alice/work/app");
+    const rootTime = new Date("2026-01-01T10:00:00.000Z");
     const parentTime = new Date("2026-02-01T10:00:00.000Z");
     const childTime = new Date("2026-02-02T10:00:00.000Z");
+    await fs.utimes(rootPath, rootTime, rootTime);
     await fs.utimes(parentPath, parentTime, parentTime);
     await fs.utimes(childPath, childTime, childTime);
     await fs.mkdir(process.env.CLOG_HOME!, { recursive: true });
-    await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), `${childId}\n`);
+    await fs.writeFile(
+      path.join(process.env.CLOG_HOME!, "clogignore"),
+      `${rootId}\n${childId}\n`,
+    );
     const discover = async function* () {
+      yield {
+        sourceId: rootId,
+        sourcePath: rootPath,
+        metadata: {
+          title: "Ignored root",
+          summary: "",
+          projectName: "app",
+          projectPath: "/Users/alice/work/app",
+          slug: null,
+          createdAt: "2026-01-01T10:00:00.000Z",
+        },
+        relationshipInspection: {
+          status: "none_found" as const,
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [],
+      };
       yield {
         sourceId: parentId,
         sourcePath: parentPath,
@@ -1139,11 +1164,16 @@ describe("ephemeral local source scans", () => {
           createdAt: "2026-02-01T10:00:00.000Z",
         },
         relationshipInspection: {
-          status: "none_found" as const,
+          status: "linked" as const,
           version: 1,
           diagnostic: null,
         },
-        relationships: [],
+        relationships: [{
+          kind: "branch" as const,
+          parent: { source: "claude-code", sourceId: rootId },
+          evidence: "source" as const,
+          branchPoint: null,
+        }],
       };
       yield {
         sourceId: childId,
@@ -1187,14 +1217,123 @@ describe("ephemeral local source scans", () => {
       command.exitOverride();
       await command.parseAsync(["--all", "--all-branches"], { from: "user" });
     });
+    const defaultIgnoredGrep = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--grep", "ignored root"],
+        { from: "user" },
+      );
+    });
+    const defaultVisibleGrep = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--grep", "visible parent"],
+        { from: "user" },
+      );
+    });
+    const expandedIgnoredGrep = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--all-branches", "--grep", "ignored root"],
+        { from: "user" },
+      );
+    });
+    const expandedVisibleGrep = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--all-branches", "--grep", "visible parent"],
+        { from: "user" },
+      );
+    });
 
+    expect(collapsed.stdout).not.toContain(rootId.slice(0, 8));
     expect(collapsed.stdout).not.toContain(parentId.slice(0, 8));
     expect(collapsed.stdout).toContain(childId.slice(0, 8));
     expect(collapsed.stdout).toContain("ignored");
+    expect(expanded.stdout).toContain(rootId.slice(0, 8));
     expect(expanded.stdout).toContain(parentId.slice(0, 8));
     expect(expanded.stdout).toContain(childId.slice(0, 8));
+    expect(defaultIgnoredGrep.stdout).not.toContain(rootId.slice(0, 8));
+    expect(defaultVisibleGrep.stdout).not.toContain(parentId.slice(0, 8));
+    expect(expandedIgnoredGrep.stdout).toContain(rootId.slice(0, 8));
+    expect(expandedIgnoredGrep.stdout).toContain("[superseded]");
+    expect(expandedVisibleGrep.stdout).toContain(parentId.slice(0, 8));
+    expect(expandedVisibleGrep.stdout).toContain("[superseded]");
+    await expect(getConversationById(rootId)).resolves.toBeNull();
     await expect(getConversationById(parentId)).resolves.toBeNull();
     await expect(getConversationById(childId)).resolves.toBeNull();
+  });
+
+  it("keeps filtered-out children in the branch graph for list --all grep", async () => {
+    const parentId = "d5010001-4444-4444-4444-444444444444";
+    const childId = "d5010002-4444-4444-4444-444444444444";
+    await insertConversation(savedConversation(parentId, "/managed/parent.jsonl", {
+      title: "Filtered superseded parent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceMtime: "2026-01-01T00:00:00.000Z",
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    }));
+    await insertConversation(savedConversation(childId, "/managed/child.jsonl", {
+      title: "Current child in another project",
+      projectName: "other",
+      projectPath: "/Users/alice/work/other",
+      createdAt: "2026-02-01T00:00:00.000Z",
+      sourceMtime: "2026-02-01T00:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: { source: "claude-code", sourceId: parentId },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    }));
+    vi.spyOn(adapterRegistry, "getEnabledAdapters").mockReturnValue([{
+      ...TEST_ADAPTER_CONTRACT,
+      name: "claude-code",
+      watchPaths: () => [],
+      async *discover() {},
+    }]);
+    await saveConfig(scanConfig());
+
+    const collapsed = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        ["--all", "--project", "app", "--grep", "filtered superseded"],
+        { from: "user" },
+      );
+    });
+    const expanded = await captureOutput(async () => {
+      const command = buildListCommand();
+      command.exitOverride();
+      await command.parseAsync(
+        [
+          "--all",
+          "--all-branches",
+          "--project",
+          "app",
+          "--grep",
+          "filtered superseded",
+        ],
+        { from: "user" },
+      );
+    });
+
+    expect(collapsed.stdout).not.toContain(parentId.slice(0, 8));
+    expect(expanded.stdout).toContain(parentId.slice(0, 8));
+    expect(expanded.stdout).toContain("[superseded]");
   });
 
   it("merges a matching ignored source observation into its saved list row", async () => {
@@ -1359,6 +1498,7 @@ describe("ephemeral local source scans", () => {
     expect(expanded.stdout).toContain(firstChildId.slice(0, 8));
     expect(expanded.stdout).toContain(secondChildId.slice(0, 8));
     expect(expanded.stdout).not.toContain("[2 branches]");
+    expect(expanded.stdout).toContain("[superseded]");
     expect(
       expanded.stdout.match(
         new RegExp(`\\[parent ${parentId.slice(0, 8)}\\]`, "g"),
