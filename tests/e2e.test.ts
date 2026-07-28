@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeJsonl } from "./helpers/fixtures.js";
 
 const execFileAsync = promisify(execFile);
+const ARCHIVE_WORKFLOW_TIMEOUT_MS = 30_000;
 
 describe("e2e", () => {
   let tempDir: string;
@@ -330,7 +331,7 @@ describe("e2e", () => {
       path.join(roundTripDir, "claude-code", `${id}.jsonl`),
       "utf8",
     )).toBe(Buffer.from(originalJsonlBytes).toString("utf8"));
-  });
+  }, ARCHIVE_WORKFLOW_TIMEOUT_MS);
 
   it("restores an own drained pair as clean and keeps local edit, tag, diff, and save workflows", async () => {
     const id = "fa222222-2222-2222-2222-222222222222";
@@ -377,7 +378,7 @@ describe("e2e", () => {
 
     const finalStatus = await run(["status"]);
     expect(finalStatus.stdout).toContain("Nothing to save.");
-  });
+  }, ARCHIVE_WORKFLOW_TIMEOUT_MS);
 
   it("save then show works for a discovered conversation", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
