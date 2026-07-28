@@ -52,9 +52,9 @@ function groupMessagesIntoTurns(messages: Message[]): Turn[] {
 function renderMessageForEmbedding(message: Message): string | null {
   switch (message.role) {
     case "user":
-      return message.content.trim() ? `Human: ${message.content.trim()}` : null;
+      return message.content.trim() ? `USER: ${message.content.trim()}` : null;
     case "assistant":
-      return message.content.trim() ? `Assistant: ${message.content.trim()}` : null;
+      return message.content.trim() ? `ASSISTANT: ${message.content.trim()}` : null;
     case "tool_use":
       return renderToolUseSummary(message);
     case "tool_result":

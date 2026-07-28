@@ -22,8 +22,8 @@ describe("chunkConversationMessages", () => {
     expect(chunks).toHaveLength(2);
     expect(chunks[0]?.text).toContain("Title: Debug auth");
     expect(chunks[0]?.text).toContain("Summary: Session refresh discussion");
-    expect(chunks[1]?.text).toContain("Human: How did we fix auth?");
-    expect(chunks[1]?.text).toContain("Assistant: We refreshed the session token.");
+    expect(chunks[1]?.text).toContain("USER: How did we fix auth?");
+    expect(chunks[1]?.text).toContain("ASSISTANT: We refreshed the session token.");
   });
 
   it("includes tool-use summaries but excludes tool results", () => {

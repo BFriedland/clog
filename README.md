@@ -32,8 +32,8 @@ Unsaved conversations:
 $ clog search "refresh token race condition"
 1. 83f1c2ea [72%] Fix the JWT refresh race condition on concurrent requests
    payments-api
-   Human: Two tabs can refresh the same session at once and one ends up holding a revoked
-   token. Assistant: The rotation step isn't atomic. Let me look at how the refresh endpoint
+   USER: Two tabs can refresh the same session at once and one ends up holding a revoked
+   token. ASSISTANT: The rotation step isn't atomic. Let me look at how the refresh endpoint
 2. d41c09aa [54%] Debug intermittent 502s from the payments gateway
    payments-api
    Title: Debug intermittent 502s from the payments gateway Summary: Traced the 502s to
