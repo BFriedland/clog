@@ -125,15 +125,15 @@ async function ensureManagedContent(
 
   let content: Buffer;
   try {
-    content = await fs.readFile(action.pair.jsonlPath);
+    content = await fs.readFile(action.files.jsonlPath);
   } catch (error) {
     if (!input) {
       throw error;
     }
 
     throw input.translateFilesystemError(
-      `Failed to copy pair content to ${action.managedPath} from`,
-      action.pair.jsonlPath,
+      `Failed to copy conversation content to ${action.managedPath} from`,
+      action.files.jsonlPath,
       error,
     );
   }

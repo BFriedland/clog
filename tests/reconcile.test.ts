@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 import { getDefaultConfig } from "../src/config/index.js";
 import {
   planGitReconciliation,
-  scanGitCheckoutPairs,
-  type GitPairScan,
-  type GitValidatedPair,
+  scanGitCheckoutConversationFiles,
+  type GitCheckoutScan,
+  type GitValidatedConversationFiles,
 } from "../src/interchange/reconcile.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 
@@ -28,7 +28,7 @@ describe("git reconciliation planner", () => {
       await fs.mkdir(pairDir, { recursive: true });
       await fs.writeFile(jsonlPath, "{}\n", "utf8");
 
-      const scan = await scanGitCheckoutPairs(rootDir, getDefaultConfig("alice"));
+      const scan = await scanGitCheckoutConversationFiles(rootDir, getDefaultConfig("alice"));
       const result = scan.results[0];
 
       expect(result?.kind).toBe("invalid");
@@ -84,7 +84,7 @@ describe("git reconciliation planner", () => {
         "utf8",
       );
 
-      const scan = await scanGitCheckoutPairs(rootDir, getDefaultConfig("alice"));
+      const scan = await scanGitCheckoutConversationFiles(rootDir, getDefaultConfig("alice"));
       expect(scan.results).toEqual([
         expect.objectContaining({
           kind: "invalid",
@@ -112,7 +112,7 @@ describe("git reconciliation planner", () => {
       expect(plan.actions).toEqual([
         expect.objectContaining({
           kind: "skip",
-          reason: "invalid_pair",
+          reason: "invalid_files",
         }),
       ]);
     } finally {
@@ -158,7 +158,7 @@ describe("git reconciliation planner", () => {
       originKind: "git",
       originRef: REMOTE_URL,
     });
-    const incoming = pair({
+    const incoming = makeFiles({
       id: "a6666666-6666-6666-6666-666666666666",
       author: "alice",
       title: "New remote row",
@@ -182,7 +182,7 @@ describe("git reconciliation planner", () => {
       originRef: REMOTE_URL,
       transcriptProjectionVersion: 2,
     });
-    const incoming = pair({
+    const incoming = makeFiles({
       id: existing.sourceId,
       author: existing.author,
       title: "Incoming older projection",
@@ -223,7 +223,7 @@ describe("git reconciliation planner", () => {
         diagnostic: "newer_inspection",
       },
     });
-    const incoming = pair({
+    const incoming = makeFiles({
       id: existing.sourceId,
       author: existing.author,
       title: "Incoming older inspection",
@@ -264,7 +264,7 @@ describe("git reconciliation planner", () => {
       evidence: "source" as const,
       branchPoint: null,
     };
-    const incoming = pair({
+    const incoming = makeFiles({
       id,
       author: "alice",
       title: "Curated title",
@@ -280,8 +280,8 @@ describe("git reconciliation planner", () => {
       originKind: "git",
       originRef: REMOTE_URL,
       title: "Curated title",
-      sourcePath: incoming.pair.jsonlPath,
-      filePath: incoming.pair.jsonlPath,
+      sourcePath: incoming.validated.jsonlPath,
+      filePath: incoming.validated.jsonlPath,
       indexedAt: "2026-02-01T10:05:00.000Z",
       relationshipInspection: {
         status: "none_found",
@@ -318,7 +318,7 @@ describe("git reconciliation planner", () => {
 
   it("invalidates vectors when reconciliation advances the projection version at the same message count", () => {
     const id = "a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7";
-    const incoming = pair({
+    const incoming = makeFiles({
       id,
       author: "alice",
       title: "Projection refresh",
@@ -330,8 +330,8 @@ describe("git reconciliation planner", () => {
       originKind: "git",
       originRef: REMOTE_URL,
       title: "Projection refresh",
-      sourcePath: incoming.pair.jsonlPath,
-      filePath: incoming.pair.jsonlPath,
+      sourcePath: incoming.validated.jsonlPath,
+      filePath: incoming.validated.jsonlPath,
       savedMessageCount: 1,
       transcriptProjectionVersion: 1,
       indexedAt: "2026-02-01T10:05:00.000Z",
@@ -356,7 +356,7 @@ describe("git reconciliation planner", () => {
   });
 
   it("skips a git insert when a local scan candidate owns the identity", () => {
-    const incoming = pair({
+    const incoming = makeFiles({
       id: "b1111111-1111-1111-1111-111111111111",
       author: "bob",
       title: "Incoming copy",
@@ -426,7 +426,7 @@ describe("git reconciliation planner", () => {
       message: "another configured remote",
     },
   ] as const)("skips git insert when a $label row owns the identity", ({ owner, reason, message }) => {
-    const incoming = pair({
+    const incoming = makeFiles({
       id: owner.sourceId,
       author: "bob",
       title: "Incoming copy",
@@ -448,12 +448,12 @@ describe("git reconciliation planner", () => {
   });
 
   it("uses deterministic first-wins for duplicate valid git pairs", () => {
-    const first = pair({
+    const first = makeFiles({
       id: "c1111111-1111-1111-1111-111111111111",
       author: "alice",
       title: "Alice copy",
     });
-    const second = pair({
+    const second = makeFiles({
       id: "c1111111-1111-1111-1111-111111111111",
       author: "bob",
       title: "Bob copy",
@@ -482,7 +482,7 @@ describe("git reconciliation planner", () => {
       originKind: "git",
       originRef: REMOTE_URL,
     });
-    const ignored = pair({
+    const ignored = makeFiles({
       id: existing.id,
       author: "alice",
       title: "Ignored",
@@ -504,13 +504,13 @@ describe("git reconciliation planner", () => {
   });
 
   it("does not let an ignored duplicate consume the deterministic winner slot", () => {
-    const ignoredFirst = pair({
+    const ignoredFirst = makeFiles({
       id: "d2222222-2222-2222-2222-222222222222",
       author: "alice",
       title: "Ignored copy",
       projectName: "ignored-project",
     });
-    const importedSecond = pair({
+    const importedSecond = makeFiles({
       id: ignoredFirst.id,
       author: "bob",
       title: "Imported copy",
@@ -544,7 +544,7 @@ describe("git reconciliation planner", () => {
         results: [
           {
             kind: "invalid",
-            scannedPair: {
+            scannedFiles: {
               rootDir: "/tmp/remote",
               relativeDir: "bob/claude-code",
               stem: existing.id,
@@ -557,7 +557,7 @@ describe("git reconciliation planner", () => {
             warning: {
               code: "pair_layout_mismatch",
               message: "layout mismatch",
-              pair: { author: "bob", source: "claude-code", id: existing.id },
+              conversation: { author: "bob", source: "claude-code", id: existing.id },
             },
             protectedIdentities: [{ source: "claude-code", id: existing.id }],
           },
@@ -568,7 +568,7 @@ describe("git reconciliation planner", () => {
     });
 
     expect(plan.actions).toMatchObject([
-      { kind: "skip", reason: "invalid_pair" },
+      { kind: "skip", reason: "invalid_files" },
     ]);
     expect(plan.protectedIdentities).toEqual([
       { source: "claude-code", id: existing.id },
@@ -577,18 +577,18 @@ describe("git reconciliation planner", () => {
   });
 });
 
-function emptyScan(): GitPairScan {
+function emptyScan(): GitCheckoutScan {
   return { results: [], warnings: [] };
 }
 
-function scanOf(...pairs: GitValidatedPair[]): GitPairScan {
+function scanOf(...files: GitValidatedConversationFiles[]): GitCheckoutScan {
   return {
     warnings: [],
-    results: pairs.map((gitPair) => ({ kind: "valid", pair: gitPair })),
+    results: files.map((entry) => ({ kind: "valid", files: entry })),
   };
 }
 
-function pair(options: {
+function makeFiles(options: {
   id: string;
   author: string;
   title: string;
@@ -598,14 +598,14 @@ function pair(options: {
   transcriptProjectionVersion?: number;
   relationshipInspection?: ConversationMeta["relationshipInspection"];
   relationships?: ConversationMeta["relationships"];
-}): GitValidatedPair {
+}): GitValidatedConversationFiles {
   const source = options.source ?? "claude-code";
   const createdAt = "2026-02-01T10:00:00.000Z";
   return {
     author: options.author,
     source,
     id: options.id,
-    pair: {
+    validated: {
       rootDir: "/tmp/remote",
       relativeDir: `${options.author}/${source}`,
       stem: options.id,

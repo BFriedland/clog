@@ -64,10 +64,10 @@ export const ANALYSIS_SUGGESTIONS: AnalysisSuggestion[] = [
     id: "noise_patterns",
     name: "Noise patterns",
     description:
-      "Find conversations the summarizer flagged as having no substantive content — accidental opens, harness configurations with no real prompts, sessions interrupted before any work — and surface patterns across projects or time. Useful for spotting workflow friction (e.g., a setup that keeps getting accidentally triggered) even though individual noise rows aren't interesting on their own.",
+      "Find conversations the summarizer flagged as having no substantive content — accidental opens, harness configurations with no real prompts, sessions interrupted before any work — and surface patterns across projects or time. Useful for spotting workflow friction (e.g., a setup that keeps getting accidentally triggered) even though individual noise conversations aren't interesting on their own.",
     audience: "both",
     suggestedPrompt:
-      `List saved conversations with list_conversations and a reasonable limit. ${LIST_PAGING_GUIDANCE} Filter to those with \`extraction.outcome\` of \`noise\`. Group by project and by week. Report counts, surface any project that accumulates noise faster than others, and read 1-2 examples per cluster to characterize what's causing them. Recommend specific workflow changes if patterns suggest a fixable cause (e.g., always-mistakenly-opened tool, harness config done in conversation that should be done elsewhere). Do not recommend deleting the noise rows — they are evidence.`,
+      `List saved conversations with list_conversations and a reasonable limit. ${LIST_PAGING_GUIDANCE} Filter to those with \`extraction.outcome\` of \`noise\`. Group by project and by week. Report counts, surface any project that accumulates noise faster than others, and read 1-2 examples per cluster to characterize what's causing them. Recommend specific workflow changes if patterns suggest a fixable cause (e.g., always-mistakenly-opened tool, harness config done in conversation that should be done elsewhere). Do not recommend deleting the noise conversations — they are evidence.`,
   },
   {
     id: "team_outliers",

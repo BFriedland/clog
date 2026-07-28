@@ -10,11 +10,11 @@ import {
 
 import { ClogError } from "../utils/errors.js";
 import { usesWindowsReservedPathBasename } from "../utils/source-keys.js";
-import { compareCodePoints } from "./pairs.js";
+import { compareCodePoints } from "./conversation-files.js";
 
 export const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 60_000;
-export const MAX_SELECTED_PAIR_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_SELECTED_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 
 const ZIP_LOCAL_FILE_SIGNATURE = Uint8Array.of(0x50, 0x4b, 0x03, 0x04);
 const ZIP_EMPTY_SIGNATURE = Uint8Array.of(0x50, 0x4b, 0x05, 0x06);
@@ -95,11 +95,11 @@ export function assertArchiveEntryLimit(observed: number): void {
   assertBudget("archive entries", observed, MAX_ARCHIVE_ENTRIES);
 }
 
-export function assertSelectedPairByteLimit(observed: number): void {
-  assertBudget("selected pair bytes", observed, MAX_SELECTED_PAIR_BYTES);
+export function assertSelectedArchiveByteLimit(observed: number): void {
+  assertBudget("selected conversation bytes", observed, MAX_SELECTED_ARCHIVE_BYTES);
 }
 
-export async function createDeterministicPairArchive(
+export async function createDeterministicArchive(
   pairRoot: string,
 ): Promise<Uint8Array> {
   const entries = await collectPairFiles(pairRoot, pairRoot);
@@ -126,7 +126,7 @@ export async function createDeterministicPairArchive(
       );
     }
     selectedBytes += stat.size;
-    assertSelectedPairByteLimit(selectedBytes);
+    assertSelectedArchiveByteLimit(selectedBytes);
   }
 
   const zippable = Object.create(null) as Zippable;
@@ -154,13 +154,13 @@ export async function createDeterministicPairArchive(
   return archive;
 }
 
-export async function extractPairArchive(
+export async function extractArchive(
   archiveData: Uint8Array,
   destinationRoot: string,
   archiveDisplayPath: string,
 ): Promise<void> {
   let archiveEntryCount = 0;
-  let selectedPairBytes = 0;
+  let selectedArchiveBytes = 0;
   let selectedRecordCount = 0;
   const expectedLengths = new Map<string, number>();
   let decoded: Record<string, Uint8Array>;
@@ -177,8 +177,8 @@ export async function extractPairArchive(
 
         validateArchiveEntryName(file.name);
         const chargedBytes = selectedEntryBytes(file);
-        selectedPairBytes += chargedBytes;
-        assertSelectedPairByteLimit(selectedPairBytes);
+        selectedArchiveBytes += chargedBytes;
+        assertSelectedArchiveByteLimit(selectedArchiveBytes);
         selectedRecordCount += 1;
         expectedLengths.set(file.name, chargedBytes);
         return true;

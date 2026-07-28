@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDefaultConfig } from "../src/config/index.js";
 import {
-  parsePairMetadata,
-  scanPairs,
-  serializePairMetadata,
-  validatePair,
-  writePair,
-  type PairMetadata,
-} from "../src/interchange/pairs.js";
+  parseSidecar,
+  scanConversationFiles,
+  serializeSidecar,
+  validateConversationFiles,
+  writeConversationFiles,
+  type SidecarMeta,
+} from "../src/interchange/conversation-files.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { writeJsonl } from "./helpers/fixtures.js";
 
@@ -30,16 +30,16 @@ describe("conversation pair interchange", () => {
 
   it("round-trips a complete pair through write, scan, and validation", async () => {
     const id = "a1111111-1111-1111-1111-111111111111";
-    const meta = makePairMetadata(id);
+    const meta = makeSidecarMeta(id);
 
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeClaudeJsonl(2),
       meta,
     });
 
-    const pairs = await scanPairs(tempDir);
+    const pairs = await scanConversationFiles(tempDir);
     expect(pairs).toHaveLength(1);
     expect(pairs[0]).toMatchObject({
       stem: id,
@@ -49,13 +49,13 @@ describe("conversation pair interchange", () => {
       jsonlExists: true,
     });
 
-    const validation = await validatePair(pairs[0]!, getDefaultConfig("alice"));
+    const validation = await validateConversationFiles(pairs[0]!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("valid");
     if (validation.kind === "valid") {
-      expect(validation.pair.meta).toEqual(meta);
-      expect(validation.pair.messageCount).toBe(2);
-      expect(validation.pair.relationshipInspection).toEqual({
+      expect(validation.files.meta).toEqual(meta);
+      expect(validation.files.messageCount).toBe(2);
+      expect(validation.files.relationshipInspection).toEqual({
         status: "none_found",
         version: 2,
         diagnostic: null,
@@ -70,12 +70,12 @@ describe("conversation pair interchange", () => {
 
     await fs.writeFile(
       path.join(tempDir, `${metaOnly}.meta.json`),
-      serializePairMetadata(makePairMetadata(metaOnly)),
+      serializeSidecar(makeSidecarMeta(metaOnly)),
       "utf8",
     );
     await fs.writeFile(path.join(tempDir, `${jsonlOnly}.jsonl`), makeClaudeJsonl(1), "utf8");
 
-    const pairs = await scanPairs(tempDir);
+    const pairs = await scanConversationFiles(tempDir);
 
     expect(pairs.map((pair) => pair.stem)).toEqual([metaOnly, jsonlOnly]);
     expect(pairs[0]).toMatchObject({
@@ -99,7 +99,7 @@ describe("conversation pair interchange", () => {
     await writeCompletePair(path.join(tempDir, "alpha", "beta"), ids.nestedB);
     await writeCompletePair(path.join(tempDir, "alpha"), ids.nestedA);
 
-    const pairs = await scanPairs(tempDir);
+    const pairs = await scanConversationFiles(tempDir);
 
     expect(pairs.map((pair) => pair.normalizedRelativePath)).toEqual([
       `alpha/${ids.nestedA}`,
@@ -126,7 +126,7 @@ describe("conversation pair interchange", () => {
 
     for (const item of cases) {
       await writeCompletePair(item.pairDir, id);
-      const [pair] = await scanPairs(item.root);
+      const [pair] = await scanConversationFiles(item.root);
 
       expect(pair).toMatchObject({
         stem: id,
@@ -141,8 +141,8 @@ describe("conversation pair interchange", () => {
     const id = "f8888888-8888-8888-8888-888888888888";
     await fs.writeFile(path.join(tempDir, `${id}.jsonl`), makeClaudeJsonl(1), "utf8");
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("invalid");
     if (validation.kind === "invalid") {
@@ -157,10 +157,10 @@ describe("conversation pair interchange", () => {
   it("preserves physical metadata-read diagnostics without a diagnostic adapter", async () => {
     const id = "f8989898-8989-8989-8989-898989898989";
     await writeCompletePair(tempDir, id);
-    const [pair] = await scanPairs(tempDir);
+    const [pair] = await scanConversationFiles(tempDir);
     await fs.rm(pair!.metaPath);
 
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("invalid");
     if (validation.kind === "invalid") {
@@ -177,13 +177,13 @@ describe("conversation pair interchange", () => {
 
     await fs.writeFile(
       path.join(tempDir, `${filenameStem}.meta.json`),
-      serializePairMetadata(makePairMetadata(metaId)),
+      serializeSidecar(makeSidecarMeta(metaId)),
       "utf8",
     );
     await fs.writeFile(path.join(tempDir, `${filenameStem}.jsonl`), makeClaudeJsonl(1), "utf8");
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("invalid");
     if (validation.kind === "invalid") {
@@ -202,11 +202,11 @@ describe("conversation pair interchange", () => {
         calls.push(path.basename(filePath));
       });
 
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeClaudeJsonl(1),
-      meta: makePairMetadata(id),
+      meta: makeSidecarMeta(id),
     });
 
     expect(spy).toHaveBeenCalledTimes(2);
@@ -215,11 +215,11 @@ describe("conversation pair interchange", () => {
 
   it("parses pair metadata with backward-compatible summary defaults", () => {
     const id = "b1010101-1010-1010-1010-101010101010";
-    const parsed = JSON.parse(serializePairMetadata(makePairMetadata(id))) as Record<string, unknown>;
+    const parsed = JSON.parse(serializeSidecar(makeSidecarMeta(id))) as Record<string, unknown>;
     delete parsed.summaryKind;
     delete parsed.summaryExtraction;
 
-    const result = parsePairMetadata(JSON.stringify(parsed));
+    const result = parseSidecar(JSON.stringify(parsed));
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -230,16 +230,16 @@ describe("conversation pair interchange", () => {
 
   it("requires the inspection and relationships fields to be present together", () => {
     const id = "b1020202-2020-2020-2020-202020202020";
-    const inspectionOnly = parsePairMetadata(JSON.stringify({
-      ...makePairMetadata(id),
+    const inspectionOnly = parseSidecar(JSON.stringify({
+      ...makeSidecarMeta(id),
       relationshipInspection: {
         status: "none_found",
         version: 2,
         diagnostic: null,
       },
     }));
-    const relationshipsOnly = parsePairMetadata(JSON.stringify({
-      ...makePairMetadata(id),
+    const relationshipsOnly = parseSidecar(JSON.stringify({
+      ...makeSidecarMeta(id),
       relationships: [],
     }));
 
@@ -249,8 +249,8 @@ describe("conversation pair interchange", () => {
 
   it("round-trips inferred evidence and a tagged branch point", () => {
     const id = "b1025252-2525-2525-2525-252525252525";
-    const metadata: PairMetadata = {
-      ...makePairMetadata(id),
+    const metadata: SidecarMeta = {
+      ...makeSidecarMeta(id),
       relationshipInspection: {
         status: "linked",
         version: 2,
@@ -270,7 +270,7 @@ describe("conversation pair interchange", () => {
       }],
     };
 
-    const result = parsePairMetadata(serializePairMetadata(metadata));
+    const result = parseSidecar(serializeSidecar(metadata));
 
     expect(result).toEqual({ ok: true, meta: metadata });
   });
@@ -313,8 +313,8 @@ describe("conversation pair interchange", () => {
     "rejects $status relationship metadata with an invalid relationship count",
     ({ status, version, diagnostic, relationships }) => {
       const id = "b1030303-3030-3030-3030-303030303030";
-      const result = parsePairMetadata(JSON.stringify({
-        ...makePairMetadata(id),
+      const result = parseSidecar(JSON.stringify({
+        ...makeSidecarMeta(id),
         relationshipInspection: { status, version, diagnostic },
         relationships,
       }));
@@ -326,12 +326,12 @@ describe("conversation pair interchange", () => {
   it("imports current relationship metadata without reinterpreting the raw artifact", async () => {
     const id = "b1040404-4040-4040-4040-404040404040";
     const relationship = branchRelationship("parent-from-metadata");
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeClaudeJsonl(1),
       meta: {
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         relationshipInspection: {
           status: "linked",
           version: 2,
@@ -341,12 +341,12 @@ describe("conversation pair interchange", () => {
       },
     });
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("valid");
     if (validation.kind === "valid") {
-      expect(validation.pair.relationshipInspection).toEqual({
+      expect(validation.files.relationshipInspection).toEqual({
         status: "linked",
         version: 2,
         diagnostic: null,
@@ -357,12 +357,12 @@ describe("conversation pair interchange", () => {
 
   it("reinspects older relationship metadata from the raw artifact", async () => {
     const id = "b1050505-5050-5050-5050-505050505050";
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeClaudeJsonl(1),
       meta: {
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         relationshipInspection: {
           status: "linked",
           version: 1,
@@ -372,12 +372,12 @@ describe("conversation pair interchange", () => {
       },
     });
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("valid");
     if (validation.kind === "valid") {
-      expect(validation.pair.relationshipInspection).toEqual({
+      expect(validation.files.relationshipInspection).toEqual({
         status: "none_found",
         version: 2,
         diagnostic: null,
@@ -391,7 +391,7 @@ describe("conversation pair interchange", () => {
     const confirmedRelationship = branchRelationship(
       "b1555555-5555-4555-8555-555555555555",
     );
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeInferredClaudeJsonl(
@@ -399,7 +399,7 @@ describe("conversation pair interchange", () => {
         "b2555555-5555-4555-8555-555555555555",
       ),
       meta: {
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         relationshipInspection: {
           status: "linked",
           version: 1,
@@ -409,12 +409,12 @@ describe("conversation pair interchange", () => {
       },
     });
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("valid");
     if (validation.kind === "valid") {
-      expect(validation.pair.relationshipInspection).toEqual({
+      expect(validation.files.relationshipInspection).toEqual({
         status: "linked",
         version: 2,
         diagnostic: null,
@@ -425,12 +425,12 @@ describe("conversation pair interchange", () => {
 
   it("rejects relationship metadata written by a newer adapter contract", async () => {
     const id = "b1060606-6060-6060-6060-606060606060";
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: makeClaudeJsonl(1),
       meta: {
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         relationshipInspection: {
           status: "none_found",
           version: 3,
@@ -440,8 +440,8 @@ describe("conversation pair interchange", () => {
       },
     });
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation).toEqual({
       kind: "invalid",
@@ -454,9 +454,9 @@ describe("conversation pair interchange", () => {
 
   it("accepts syntactically valid unknown source keys in pair metadata", () => {
     const id = "b1111111-1111-1111-1111-111111111111";
-    const result = parsePairMetadata(
-      serializePairMetadata({
-        ...makePairMetadata(id),
+    const result = parseSidecar(
+      serializeSidecar({
+        ...makeSidecarMeta(id),
         source: "future.agent",
       }),
     );
@@ -469,9 +469,9 @@ describe("conversation pair interchange", () => {
 
   it("rejects invalid source-key syntax in pair metadata", () => {
     const id = "b1212121-1212-1212-1212-121212121212";
-    const result = parsePairMetadata(
+    const result = parseSidecar(
       JSON.stringify({
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         source: "Future.Agent",
       }),
     );
@@ -485,23 +485,23 @@ describe("conversation pair interchange", () => {
 
   it("reports unsupported_source for complete pairs from valid unknown sources", async () => {
     const id = "b1313131-1313-1313-1313-131313131313";
-    await writePair({
+    await writeConversationFiles({
       jsonlPath: path.join(tempDir, `${id}.jsonl`),
       metaPath: path.join(tempDir, `${id}.meta.json`),
       jsonl: "not parsed for unknown sources\n",
       meta: {
-        ...makePairMetadata(id),
+        ...makeSidecarMeta(id),
         source: "future.agent",
       },
     });
 
-    const [pair] = await scanPairs(tempDir);
-    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+    const [pair] = await scanConversationFiles(tempDir);
+    const validation = await validateConversationFiles(pair!, getDefaultConfig("alice"));
 
     expect(validation.kind).toBe("invalid");
     if (validation.kind === "invalid") {
       expect(validation.warning.code).toBe("unsupported_source");
-      expect(validation.warning.pair).toEqual({
+      expect(validation.warning.conversation).toEqual({
         author: "alice",
         source: "future.agent",
         id,
@@ -514,13 +514,13 @@ async function writeCompletePair(pairDir: string, id: string): Promise<void> {
   await fs.mkdir(pairDir, { recursive: true });
   await fs.writeFile(
     path.join(pairDir, `${id}.meta.json`),
-    serializePairMetadata(makePairMetadata(id)),
+    serializeSidecar(makeSidecarMeta(id)),
     "utf8",
   );
   await writeJsonl(path.join(pairDir, `${id}.jsonl`), makeClaudeLines(1));
 }
 
-function makePairMetadata(id: string): PairMetadata {
+function makeSidecarMeta(id: string): SidecarMeta {
   return {
     id,
     title: "Fix auth",

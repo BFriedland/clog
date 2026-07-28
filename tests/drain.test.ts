@@ -12,8 +12,8 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import {
   ArchiveResourceError,
-  createDeterministicPairArchive,
-  MAX_SELECTED_PAIR_BYTES,
+  createDeterministicArchive,
+  MAX_SELECTED_ARCHIVE_BYTES,
 } from "../src/interchange/archive.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import { getRawConversationPath } from "../src/utils/paths.js";
@@ -25,7 +25,7 @@ vi.mock("../src/interchange/archive.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/interchange/archive.js")>();
   return {
     ...actual,
-    createDeterministicPairArchive: vi.fn(actual.createDeterministicPairArchive),
+    createDeterministicArchive: vi.fn(actual.createDeterministicArchive),
   };
 });
 
@@ -490,9 +490,9 @@ describe("clog drain archive transport", () => {
   it("publishes nothing after a representative archive resource failure", async () => {
     const id = "d4545454-4545-4545-4545-454545454545";
     await seedSavedConversation(id);
-    const createArchiveMock = vi.mocked(createDeterministicPairArchive);
+    const createArchiveMock = vi.mocked(createDeterministicArchive);
     const resourceFailure = () => new ArchiveResourceError(
-      `Archive selected pair bytes observed ${MAX_SELECTED_PAIR_BYTES + 1}; limit is ${MAX_SELECTED_PAIR_BYTES}. Use directory input or output instead.`,
+      `Archive selected conversation bytes observed ${MAX_SELECTED_ARCHIVE_BYTES + 1}; limit is ${MAX_SELECTED_ARCHIVE_BYTES}. Use directory input or output instead.`,
     );
 
     const absentOutput = path.join(tempDir, "absent-resource-output.zip");
@@ -505,7 +505,7 @@ describe("clog drain archive transport", () => {
 
     expect(absentResult.error).toMatchObject({ exitCode: 1 });
     expect((absentResult.error as Error).message).toContain(
-      `selected pair bytes observed ${MAX_SELECTED_PAIR_BYTES + 1}`,
+      `selected conversation bytes observed ${MAX_SELECTED_ARCHIVE_BYTES + 1}`,
     );
     await expect(fs.access(absentOutput)).rejects.toThrow();
 

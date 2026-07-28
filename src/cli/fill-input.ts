@@ -2,12 +2,12 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import type { PairDiagnosticAdapter } from "../interchange/pairs.js";
+import type { ScanDiagnosticAdapter } from "../interchange/conversation-files.js";
 import {
   assertArchiveByteLimit,
   ArchiveError,
   classifyZipSignature,
-  extractPairArchive,
+  extractArchive,
 } from "../interchange/archive.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { normalizeUserPath } from "../utils/paths.js";
@@ -15,7 +15,7 @@ import { withPrivateTempDirectory } from "../utils/private-temp.js";
 
 type FillInputKind = "directory" | "archive";
 
-export interface PreparedFillInput extends PairDiagnosticAdapter {
+export interface PreparedFillInput extends ScanDiagnosticAdapter {
   kind: FillInputKind;
   physicalRoot: string;
   suppliedPath: string;
@@ -44,7 +44,7 @@ function createPreparedDirectoryInput(inputPath: string): PreparedFillInput {
     suppliedPath,
     inputDescription: "input directory",
     formatPath,
-    formatPairPath(normalizedRelativePath: string): string {
+    formatFilesPath(normalizedRelativePath: string): string {
       const relativePath = normalizedRelativePath.split("/").join(path.sep);
       return appendDisplayPath(suppliedPath, relativePath);
     },
@@ -82,7 +82,7 @@ function createPreparedArchiveInput(
     suppliedPath,
     inputDescription: "input archive",
     formatPath,
-    formatPairPath(normalizedRelativePath: string): string {
+    formatFilesPath(normalizedRelativePath: string): string {
       return formatArchiveEntryPath(suppliedPath, normalizedRelativePath);
     },
     translateFilesystemError(operation: string, physicalPath: string, error: unknown): Error {
@@ -146,7 +146,7 @@ export async function withPreparedFillInput<T>(
       throw new ArchiveError(`Archive ${inputPath} changed before it could be decoded.`);
     }
 
-    await extractPairArchive(archiveData, temporaryRoot, inputPath);
+    await extractArchive(archiveData, temporaryRoot, inputPath);
     const archiveInput = createPreparedArchiveInput(inputPath, temporaryRoot);
     return runPreparedOperation(archiveInput, operation);
   });

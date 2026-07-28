@@ -8,7 +8,7 @@ import {
 } from "../db/index.js";
 import {
   planGitReconciliation,
-  scanGitCheckoutPairs,
+  scanGitCheckoutConversationFiles,
   type GitReconciliationPlan,
 } from "../interchange/reconcile.js";
 import type { ClogWarning } from "../models/warnings.js";
@@ -31,7 +31,7 @@ export async function reconcileRemote(
   config: Config,
   remoteUrl: string,
 ): Promise<PullStats> {
-  const scan = await scanGitCheckoutPairs(getRemoteRoot(), config);
+  const scan = await scanGitCheckoutConversationFiles(getRemoteRoot(), config);
   const localScan = await scanLocalSources(config);
   const clogIgnoreRules = await readClogIgnoreRules();
 
@@ -83,7 +83,7 @@ function buildStats(
       skipped += 1;
       if (
         action.reason !== "ignored" &&
-        action.reason !== "invalid_pair"
+        action.reason !== "invalid_files"
       ) {
         notices.push(action.message);
       }

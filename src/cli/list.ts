@@ -451,7 +451,7 @@ function renderCollapsedBranchHint(
   }
 
   process.stdout.write(
-    "\nRows marked with a branch count show the most recently updated branch. " +
+    "\nConversations marked with a branch count show the most recently updated branch. " +
       "Use 'clog list --all-branches' to show every branch and superseded generation.\n",
   );
 }

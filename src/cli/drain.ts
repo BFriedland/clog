@@ -12,15 +12,15 @@ import {
   type LocalScanSnapshot,
 } from "../conversations/view.js";
 import {
-  createDeterministicPairArchive,
+  createDeterministicArchive,
   validateArchiveEntryName,
   validateArchivePathComponent,
 } from "../interchange/archive.js";
 import {
-  conversationToPairMetadata,
-  pairMetadataSchema,
-  writePair,
-} from "../interchange/pairs.js";
+  conversationToSidecar,
+  sidecarSchema,
+  writeConversationFiles,
+} from "../interchange/conversation-files.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import { publishArchiveAtomic, assertArchivePublicationDestination } from "../utils/archive-publication.js";
 import { ClogError, UsageError } from "../utils/errors.js";
@@ -146,7 +146,7 @@ async function runDrainCommand(
 
   if (bare) {
     if (format === "dir") {
-      await assertPairDestinationBeforeConfirmation(destination);
+      await assertDirectoryDestinationBeforeConfirmation(destination);
     } else {
       await assertArchivePublicationDestination(destination, {
         force: options.force === true,
@@ -167,7 +167,7 @@ async function runDrainCommand(
   }
 
   if (format === "dir") {
-    await drainPairsToDirectory(resolved.conversations, {
+    await drainToDirectory(resolved.conversations, {
       config,
       force: options.force === true,
       targetDir: destination,
@@ -359,7 +359,7 @@ function filtersExcludeUnsavedViews(
   );
 }
 
-async function assertPairDestinationBeforeConfirmation(
+async function assertDirectoryDestinationBeforeConfirmation(
   targetDir: string,
 ): Promise<void> {
   let destinationStat;
@@ -381,7 +381,7 @@ async function assertPairDestinationBeforeConfirmation(
   }
 }
 
-async function drainPairsToDirectory(
+async function drainToDirectory(
   conversations: ConversationMeta[],
   options: {
     config: Config;
@@ -407,7 +407,7 @@ async function drainPairsToDirectory(
 
   for (const conversation of conversations) {
     try {
-      await writeConversationPair(conversation, options);
+      await exportConversationToDirectory(conversation, options);
       results.succeeded += 1;
     } catch (error) {
       results.failed += 1;
@@ -464,7 +464,7 @@ async function drainToArchive(
     for (const conversation of nameValid) {
       try {
         await assertNoArchiveStagingCollision(conversation, stagingRoot);
-        await writeConversationPair(conversation, {
+        await exportConversationToDirectory(conversation, {
           config: options.config,
           force: false,
           targetDir: stagingRoot,
@@ -492,7 +492,7 @@ async function drainToArchive(
       return;
     }
 
-    const archive = await createDeterministicPairArchive(stagingRoot);
+    const archive = await createDeterministicArchive(stagingRoot);
     await publishArchiveAtomic(options.destination, archive, {
       force: options.force,
     });
@@ -521,13 +521,13 @@ async function assertNoArchiveStagingCollision(
     const physicalPath = path.join(stagingRoot, ...entryName.split("/"));
     if (await pathExists(physicalPath)) {
       throw new ClogError(
-        `Archive entry ${entryName} collides with another selected conversation on this filesystem. No archive was written. Export the colliding conversations separately or remove one of the saved rows; --force cannot resolve collisions inside one archive export.`,
+        `Archive entry ${entryName} collides with another selected conversation on this filesystem. No archive was written. Export the colliding conversations separately or remove one of the saved conversations; --force cannot resolve collisions inside one archive export.`,
       );
     }
   }
 }
 
-async function writeConversationPair(
+async function exportConversationToDirectory(
   conversation: ConversationMeta,
   options: {
     config: Config;
@@ -538,7 +538,7 @@ async function writeConversationPair(
 ): Promise<void> {
   if (conversation.state !== "saved") {
     throw new ClogError(
-      "Pair export requires saved conversations. Save this conversation before exporting it.",
+      "Directory export requires saved conversations. Save this conversation before exporting it.",
     );
   }
 
@@ -557,13 +557,13 @@ async function writeConversationPair(
     }
   }
 
-  const meta = pairMetadataSchema.parse(conversationToPairMetadata(conversation));
+  const meta = sidecarSchema.parse(conversationToSidecar(conversation));
   if (isSourceParseSupported(conversation.source)) {
     await parseConversationMessages(options.config, conversation);
   }
   const rawContent = await readConversationRaw(conversation);
 
-  await writePair({
+  await writeConversationFiles({
     jsonlPath,
     metaPath,
     jsonl: rawContent,
@@ -625,11 +625,6 @@ function reportDrainSummary(
 function parseFormat(value?: string): DrainFormat {
   if (value == null || value === "archive") return "archive";
   if (value === "dir") return "dir";
-  if (value === "pair") {
-    throw new UsageError(
-      "--format pair was renamed. Use --format dir to export an unpacked directory.",
-    );
-  }
   if (value === "json" || value === "md") {
     throw new UsageError(
       `--format ${value} was removed from clog drain. Use 'clog show <id> --${value}' instead.`,

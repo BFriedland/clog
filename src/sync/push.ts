@@ -5,15 +5,15 @@ import {
   listConversationsInDb,
   withDb,
 } from "../db/index.js";
-import { writePair } from "../interchange/pairs.js";
+import { writeConversationFiles } from "../interchange/conversation-files.js";
 import type { ConversationMeta } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { getRawConversationPath } from "../utils/paths.js";
 import { validateSourceKey } from "../utils/source-keys.js";
 import {
-  conversationToRemoteMeta,
-  serializeRemoteMeta,
-} from "./meta.js";
+  conversationToSidecar,
+  serializeSidecar,
+} from "../interchange/conversation-files.js";
 import {
   getRemoteAuthorDir,
   getRemoteJsonlPath,
@@ -78,26 +78,26 @@ export async function exportAuthorToCheckout(
     const jsonlPath = getRemoteJsonlPath(author, conversation.source, conversation.id);
 
     const existingMeta = await readFileIfExists(metaPath);
-    const remoteMeta = conversationToRemoteMeta(conversation);
-    const nextMeta = serializeRemoteMeta(remoteMeta);
+    const remoteMeta = conversationToSidecar(conversation);
+    const nextMeta = serializeSidecar(remoteMeta);
 
     const rawPath = getRawConversationPath(conversation.source, conversation.id);
     const rawContent = await fs.readFile(rawPath);
 
     const existingJsonl = await readFileBufferIfExists(jsonlPath);
-    await writePair({
+    await writeConversationFiles({
       metaPath,
       jsonlPath,
       meta: remoteMeta,
       jsonl: rawContent,
     });
 
-    const previouslyCompletePair = existingMeta != null && existingJsonl != null;
+    const previouslyCompleteFiles = existingMeta != null && existingJsonl != null;
     const metaChanged = existingMeta !== nextMeta;
     const jsonlChanged =
       existingJsonl == null || !existingJsonl.equals(rawContent);
 
-    if (!previouslyCompletePair) {
+    if (!previouslyCompleteFiles) {
       stats.changes.push({
         kind: "added",
         id: conversation.id,
@@ -128,7 +128,7 @@ export async function exportAuthorToCheckout(
 
     const sourceDir = getRemoteSourceDir(author, source);
     const files = await safeReaddir(sourceDir);
-    const idsInCheckout = Array.from(collectPairIds(files)).sort();
+    const idsInCheckout = Array.from(collectConversationIds(files)).sort();
     const expected = expectedBySource.get(source) ?? new Map();
 
     for (const id of idsInCheckout) {
@@ -146,7 +146,7 @@ export async function exportAuthorToCheckout(
       const metaExists = files.includes(`${id}.meta.json`);
       const jsonlExists = files.includes(`${id}.jsonl`);
 
-      // Only retract when the pair is currently complete — lightest-necessary-touch.
+      // Only retract when both files are currently present — lightest-necessary-touch.
       if (!metaExists || !jsonlExists) {
         continue;
       }
@@ -229,7 +229,7 @@ async function safeReaddir(dir: string): Promise<string[]> {
   }
 }
 
-function collectPairIds(files: string[]): Set<string> {
+function collectConversationIds(files: string[]): Set<string> {
   const ids = new Set<string>();
   for (const file of files) {
     if (file.endsWith(".meta.json")) {

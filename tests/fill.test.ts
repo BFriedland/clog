@@ -21,11 +21,11 @@ import {
 import * as dbModule from "../src/db/index.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import {
-  createDeterministicPairArchive,
+  createDeterministicArchive,
   MAX_ARCHIVE_BYTES,
 } from "../src/interchange/archive.js";
 import { planFill, type FillMode, type FillWriteAction } from "../src/interchange/fill.js";
-import { writePair, type PairMetadata, type ValidatedPair } from "../src/interchange/pairs.js";
+import { writeConversationFiles, type SidecarMeta, type ValidatedConversationFiles } from "../src/interchange/conversation-files.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   getImportConversationPath,
@@ -83,7 +83,7 @@ describe("clog fill", () => {
 
   it("runs local source discovery once for one fill invocation", async () => {
     const id = "a0202020-2020-2020-2020-202020202020";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     const discover = vi.fn(async function* () {
       return;
     });
@@ -175,7 +175,7 @@ describe("clog fill", () => {
   it("imports a clog archive through the existing pair plan and write pipeline", async () => {
     const id = "a0353535-3535-3535-3535-353535353535";
     const parentId = "a0363636-3636-3636-3636-363636363636";
-    await writePairFixture(pairDir, id, {
+    await writeConversationFilesFixture(pairDir, id, {
       author: "bob",
       title: "Archived pair",
       relationshipInspection: {
@@ -194,7 +194,7 @@ describe("clog fill", () => {
       }],
     }, 2);
     const archivePath = path.join(tempDir, "portable.bin");
-    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+    await fs.writeFile(archivePath, await createDeterministicArchive(pairDir));
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [archivePath]);
 
@@ -248,17 +248,17 @@ describe("clog fill", () => {
     }
     const rawJsonl =
       `${rewind.sourceRecords.map((record) => JSON.stringify(record)).join("\n")}\n`;
-    await writePair({
+    await writeConversationFiles({
       metaPath: path.join(pairDir, `${id}.meta.json`),
       jsonlPath: path.join(pairDir, `${id}.jsonl`),
-      meta: makePairMetadata(id, {
+      meta: makeSidecarMeta(id, {
         author: "bob",
         title: "Rewind archive",
       }),
       jsonl: rawJsonl,
     });
     const archivePath = path.join(tempDir, "rewind.zip");
-    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+    await fs.writeFile(archivePath, await createDeterministicArchive(pairDir));
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       archivePath,
@@ -279,14 +279,14 @@ describe("clog fill", () => {
   it("preserves own, dry-run, allow-partial, and expanded-error behavior for archives", async () => {
     const validId = "a0343434-3434-3434-3434-343434343434";
     const incompleteId = "a0344444-4444-4444-4444-444444444444";
-    await writePairFixture(pairDir, validId, { author: "alice" }, 1);
+    await writeConversationFilesFixture(pairDir, validId, { author: "alice" }, 1);
     await fs.writeFile(
       path.join(pairDir, `${incompleteId}.jsonl`),
       makeClaudeJsonl(1),
       "utf8",
     );
     const archivePath = path.join(tempDir, "option-parity.zip");
-    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+    await fs.writeFile(archivePath, await createDeterministicArchive(pairDir));
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       archivePath,
@@ -323,9 +323,9 @@ describe("clog fill", () => {
 
   it("translates an archive entry read failure without exposing its temporary path", async () => {
     const id = "a0383838-3838-3838-3838-383838383838";
-    await writePairFixture(path.join(pairDir, "claude-code"), id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(path.join(pairDir, "claude-code"), id, { author: "bob" }, 1);
     const archivePath = path.join(tempDir, "entry-read-failure.zip");
-    await fs.writeFile(archivePath, await createDeterministicPairArchive(pairDir));
+    await fs.writeFile(archivePath, await createDeterministicArchive(pairDir));
     const expectedSuffix = path.join("claude-code", `${id}.meta.json`);
     const originalReadFile = fs.readFile.bind(fs);
     const readFileSpy = vi.spyOn(fs, "readFile");
@@ -432,7 +432,7 @@ describe("clog fill", () => {
   it("does not double a supplied trailing separator in paths or summaries", async () => {
     const id = "a0505050-5050-5050-5050-505050505050";
     const incompleteId = "a0555555-5555-5555-5555-555555555555";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     await fs.writeFile(
       path.join(pairDir, `${incompleteId}.jsonl`),
       makeClaudeJsonl(1),
@@ -473,7 +473,7 @@ describe("clog fill", () => {
   it("translates a metadata read failure without exposing the physical input path", async () => {
     const id = "a0707070-7070-7070-7070-707070707070";
     const inputPath = "./pairs";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     process.chdir(tempDir);
     const physicalPairDir = path.resolve("./pairs");
     const metaPath = path.join(physicalPairDir, `${id}.meta.json`);
@@ -499,7 +499,7 @@ describe("clog fill", () => {
 
   it("translates a pair-directory read failure without exposing the physical input path", async () => {
     const id = "a0757575-7575-7575-7575-757575757575";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     process.chdir(tempDir);
     const physicalPairDir = path.resolve("./pairs");
     const originalReadDir = fs.readdir.bind(fs);
@@ -523,7 +523,7 @@ describe("clog fill", () => {
   it("translates a managed-copy source read failure without exposing its physical path", async () => {
     const id = "a0808080-8080-8080-8080-808080808080";
     const inputPath = "./pairs";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     process.chdir(tempDir);
     const physicalPairDir = path.resolve("./pairs");
     const jsonlPath = path.join(physicalPairDir, `${id}.jsonl`);
@@ -544,7 +544,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toContain(
-      `Failed to copy pair content to ${managedPath} from ${inputPath}${path.sep}${id}.jsonl (ENOENT)`,
+      `Failed to copy conversation content to ${managedPath} from ${inputPath}${path.sep}${id}.jsonl (ENOENT)`,
     );
     expect((result.error as Error).message).not.toContain(jsonlPath);
     expect(sourceReadCount).toBe(2);
@@ -552,7 +552,7 @@ describe("clog fill", () => {
 
   it("uses a safe command-level error when an unexpected failure contains the physical root", async () => {
     const id = "a0909090-9090-9090-9090-909090909090";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     process.chdir(tempDir);
     const physicalPairDir = path.resolve("./pairs");
     vi.spyOn(dbModule, "withDb").mockRejectedValue(
@@ -570,7 +570,7 @@ describe("clog fill", () => {
 
   it("imports foreign pairs as read-only file rows with managed content", async () => {
     const id = "a1111111-1111-1111-1111-111111111111";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Bob debug" }, 2);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Bob debug" }, 2);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
@@ -596,9 +596,9 @@ describe("clog fill", () => {
   });
 
   it("runs the fill database phase in a single withDb critical section", async () => {
-    await writePairFixture(pairDir, "c1111111-1111-1111-1111-111111111111", { author: "bob", title: "First" }, 1);
-    await writePairFixture(pairDir, "c2222222-2222-2222-2222-222222222222", { author: "bob", title: "Second" }, 1);
-    await writePairFixture(pairDir, "c3333333-3333-3333-3333-333333333333", { author: "bob", title: "Third" }, 1);
+    await writeConversationFilesFixture(pairDir, "c1111111-1111-1111-1111-111111111111", { author: "bob", title: "First" }, 1);
+    await writeConversationFilesFixture(pairDir, "c2222222-2222-2222-2222-222222222222", { author: "bob", title: "Second" }, 1);
+    await writeConversationFilesFixture(pairDir, "c3333333-3333-3333-3333-333333333333", { author: "bob", title: "Third" }, 1);
 
     // Fill scans and validates pair files before opening the DB. Once it enters
     // the database phase, planning and all writes should share one
@@ -614,7 +614,7 @@ describe("clog fill", () => {
 
   it("hints to use --own when every importable pair is the configured author's", async () => {
     const id = "ad111111-1111-1111-1111-111111111111";
-    await writePairFixture(pairDir, id, { author: "alice", title: "My own debug" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "alice", title: "My own debug" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
@@ -634,7 +634,7 @@ describe("clog fill", () => {
 
   it("restores own pairs as editable local rows with --own", async () => {
     const id = "a2222222-2222-2222-2222-222222222222";
-    await writePairFixture(pairDir, id, { author: "alice", title: "My debug" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "alice", title: "My debug" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir, "--own"]);
 
@@ -659,7 +659,7 @@ describe("clog fill", () => {
   it("fails before writes when a failure-class candidate is present", async () => {
     const goodId = "a3333333-3333-3333-3333-333333333333";
     const badId = "a4444444-4444-4444-4444-444444444444";
-    await writePairFixture(pairDir, goodId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, goodId, { author: "bob" }, 1);
     await fs.mkdir(path.join(pairDir, "broken"), { recursive: true });
     await fs.writeFile(
       path.join(pairDir, "broken", `${badId}.jsonl`),
@@ -674,7 +674,7 @@ describe("clog fill", () => {
     expect(result.stderr).toContain(
       `error: Skipping conversation ${path.join(pairDir, "broken", badId)} - incomplete`,
     );
-    expect(result.stderr).not.toContain("input pairs could not be imported");
+    expect(result.stderr).not.toContain("conversations could not be imported");
     expect(result.stderr).toContain(
       "Errors were found while importing from the input directory",
     );
@@ -704,7 +704,7 @@ describe("clog fill", () => {
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      "error: 2 input pairs could not be imported. Re-run with --show-all-errors to list each pair.",
+      "error: 2 conversations could not be imported. Re-run with --show-all-errors to list each conversation.",
     );
     expect(result.stderr).toContain("--show-all-errors");
     expect(result.stderr).not.toContain("incomplete");
@@ -717,7 +717,7 @@ describe("clog fill", () => {
 
     expect(expanded.error).toBeNull();
     expect(expanded.exitCode).toBe(1);
-    expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
+    expect(expanded.stderr).not.toContain("error: 2 conversations could not be imported");
     expect(expanded.stderr).toContain(
       `error: Skipping conversation ${path.join(pairDir, firstBadId)} - incomplete`,
     );
@@ -729,7 +729,7 @@ describe("clog fill", () => {
   it("allows partial imports while still exiting 1", async () => {
     const goodId = "a5555555-5555-5555-5555-555555555555";
     const badId = "a6666666-6666-6666-6666-666666666666";
-    await writePairFixture(pairDir, goodId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, goodId, { author: "bob" }, 1);
     await fs.writeFile(path.join(pairDir, `${badId}.jsonl`), makeClaudeJsonl(1), "utf8");
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
@@ -747,8 +747,8 @@ describe("clog fill", () => {
   it("treats unsupported-source pairs as failure-class candidates", async () => {
     const goodId = "f1111111-1111-1111-1111-111111111111";
     const unknownId = "f2222222-2222-2222-2222-222222222222";
-    await writePairFixture(pairDir, goodId, { author: "bob" }, 1);
-    await writePairFixture(pairDir, unknownId, { author: "bob", source: "future.agent" }, 1);
+    await writeConversationFilesFixture(pairDir, goodId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, unknownId, { author: "bob", source: "future.agent" }, 1);
 
     const dryRun = await runBuiltCommandCapturingError(buildFillCommand, [
       pairDir,
@@ -791,7 +791,7 @@ describe("clog fill", () => {
 
     const ownDir = path.join(tempDir, "own-unknown-source-pairs");
     const ownUnknownId = "f3333333-3333-3333-3333-333333333333";
-    await writePairFixture(ownDir, ownUnknownId, {
+    await writeConversationFilesFixture(ownDir, ownUnknownId, {
       author: "alice",
       source: "future.agent",
     }, 1);
@@ -817,13 +817,13 @@ describe("clog fill", () => {
     const firstInvalidId = "f6666666-6666-6666-6666-666666666666";
     const secondInvalidId = "f7777777-7777-7777-7777-777777777777";
 
-    await writePairFixture(
+    await writeConversationFilesFixture(
       path.join(pairDir, "carol", "future-agent"),
       firstUnsupportedId,
       { author: "carol", source: "future-agent" },
       1,
     );
-    await writePairFixture(
+    await writeConversationFilesFixture(
       path.join(pairDir, "carol", "future-agent"),
       secondUnsupportedId,
       { author: "carol", source: "future-agent" },
@@ -838,8 +838,8 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("error: 2 input pairs could not be imported");
-    expect(result.stderr).not.toContain("error: 4 input pairs could not be imported");
+    expect(result.stderr).toContain("error: 2 conversations could not be imported");
+    expect(result.stderr).not.toContain("error: 4 conversations could not be imported");
     expect(result.stderr).toContain('error: 2 conversations use source "future-agent"');
     expect(result.stderr).not.toContain(`    carol/future-agent/${firstUnsupportedId}`);
     expect(result.stderr).not.toContain(`    carol/future-agent/${secondUnsupportedId}`);
@@ -868,9 +868,9 @@ describe("clog fill", () => {
 
   it("rejects duplicate input identities without choosing a winner", async () => {
     const id = "a7777777-7777-7777-7777-777777777777";
-    await writePairFixture(path.join(pairDir, "alice"), id, { author: "alice", title: "Alice" }, 1);
-    await writePairFixture(path.join(pairDir, "bob"), id, { author: "bob", title: "Bob" }, 1);
-    await writePairFixture(path.join(pairDir, "carol"), id, { author: "carol", title: "Carol" }, 1);
+    await writeConversationFilesFixture(path.join(pairDir, "alice"), id, { author: "alice", title: "Alice" }, 1);
+    await writeConversationFilesFixture(path.join(pairDir, "bob"), id, { author: "bob", title: "Bob" }, 1);
+    await writeConversationFilesFixture(path.join(pairDir, "carol"), id, { author: "carol", title: "Carol" }, 1);
     process.chdir(tempDir);
     const inputPath = `.${path.sep}pairs`;
 
@@ -881,7 +881,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("error: 3 input pairs could not be imported");
+    expect(result.stderr).toContain("error: 3 conversations could not be imported");
     expect(result.stderr).not.toContain("duplicate input identity");
     expect(await getConversationById(id)).toBeNull();
 
@@ -902,7 +902,7 @@ describe("clog fill", () => {
 
   it("supports dry-run without writing rows or managed files", async () => {
     const id = "a8888888-8888-8888-8888-888888888888";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
     await withDb(() => undefined, { mode: "read" });
     const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
 
@@ -924,7 +924,7 @@ describe("clog fill", () => {
   it("previews the fail-before-writes abort under --dry-run", async () => {
     const goodId = "ac111111-1111-1111-1111-111111111111";
     const badId = "ac222222-2222-2222-2222-222222222222";
-    await writePairFixture(pairDir, goodId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, goodId, { author: "bob" }, 1);
     await fs.mkdir(path.join(pairDir, "broken"), { recursive: true });
     await fs.writeFile(
       path.join(pairDir, "broken", `${badId}.jsonl`),
@@ -953,8 +953,8 @@ describe("clog fill", () => {
   it("previews the --own author-guard abort without counting matching pairs", async () => {
     const ownId = "ac333333-3333-3333-3333-333333333333";
     const foreignId = "ac444444-4444-4444-4444-444444444444";
-    await writePairFixture(pairDir, ownId, { author: "alice" }, 1);
-    await writePairFixture(pairDir, foreignId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, ownId, { author: "alice" }, 1);
+    await writeConversationFilesFixture(pairDir, foreignId, { author: "bob" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       pairDir,
@@ -976,8 +976,8 @@ describe("clog fill", () => {
   it("collapses --own author mismatch errors unless --show-all-errors is present", async () => {
     const firstForeignId = "ac555555-5555-5555-5555-555555555555";
     const secondForeignId = "ac666666-6666-6666-6666-666666666666";
-    await writePairFixture(pairDir, firstForeignId, { author: "bob" }, 1);
-    await writePairFixture(pairDir, secondForeignId, { author: "carol" }, 1);
+    await writeConversationFilesFixture(pairDir, firstForeignId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, secondForeignId, { author: "carol" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [
       pairDir,
@@ -986,7 +986,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("error: 2 input pairs could not be imported");
+    expect(result.stderr).toContain("error: 2 conversations could not be imported");
     expect(result.stderr).toContain("Re-run with --show-all-errors to see each error");
     expect(result.stderr).not.toContain("pair author");
 
@@ -998,7 +998,7 @@ describe("clog fill", () => {
 
     expect(expanded.error).toBeNull();
     expect(expanded.exitCode).toBe(1);
-    expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
+    expect(expanded.stderr).not.toContain("error: 2 conversations could not be imported");
     expect(expanded.stderr).toContain(
       `error: Skipping ${firstForeignId.slice(0, 8)} - its author "bob" does not match configured author "alice".`,
     );
@@ -1009,14 +1009,14 @@ describe("clog fill", () => {
 
   it("updates file rows without recopying content for metadata-only changes", async () => {
     const id = "a9999999-9999-9999-9999-999999999999";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Initial", tags: ["one"] }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Initial", tags: ["one"] }, 1);
     await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
     await setConversationIndexedAt(id, "2026-03-01T10:00:00.000Z");
 
     const managedPath = getImportConversationPath("claude-code", id);
     const firstContent = await fs.readFile(managedPath, "utf8");
 
-    await writePairFixture(
+    await writeConversationFilesFixture(
       pairDir,
       id,
       { author: "bob", title: "Initial", tags: ["two"] },
@@ -1030,7 +1030,7 @@ describe("clog fill", () => {
     expect(row?.indexedAt).toBe("2026-03-01T10:00:00.000Z");
     expect(await fs.readFile(managedPath, "utf8")).toBe(firstContent);
 
-    await writePairFixture(
+    await writeConversationFilesFixture(
       pairDir,
       id,
       { author: "bob", title: "Retitled", tags: ["two"] },
@@ -1044,7 +1044,7 @@ describe("clog fill", () => {
     expect(row?.indexedAt).toBeNull();
     expect(await fs.readFile(managedPath, "utf8")).toBe(firstContent);
 
-    await writePairFixture(pairDir, id, { author: "bob", title: "Retitled" }, 2);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Retitled" }, 2);
     await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
     row = await getConversationById(id);
@@ -1054,7 +1054,7 @@ describe("clog fill", () => {
 
   it("copies incoming raw content and invalidates vectors when projection changes at the same message count", async () => {
     const id = "aa9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a";
-    await writePairFixture(
+    await writeConversationFilesFixture(
       pairDir,
       id,
       { author: "bob", title: "Projection refresh" },
@@ -1084,7 +1084,7 @@ describe("clog fill", () => {
     });
     await insertConversation(existing);
 
-    const incoming = validatedPairFromFixture(pairDir, id, {
+    const incoming = validatedFilesFromFixture(pairDir, id, {
       author: "bob",
       title: "Projection refresh",
     });
@@ -1096,7 +1096,7 @@ describe("clog fill", () => {
       relationships: [],
     };
     const plan = planFill({
-      candidates: [{ kind: "valid", pair: incoming }],
+      candidates: [{ kind: "valid", files: incoming }],
       existingRows: [existing],
       mode: "file",
       author: "alice",
@@ -1129,8 +1129,8 @@ describe("clog fill", () => {
   it("applies clogignore import rules and reports one detailed skip", async () => {
     const ignoredId = "b1111111-1111-1111-1111-111111111111";
     const importedId = "b2222222-2222-2222-2222-222222222222";
-    await writePairFixture(pairDir, ignoredId, { author: "bob", projectName: "secret" }, 1);
-    await writePairFixture(pairDir, importedId, { author: "bob", projectName: "visible" }, 1);
+    await writeConversationFilesFixture(pairDir, ignoredId, { author: "bob", projectName: "secret" }, 1);
+    await writeConversationFilesFixture(pairDir, importedId, { author: "bob", projectName: "visible" }, 1);
     await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), "secret\n*/pairs\n", "utf8");
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
@@ -1159,10 +1159,10 @@ describe("clog fill", () => {
 
     for (const id of savedIds) {
       await insertConversation(conversation({ id, sourceId: id }));
-      await writePairFixture(pairDir, id, { author: "bob", projectName: "visible" }, 1);
+      await writeConversationFilesFixture(pairDir, id, { author: "bob", projectName: "visible" }, 1);
     }
     for (const id of ignoredIds) {
-      await writePairFixture(pairDir, id, { author: "bob", projectName: "secret" }, 1);
+      await writeConversationFilesFixture(pairDir, id, { author: "bob", projectName: "secret" }, 1);
     }
     await fs.writeFile(path.join(process.env.CLOG_HOME!, "clogignore"), "secret\n", "utf8");
 
@@ -1171,7 +1171,7 @@ describe("clog fill", () => {
     expect(collapsed.error).toBeNull();
     expect(collapsed.exitCode).toBeUndefined();
     expect(collapsed.stderr).toContain(
-      "notice: 2 input pairs were skipped because matching conversations are already saved locally.",
+      "notice: 2 conversations were skipped because matching conversations are already saved locally.",
     );
     expect(collapsed.stderr).toContain(
       "notice: 2 conversations were skipped by clogignore.",
@@ -1200,8 +1200,8 @@ describe("clog fill", () => {
   it("fails closed when --own sees a foreign author", async () => {
     const ownId = "b3333333-3333-3333-3333-333333333333";
     const foreignId = "b4444444-4444-4444-4444-444444444444";
-    await writePairFixture(pairDir, ownId, { author: "alice" }, 1);
-    await writePairFixture(pairDir, foreignId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, ownId, { author: "alice" }, 1);
+    await writeConversationFilesFixture(pairDir, foreignId, { author: "bob" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir, "--own", "--allow-partial"]);
 
@@ -1222,7 +1222,7 @@ describe("clog fill", () => {
 
   it("removes managed import content and warns for restored local only-copies", async () => {
     const fileId = "b5555555-5555-5555-5555-555555555555";
-    await writePairFixture(pairDir, fileId, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, fileId, { author: "bob" }, 1);
     await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
     const fileRemove = await runBuiltCommandCapturingError(buildRemoveCommand, [
@@ -1238,7 +1238,7 @@ describe("clog fill", () => {
 
     const ownId = "b6666666-6666-6666-6666-666666666666";
     const ownPairDir = path.join(tempDir, "own-pairs");
-    await writePairFixture(ownPairDir, ownId, { author: "alice" }, 1);
+    await writeConversationFilesFixture(ownPairDir, ownId, { author: "alice" }, 1);
     await runBuiltCommandCapturingError(buildFillCommand, [ownPairDir, "--own"]);
 
     const preview = await runBuiltCommandCapturingError(buildRemoveCommand, [
@@ -1259,7 +1259,7 @@ describe("clog fill", () => {
     await saveConfig(config);
 
     const id = "b7777777-7777-7777-7777-777777777777";
-    await writePairFixture(pairDir, id, { author: "bob" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
@@ -1273,7 +1273,7 @@ describe("clog fill", () => {
     const sourcePath = path.join(tempDir, "source", "api-service", `${id}.jsonl`);
     await fs.mkdir(path.dirname(sourcePath), { recursive: true });
     await fs.writeFile(sourcePath, makeClaudeJsonl(1), "utf8");
-    await writePairFixture(pairDir, id, { author: "alice", title: "Restored pair" }, 2);
+    await writeConversationFilesFixture(pairDir, id, { author: "alice", title: "Restored pair" }, 2);
 
     const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir, "--own"]);
 
@@ -1294,11 +1294,11 @@ describe("clog fill", () => {
 
   it("self-heals when managed content was overwritten before the DB row updated", async () => {
     const id = "b9a9a9a9-a9a9-a9a9-a9a9-a9a9a9a9a9a9";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Crash window" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Crash window" }, 1);
     await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
 
     const managedPath = getImportConversationPath("claude-code", id);
-    await writePairFixture(pairDir, id, { author: "bob", title: "Crash window" }, 2);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Crash window" }, 2);
     await fs.copyFile(path.join(pairDir, `${id}.jsonl`), managedPath);
 
     const staleRow = await getConversationById(id);
@@ -1315,7 +1315,7 @@ describe("clog fill", () => {
 
   it("recreates a missing managed import copy when the row is otherwise unchanged", async () => {
     const id = "ba0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Missing managed copy" }, 1);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Missing managed copy" }, 1);
     await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
     await setConversationIndexedAt(id, "2026-03-01T10:00:00.000Z");
 
@@ -1333,7 +1333,7 @@ describe("clog fill", () => {
 
   it("rejects a stale write target before overwriting managed content", async () => {
     const id = "bb1b1b1b-1b1b-1b1b-1b1b-1b1b1b1b1b1b";
-    await writePairFixture(pairDir, id, { author: "bob", title: "Updated pair" }, 2);
+    await writeConversationFilesFixture(pairDir, id, { author: "bob", title: "Updated pair" }, 2);
 
     const managedPath = getImportConversationPath("claude-code", id);
     await fs.mkdir(path.dirname(managedPath), { recursive: true });
@@ -1359,7 +1359,7 @@ describe("clog fill", () => {
     const action: FillWriteAction = {
       kind: "update",
       rowId: id,
-      pair: validatedPairFromFixture(pairDir, id, { author: "bob", title: "Updated pair" }),
+      files: validatedFilesFromFixture(pairDir, id, { author: "bob", title: "Updated pair" }),
       managedPath,
       copyContent: true,
       conversation: {
@@ -1379,54 +1379,54 @@ describe("clog fill", () => {
   });
 
   it("plans the fill collision matrix without unique-constraint failures", () => {
-    const pair = validatedPair("b8888888-8888-8888-8888-888888888888", {
+    const files = validatedFiles("b8888888-8888-8888-8888-888888888888", {
       author: "alice",
       title: "Incoming",
     });
 
-    expect(singleAction({ pair, mode: "file", localCandidate: true })).toMatchObject({
+    expect(singleAction({ files, mode: "file", localCandidate: true })).toMatchObject({
       kind: "skip",
       reason: "local_unsaved_precedence",
       failure: false,
     });
-    expect(singleAction({ pair, mode: "own", localCandidate: true })).toMatchObject({
+    expect(singleAction({ files, mode: "own", localCandidate: true })).toMatchObject({
       kind: "insert",
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "file",
-      incompleteSources: [pair.meta.source],
+      incompleteSources: [files.meta.source],
     })).toMatchObject({
       kind: "skip",
       reason: "source_discovery_incomplete",
       failure: true,
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "own",
-      incompleteSources: [pair.meta.source],
+      incompleteSources: [files.meta.source],
     })).toMatchObject({
       kind: "insert",
     });
-    expect(singleAction({ pair, mode: "file", owner: conversation({ state: "saved" }) })).toMatchObject({
+    expect(singleAction({ files, mode: "file", owner: conversation({ state: "saved" }) })).toMatchObject({
       kind: "skip",
       reason: "local_saved_precedence",
       failure: false,
     });
-    expect(singleAction({ pair, mode: "own", owner: conversation({ state: "saved" }) })).toMatchObject({
+    expect(singleAction({ files, mode: "own", owner: conversation({ state: "saved" }) })).toMatchObject({
       kind: "skip",
       reason: "local_saved_precedence",
       failure: false,
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "file",
       owner: conversation({ originKind: "file", originRef: null, title: "Old" }),
     })).toMatchObject({
       kind: "update",
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "file",
       owner: conversation({
         originKind: "file",
@@ -1443,7 +1443,7 @@ describe("clog fill", () => {
       },
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "file",
       owner: conversation({
         originKind: "file",
@@ -1464,7 +1464,7 @@ describe("clog fill", () => {
       },
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "own",
       owner: conversation({ originKind: "file", originRef: null }),
     })).toMatchObject({
@@ -1474,7 +1474,7 @@ describe("clog fill", () => {
       message: "Skipping b8888888 - this imported conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.",
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "file",
       owner: conversation({ originKind: "git", originRef: "git@example.com:repo.git" }),
     })).toMatchObject({
@@ -1483,7 +1483,7 @@ describe("clog fill", () => {
       failure: true,
     });
     expect(singleAction({
-      pair,
+      files,
       mode: "own",
       owner: conversation({ originKind: "git", originRef: "git@example.com:repo.git" }),
     })).toMatchObject({
@@ -1519,22 +1519,22 @@ async function runBuiltCommandCapturingError(
   }
 }
 
-async function writePairFixture(
+async function writeConversationFilesFixture(
   dir: string,
   id: string,
-  overrides: Partial<PairMetadata>,
+  overrides: Partial<SidecarMeta>,
   messageCount: number,
   messagePrefix = "Message",
 ): Promise<void> {
-  await writePair({
+  await writeConversationFiles({
     metaPath: path.join(dir, `${id}.meta.json`),
     jsonlPath: path.join(dir, `${id}.jsonl`),
-    meta: makePairMetadata(id, overrides),
+    meta: makeSidecarMeta(id, overrides),
     jsonl: makeClaudeJsonl(messageCount, messagePrefix),
   });
 }
 
-function makePairMetadata(id: string, overrides: Partial<PairMetadata> = {}): PairMetadata {
+function makeSidecarMeta(id: string, overrides: Partial<SidecarMeta> = {}): SidecarMeta {
   return {
     id,
     title: "Imported conversation",
@@ -1583,19 +1583,19 @@ function makeFilesystemError(code: string, filePath: string): NodeJS.ErrnoExcept
 }
 
 function singleAction(args: {
-  pair: ValidatedPair;
+  files: ValidatedConversationFiles;
   mode: FillMode;
   owner?: ConversationMeta;
   localCandidate?: boolean;
   incompleteSources?: string[];
 }) {
   const plan = planFill({
-    candidates: [{ kind: "valid", pair: args.pair }],
+    candidates: [{ kind: "valid", files: args.files }],
     existingRows: args.owner ? [args.owner] : [],
     localCandidates: args.localCandidate
       ? [{
-          source: args.pair.meta.source,
-          sourceId: args.pair.meta.id,
+          source: args.files.meta.source,
+          sourceId: args.files.meta.id,
           sourcePath: "/source/conversation.jsonl",
           sourceMtime: "2026-03-01T09:00:00.000Z",
           relationshipInspection: {
@@ -1623,7 +1623,7 @@ function singleAction(args: {
   return plan.actions[0];
 }
 
-function validatedPair(id: string, overrides: Partial<PairMetadata> = {}): ValidatedPair {
+function validatedFiles(id: string, overrides: Partial<SidecarMeta> = {}): ValidatedConversationFiles {
   return {
     rootDir: "/tmp/pairs",
     relativeDir: "",
@@ -1631,7 +1631,7 @@ function validatedPair(id: string, overrides: Partial<PairMetadata> = {}): Valid
     normalizedRelativePath: id,
     metaPath: `/tmp/pairs/${id}.meta.json`,
     jsonlPath: `/tmp/pairs/${id}.jsonl`,
-    meta: makePairMetadata(id, overrides),
+    meta: makeSidecarMeta(id, overrides),
     messageCount: 1,
     transcriptProjectionVersion: 1,
     relationshipInspection: {
@@ -1643,13 +1643,13 @@ function validatedPair(id: string, overrides: Partial<PairMetadata> = {}): Valid
   };
 }
 
-function validatedPairFromFixture(
+function validatedFilesFromFixture(
   dir: string,
   id: string,
-  overrides: Partial<PairMetadata> = {},
-): ValidatedPair {
+  overrides: Partial<SidecarMeta> = {},
+): ValidatedConversationFiles {
   return {
-    ...validatedPair(id, overrides),
+    ...validatedFiles(id, overrides),
     rootDir: dir,
     metaPath: path.join(dir, `${id}.meta.json`),
     jsonlPath: path.join(dir, `${id}.jsonl`),

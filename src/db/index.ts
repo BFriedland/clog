@@ -573,7 +573,7 @@ export function removeConversationCopiesInDb(
     const current = getConversationByIdInDb(db, conversation.id);
     if (!current || !sameRemovalTarget(conversation, current)) {
       throw new ClogError(
-        `${options.command} cannot remove conversation ${conversation.id.slice(0, 8)} because it changed after preview. Run '${options.command}' again to review the current row.`,
+        `${options.command} cannot remove conversation ${conversation.id.slice(0, 8)} because it changed after preview. Run '${options.command}' again to review the current conversation.`,
       );
     }
     currentRows.push(current);
@@ -638,7 +638,7 @@ function removedConversationCopy(
   const removedCount = db.getRowsModified();
   if (removedCount !== 1) {
     throw new ClogError(
-      `Conversation ${conversation.id.slice(0, 8)} changed before it could be removed. Run the command again to review the current row.`,
+      `Conversation ${conversation.id.slice(0, 8)} changed before it could be removed. Run the command again to review the current conversation.`,
     );
   }
 

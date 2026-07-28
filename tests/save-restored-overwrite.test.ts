@@ -10,7 +10,7 @@ import { buildSaveCommand } from "../src/cli/save.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getConversationById } from "../src/db/index.js";
-import { writePair, type PairMetadata } from "../src/interchange/pairs.js";
+import { writeConversationFiles, type SidecarMeta } from "../src/interchange/conversation-files.js";
 import { getClogDbPath, getRawConversationPath } from "../src/utils/paths.js";
 import { captureOutputWithError } from "./helpers/output.js";
 
@@ -45,7 +45,7 @@ describe("clog save: restored-overwrite guard", () => {
   it("does not overwrite a restored row with a diverged live source without confirmation", async () => {
     const id = "cc111111-1111-1111-1111-111111111111";
 
-    await writePair({
+    await writeConversationFiles({
       metaPath: path.join(pairDir, `${id}.meta.json`),
       jsonlPath: path.join(pairDir, `${id}.jsonl`),
       meta: makeMeta(id),
@@ -96,7 +96,7 @@ async function runBuilt(
   }
 }
 
-function makeMeta(id: string): PairMetadata {
+function makeMeta(id: string): SidecarMeta {
   return {
     id,
     title: "Restored",

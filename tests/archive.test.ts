@@ -10,13 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assertArchiveByteLimit,
   assertArchiveEntryLimit,
-  assertSelectedPairByteLimit,
+  assertSelectedArchiveByteLimit,
   classifyZipSignature,
-  createDeterministicPairArchive,
-  extractPairArchive,
+  createDeterministicArchive,
+  extractArchive,
   MAX_ARCHIVE_BYTES,
   MAX_ARCHIVE_ENTRIES,
-  MAX_SELECTED_PAIR_BYTES,
+  MAX_SELECTED_ARCHIVE_BYTES,
   validateArchiveEntryName,
   validateArchivePathComponent,
 } from "../src/interchange/archive.js";
@@ -71,8 +71,8 @@ describe("archive interchange helper", () => {
     await fs.writeFile(path.join(sourceRoot, `${id}.jsonl`), jsonl);
     await fs.writeFile(path.join(sourceRoot, `${id}.meta.json`), metadata);
 
-    const first = await createDeterministicPairArchive(pairRoot);
-    const second = await createDeterministicPairArchive(pairRoot);
+    const first = await createDeterministicArchive(pairRoot);
+    const second = await createDeterministicArchive(pairRoot);
     expect(second).toEqual(first);
 
     const reportedNames: string[] = [];
@@ -99,7 +99,7 @@ describe("archive interchange helper", () => {
     const archiveModule = pathToFileURL(
       path.join(process.cwd(), "src", "interchange", "archive.ts"),
     ).href;
-    const script = `import(${JSON.stringify(archiveModule)}).then(async ({ createDeterministicPairArchive }) => { const data = await createDeterministicPairArchive(${JSON.stringify(pairRoot)}); process.stdout.write(Buffer.from(data).toString("base64")); });`;
+    const script = `import(${JSON.stringify(archiveModule)}).then(async ({ createDeterministicArchive }) => { const data = await createDeterministicArchive(${JSON.stringify(pairRoot)}); process.stdout.write(Buffer.from(data).toString("base64")); });`;
 
     const outputs = ["UTC", "America/Los_Angeles", "Asia/Tokyo"].map((timezone) =>
       execFileSync(process.execPath, ["--import", "tsx", "-e", script], {
@@ -133,7 +133,7 @@ describe("archive interchange helper", () => {
     expect(methods.get(storedName)).toBe(0);
     expect(methods.get(deflatedName)).toBe(8);
 
-    await extractPairArchive(archive, output, "backup.bin");
+    await extractArchive(archive, output, "backup.bin");
 
     expect(await fs.readFile(path.join(output, ...storedName.split("/")), "utf8")).toBe("stored\n");
     expect(await fs.readFile(path.join(output, ...deflatedName.split("/")), "utf8")).toBe("deflated metadata\n");
@@ -155,7 +155,7 @@ describe("archive interchange helper", () => {
     const output = path.join(tempDir, "stored-size-mismatch");
 
     await expect(
-      extractPairArchive(modified, output, "stored-mismatch.zip"),
+      extractArchive(modified, output, "stored-mismatch.zip"),
     ).rejects.toThrow(/Stored archive entry.*inconsistent compressed and uncompressed sizes/);
     await expect(fs.access(output)).rejects.toThrow();
   });
@@ -166,14 +166,14 @@ describe("archive interchange helper", () => {
       [name]: [Buffer.from("compressible metadata ".repeat(20)), { level: 6 }],
     });
     const modified = setCentralDirectorySizes(archive, name, {
-      originalSize: MAX_SELECTED_PAIR_BYTES + 1,
+      originalSize: MAX_SELECTED_ARCHIVE_BYTES + 1,
     });
     const output = path.join(tempDir, "deflated-over-budget");
 
     await expect(
-      extractPairArchive(modified, output, "deflated-over-budget.zip"),
+      extractArchive(modified, output, "deflated-over-budget.zip"),
     ).rejects.toThrow(
-      `Archive selected pair bytes observed ${MAX_SELECTED_PAIR_BYTES + 1}; limit is ${MAX_SELECTED_PAIR_BYTES}`,
+      `Archive selected conversation bytes observed ${MAX_SELECTED_ARCHIVE_BYTES + 1}; limit is ${MAX_SELECTED_ARCHIVE_BYTES}`,
     );
     await expect(fs.access(output)).rejects.toThrow();
   });
@@ -185,7 +185,7 @@ describe("archive interchange helper", () => {
       [firstName]: [Buffer.from("first\n"), { level: 0 }],
       [secondName]: [Buffer.from("second\n"), { level: 0 }],
     });
-    const chargedSize = Math.floor(MAX_SELECTED_PAIR_BYTES / 2) + 1;
+    const chargedSize = Math.floor(MAX_SELECTED_ARCHIVE_BYTES / 2) + 1;
     const firstModified = setCentralDirectorySizes(archive, firstName, {
       compressedSize: chargedSize,
       originalSize: chargedSize,
@@ -198,9 +198,9 @@ describe("archive interchange helper", () => {
     const output = path.join(tempDir, "cumulative-over-budget");
 
     await expect(
-      extractPairArchive(modified, output, "cumulative-over-budget.zip"),
+      extractArchive(modified, output, "cumulative-over-budget.zip"),
     ).rejects.toThrow(
-      `Archive selected pair bytes observed ${observedSize}; limit is ${MAX_SELECTED_PAIR_BYTES}`,
+      `Archive selected conversation bytes observed ${observedSize}; limit is ${MAX_SELECTED_ARCHIVE_BYTES}`,
     );
     await expect(fs.access(output)).rejects.toThrow();
   });
@@ -210,13 +210,13 @@ describe("archive interchange helper", () => {
     expect(() => assertArchiveByteLimit(MAX_ARCHIVE_BYTES + 1)).toThrow(/observed.*limit/i);
     expect(() => assertArchiveEntryLimit(MAX_ARCHIVE_ENTRIES)).not.toThrow();
     expect(() => assertArchiveEntryLimit(MAX_ARCHIVE_ENTRIES + 1)).toThrow(/observed.*limit/i);
-    expect(() => assertSelectedPairByteLimit(MAX_SELECTED_PAIR_BYTES)).not.toThrow();
-    expect(() => assertSelectedPairByteLimit(MAX_SELECTED_PAIR_BYTES + 1)).toThrow(/observed.*limit/i);
+    expect(() => assertSelectedArchiveByteLimit(MAX_SELECTED_ARCHIVE_BYTES)).not.toThrow();
+    expect(() => assertSelectedArchiveByteLimit(MAX_SELECTED_ARCHIVE_BYTES + 1)).toThrow(/observed.*limit/i);
   });
 
   it("turns malformed recognized zip data into one archive-level failure", async () => {
     await expect(
-      extractPairArchive(
+      extractArchive(
         Uint8Array.of(0x50, 0x4b, 0x03, 0x04, 0x00),
         path.join(tempDir, "bad"),
         "broken.zip",

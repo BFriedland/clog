@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
-  conversationToRemoteMeta,
-  parseRemoteMeta,
-  readRemoteMeta,
-  serializeRemoteMeta,
-  writeRemoteMeta,
-} from "../src/sync/meta.js";
+  conversationToSidecar,
+  parseSidecar,
+  readSidecar,
+  serializeSidecar,
+  writeSidecar,
+} from "../src/interchange/conversation-files.js";
 
 describe("sync meta", () => {
   let tempDir: string;
@@ -25,7 +25,7 @@ describe("sync meta", () => {
   });
 
   it("serializes a saved conversation, stripping local-only fields", () => {
-    const meta = conversationToRemoteMeta(makeConversation());
+    const meta = conversationToSidecar(makeConversation());
 
     expect(meta).toEqual({
       id: "abc12345-1234-1234-1234-123456789012",
@@ -57,7 +57,7 @@ describe("sync meta", () => {
       }],
     });
 
-    const serialized = serializeRemoteMeta(meta);
+    const serialized = serializeSidecar(meta);
     expect(serialized.endsWith("\n")).toBe(true);
 
     const parsed = JSON.parse(serialized);
@@ -75,12 +75,12 @@ describe("sync meta", () => {
   });
 
   it("round-trips a written meta file", async () => {
-    const meta = conversationToRemoteMeta(makeConversation());
+    const meta = conversationToSidecar(makeConversation());
     const metaPath = path.join(tempDir, "abc12345.meta.json");
 
-    await writeRemoteMeta(metaPath, meta);
+    await writeSidecar(metaPath, meta);
 
-    const result = await readRemoteMeta(metaPath);
+    const result = await readSidecar(metaPath);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.meta).toEqual(meta);
@@ -88,7 +88,7 @@ describe("sync meta", () => {
   });
 
   it("rejects meta with invalid JSON", () => {
-    const result = parseRemoteMeta("not json");
+    const result = parseSidecar("not json");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toMatch(/invalid JSON/);
@@ -96,7 +96,7 @@ describe("sync meta", () => {
   });
 
   it("rejects meta missing required fields", () => {
-    const result = parseRemoteMeta(JSON.stringify({ id: "abc" }));
+    const result = parseSidecar(JSON.stringify({ id: "abc" }));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toMatch(/title|author|source/);
@@ -104,8 +104,8 @@ describe("sync meta", () => {
   });
 
   it("rejects meta with non-ISO timestamps", () => {
-    const baseline = conversationToRemoteMeta(makeConversation());
-    const result = parseRemoteMeta(
+    const baseline = conversationToSidecar(makeConversation());
+    const result = parseSidecar(
       JSON.stringify({ ...baseline, savedAt: "not-a-date" }),
     );
     expect(result.ok).toBe(false);
@@ -115,22 +115,22 @@ describe("sync meta", () => {
   });
 
   it("rejects meta with loose date-like strings (date-only, year-only)", () => {
-    const baseline = conversationToRemoteMeta(makeConversation());
+    const baseline = conversationToSidecar(makeConversation());
 
-    const dateOnly = parseRemoteMeta(
+    const dateOnly = parseSidecar(
       JSON.stringify({ ...baseline, savedAt: "2026-02-20" }),
     );
     expect(dateOnly.ok).toBe(false);
 
-    const yearOnly = parseRemoteMeta(
+    const yearOnly = parseSidecar(
       JSON.stringify({ ...baseline, createdAt: "2026" }),
     );
     expect(yearOnly.ok).toBe(false);
   });
 
   it("accepts meta with a syntactically valid unknown source key", () => {
-    const baseline = conversationToRemoteMeta(makeConversation());
-    const result = parseRemoteMeta(
+    const baseline = conversationToSidecar(makeConversation());
+    const result = parseSidecar(
       JSON.stringify({ ...baseline, source: "not-a-real.source" }),
     );
     expect(result.ok).toBe(true);
@@ -145,7 +145,7 @@ describe("sync meta", () => {
     // must still accept the conversation. Unknown keys are silently dropped
     // rather than rejecting the whole meta file (which would skip the
     // conversation from the pull entirely).
-    const baseline = conversationToRemoteMeta(makeConversation());
+    const baseline = conversationToSidecar(makeConversation());
     const withFutureFields = {
       ...baseline,
       summaryExtraction: {
@@ -156,7 +156,7 @@ describe("sync meta", () => {
       },
     };
 
-    const result = parseRemoteMeta(JSON.stringify(withFutureFields));
+    const result = parseSidecar(JSON.stringify(withFutureFields));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.meta.summaryExtraction).toEqual({
@@ -169,7 +169,7 @@ describe("sync meta", () => {
 
   it("refuses to serialize a not-yet-saved conversation", () => {
     const notSaved = { ...makeConversation(), savedAt: null };
-    expect(() => conversationToRemoteMeta(notSaved)).toThrow(
+    expect(() => conversationToSidecar(notSaved)).toThrow(
       /savedAt is null/,
     );
   });

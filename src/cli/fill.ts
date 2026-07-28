@@ -19,7 +19,7 @@ import {
   type FillPlan,
   type FillSkipReason,
 } from "../interchange/fill.js";
-import { scanPairs, validatePair, type ValidatedPair } from "../interchange/pairs.js";
+import { scanConversationFiles, validateConversationFiles, type ValidatedConversationFiles } from "../interchange/conversation-files.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { ClogError } from "../utils/errors.js";
 import {
@@ -98,22 +98,22 @@ async function runPreparedFillCommand(
   mode: FillMode,
   author: string,
 ): Promise<void> {
-  const scannedPairs = await scanPairs(input.physicalRoot, { diagnostics: input });
-  if (scannedPairs.length === 0) {
+  const scannedFiless = await scanConversationFiles(input.physicalRoot, { diagnostics: input });
+  if (scannedFiless.length === 0) {
     throw new ClogError(`No conversations found in ${input.suppliedPath}.`);
   }
 
   const candidates: FillCandidate[] = [];
-  for (const scannedPair of scannedPairs) {
-    const validation = await validatePair(scannedPair, config, input);
+  for (const scannedFiles of scannedFiless) {
+    const validation = await validateConversationFiles(scannedFiles, config, input);
     if (validation.kind === "valid") {
       candidates.push(validation);
     } else {
       candidates.push({
         kind: "invalid" as const,
-        scannedPair,
+        scannedFiles,
         warning: validation.warning,
-        diagnosticPath: input.formatPairPath(scannedPair.normalizedRelativePath),
+        diagnosticPath: input.formatFilesPath(scannedFiles.normalizedRelativePath),
       });
     }
   }
@@ -229,14 +229,14 @@ function formatFillAbortMessage(
     return `${base} Re-run with --show-all-errors to see each error, or use --allow-partial to import the valid conversations.`;
   }
 
-  const collapsedPairErrorCount = countBlockedPairs(getCollapsedPairErrorActions(plan));
+  const collapsedErrorCount = countBlockedConversations(getCollapsedErrorActions(plan));
   const unsupportedSourceCount = getUnsupportedSourceGroups(plan).length;
   const hasUnsupportedSources = unsupportedSourceCount > 0;
   const adapterGuidance =
     unsupportedSourceCount === 1
       ? "use a clog build with an adapter for the unsupported source"
       : "use a clog build with adapters for the unsupported sources";
-  if (hasUnsupportedSources && collapsedPairErrorCount === 0) {
+  if (hasUnsupportedSources && collapsedErrorCount === 0) {
     return `${base} ${capitalize(adapterGuidance)}, or use --allow-partial to import the valid conversations.`;
   }
   if (hasUnsupportedSources) {
@@ -246,12 +246,12 @@ function formatFillAbortMessage(
   return `${base} Fix the ${input.inputDescription}, or use --allow-partial to import the valid conversations.`;
 }
 
-function getManagedPath(pair: ValidatedPair, mode: FillMode): string {
+function getManagedPath(files: ValidatedConversationFiles, mode: FillMode): string {
   if (mode === "own") {
-    return getRawConversationPath(pair.meta.source, pair.meta.id);
+    return getRawConversationPath(files.meta.source, files.meta.id);
   }
 
-  return getImportConversationPath(pair.meta.source, pair.meta.id);
+  return getImportConversationPath(files.meta.source, files.meta.id);
 }
 
 async function promoteMissingManagedCopies(plan: FillPlan): Promise<FillPlan> {
@@ -263,7 +263,7 @@ async function promoteMissingManagedCopies(plan: FillPlan): Promise<FillPlan> {
       changed = true;
       actions.push({
         kind: "update",
-        pair: action.pair,
+        files: action.files,
         rowId: action.owner.id,
         managedPath: action.managedPath,
         copyContent: true,
@@ -328,16 +328,16 @@ function renderFillMessages(
     mode: FillMode;
   },
 ): void {
-  const collapsedPairErrorActions = getCollapsedPairErrorActions(plan);
-  const collapsedPairErrorCount = countBlockedPairs(collapsedPairErrorActions);
+  const collapsedErrorActions = getCollapsedErrorActions(plan);
+  const collapsedErrorCount = countBlockedConversations(collapsedErrorActions);
 
-  if (options.showAllErrors || collapsedPairErrorCount === 1) {
-    for (const action of collapsedPairErrorActions) {
-      process.stderr.write(`error: ${formatPairErrorDetail(action)}\n`);
+  if (options.showAllErrors || collapsedErrorCount === 1) {
+    for (const action of collapsedErrorActions) {
+      process.stderr.write(`error: ${formatErrorDetail(action)}\n`);
     }
-  } else if (collapsedPairErrorCount > 1) {
+  } else if (collapsedErrorCount > 1) {
     process.stderr.write(
-      `error: ${collapsedPairErrorCount} input pairs could not be imported. Re-run with --show-all-errors to list each pair.\n`,
+      `error: ${collapsedErrorCount} conversations could not be imported. Re-run with --show-all-errors to list each conversation.\n`,
     );
   }
 
@@ -354,7 +354,7 @@ function renderFillMessages(
   );
 }
 
-function getCollapsedPairErrorActions(plan: FillPlan): FillSkipAction[] {
+function getCollapsedErrorActions(plan: FillPlan): FillSkipAction[] {
   return plan.actions.filter(
     (action): action is FillSkipAction =>
       action.kind === "skip" &&
@@ -389,7 +389,7 @@ function renderUnsupportedSourceGroups(
   showAllErrors: boolean,
 ): void {
   for (const group of groups) {
-    const count = countBlockedPairs(group.actions);
+    const count = countBlockedConversations(group.actions);
     const guidance = allowPartial
       ? `Use a clog build with an adapter for that source to import ${count === 1 ? "that conversation" : "those conversations"}.`
       : "Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.";
@@ -402,14 +402,14 @@ function renderUnsupportedSourceGroups(
     }
 
     for (const action of group.actions) {
-      process.stderr.write(`    ${formatUnsupportedSourcePairPath(action)}\n`);
+      process.stderr.write(`    ${formatUnsupportedSourcePath(action)}\n`);
     }
   }
 }
 
 function isUnsupportedSourceAction(action: FillSkipAction): boolean {
   return (
-    action.reason === "invalid_pair" &&
+    action.reason === "invalid_files" &&
     action.warning?.code === "unsupported_source"
   );
 }
@@ -417,12 +417,12 @@ function isUnsupportedSourceAction(action: FillSkipAction): boolean {
 function getUnsupportedSource(action: FillSkipAction): string {
   return (
     action.warning?.source ??
-    action.warning?.pair?.source ??
+    action.warning?.conversation?.source ??
     "unknown"
   );
 }
 
-function countBlockedPairs(actions: FillSkipAction[]): number {
+function countBlockedConversations(actions: FillSkipAction[]): number {
   return actions.reduce((count, action) => count + (action.count ?? 1), 0);
 }
 
@@ -451,7 +451,7 @@ function renderBenignSkipGroups(
   showAllErrors: boolean,
 ): void {
   for (const group of groups) {
-    const count = countBlockedPairs(group.actions);
+    const count = countBlockedConversations(group.actions);
     if (count === 1) {
       process.stderr.write(`notice: ${group.actions[0]!.message}\n`);
       continue;
@@ -490,23 +490,23 @@ function formatBenignSkipSummary(
 
   if (reason === "local_saved_precedence") {
     const behavior = mode === "own"
-      ? "'clog fill --own' does not replace local metadata or content; remove the local copies first if you want these pairs to replace them."
+      ? "'clog fill --own' does not replace local metadata or content; remove the local copies first if you want these imports to replace them."
       : "'clog fill' imports read-only copies and does not replace local metadata or content.";
-    return `${count} input pairs were skipped because matching conversations are already saved locally. ${behavior}${expansion}`;
+    return `${count} conversations were skipped because matching conversations are already saved locally. ${behavior}${expansion}`;
   }
 
-  return `${count} input pairs were skipped.${expansion}`;
+  return `${count} conversations were skipped.${expansion}`;
 }
 
 function formatSkipConversationIdentity(action: FillSkipAction): string {
-  if (action.pair) {
-    return `${action.pair.meta.id.slice(0, 8)}@${action.pair.meta.source}`;
+  if (action.files) {
+    return `${action.files.meta.id.slice(0, 8)}@${action.files.meta.source}`;
   }
 
   return action.diagnosticPath ?? action.message;
 }
 
-function formatPairErrorDetail(action: FillSkipAction): string {
+function formatErrorDetail(action: FillSkipAction): string {
   if (action.warning) {
     return `${action.warning.message}${formatWarningDetails(action.warning)}`;
   }
@@ -514,11 +514,11 @@ function formatPairErrorDetail(action: FillSkipAction): string {
   return action.message;
 }
 
-function formatUnsupportedSourcePairPath(action: FillSkipAction): string {
+function formatUnsupportedSourcePath(action: FillSkipAction): string {
   return (
     action.diagnosticPath ??
-    action.scannedPair?.normalizedRelativePath ??
-    action.warning?.pair?.id ??
+    action.scannedFiles?.normalizedRelativePath ??
+    action.warning?.conversation?.id ??
     action.warning?.path ??
     action.message
   );
@@ -530,7 +530,7 @@ function shouldSuggestShowAllErrors(
 ): boolean {
   return (
     !showAllErrors &&
-    countBlockedPairs(getCollapsedPairErrorActions(plan)) > 1
+    countBlockedConversations(getCollapsedErrorActions(plan)) > 1
   );
 }
 
@@ -585,10 +585,10 @@ function renderFillGuidance(args: {
     input,
   } = args;
 
-  if (mode === "file" && plan.hiddenForeignAuthorCount > 0) {
-    const verb = dryRun ? "would be" : plan.hiddenForeignAuthorCount === 1 ? "is" : "are";
+  if (mode === "file" && plan.hiddenExternalAuthorCount > 0) {
+    const verb = dryRun ? "would be" : plan.hiddenExternalAuthorCount === 1 ? "is" : "are";
     process.stderr.write(
-      `hint: ${plan.hiddenForeignAuthorCount} imported conversation${plan.hiddenForeignAuthorCount === 1 ? "" : "s"} ${verb} authored by someone else and hidden from the default list. Use 'clog list --all' to include them.\n`,
+      `hint: ${plan.hiddenExternalAuthorCount} imported conversation${plan.hiddenExternalAuthorCount === 1 ? "" : "s"} ${verb} authored by someone else and hidden from the default list. Use 'clog list --all' to include them.\n`,
     );
   }
 
@@ -598,7 +598,7 @@ function renderFillGuidance(args: {
     plan.allValidCandidatesMatchAuthor
   ) {
     process.stderr.write(
-      `hint: All importable pairs from ${input.suppliedPath} are authored by the configured user. Re-run with --own to import them as editable local copies.\n`,
+      `hint: All importable conversations from ${input.suppliedPath} are authored by the configured user. Re-run with --own to import them as editable local copies.\n`,
     );
   }
 

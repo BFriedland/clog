@@ -6,22 +6,22 @@ import {
 } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import type { LocalDiscoveryCandidate } from "../conversations/view.js";
-import type { ScannedPair, ValidatedPair } from "./pairs.js";
+import type { ScannedConversationFiles, ValidatedConversationFiles } from "./conversation-files.js";
 
 export type FillMode = "file" | "own";
 
 export type FillCandidate =
-  | { kind: "valid"; pair: ValidatedPair }
+  | { kind: "valid"; files: ValidatedConversationFiles }
   | {
       kind: "invalid";
-      scannedPair: ScannedPair;
+      scannedFiles: ScannedConversationFiles;
       warning: ClogWarning;
       diagnosticPath?: string;
     };
 
 export type FillSkipReason =
   | "ignored"
-  | "invalid_pair"
+  | "invalid_files"
   | "duplicate_identity"
   | "author_mismatch"
   | "local_unsaved_precedence"
@@ -34,14 +34,14 @@ export type FillSkipReason =
 export type FillWriteAction =
   | {
       kind: "insert";
-      pair: ValidatedPair;
+      files: ValidatedConversationFiles;
       conversation: SavedConversationMeta;
       managedPath: string;
       copyContent: true;
     }
   | {
       kind: "update";
-      pair: ValidatedPair;
+      files: ValidatedConversationFiles;
       rowId: string;
       conversation: SavedConversationMeta;
       managedPath: string;
@@ -53,7 +53,7 @@ export type FillAction =
   | FillWriteAction
   | {
       kind: "unchanged";
-      pair: ValidatedPair;
+      files: ValidatedConversationFiles;
       owner: SavedConversationMeta;
       managedPath: string;
     }
@@ -62,10 +62,10 @@ export type FillAction =
       reason: FillSkipReason;
       message: string;
       failure: boolean;
-      pair?: ValidatedPair;
+      files?: ValidatedConversationFiles;
       owner?: SavedConversationMeta;
       warning?: ClogWarning;
-      scannedPair?: ScannedPair;
+      scannedFiles?: ScannedConversationFiles;
       diagnosticPath?: string;
       count?: number;
     };
@@ -74,7 +74,7 @@ export interface FillPlan {
   actions: FillAction[];
   warnings: ClogWarning[];
   ignoredCount: number;
-  hiddenForeignAuthorCount: number;
+  hiddenExternalAuthorCount: number;
   allValidCandidatesMatchAuthor: boolean;
   hasFailures: boolean;
   hasAuthorGuardFailure: boolean;
@@ -93,7 +93,7 @@ export interface PlanFillArgs {
     rule: string,
     target: { sourceId: string; projectName: string | null },
   ) => boolean;
-  getManagedPath: (pair: ValidatedPair, mode: FillMode) => string;
+  getManagedPath: (files: ValidatedConversationFiles, mode: FillMode) => string;
   formatDiagnosticPath?: (physicalPath: string) => string;
 }
 
@@ -113,7 +113,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
   } = args;
   const actions: FillAction[] = [];
   const warnings: ClogWarning[] = [];
-  const validForCollision: ValidatedPair[] = [];
+  const validForCollision: ValidatedConversationFiles[] = [];
   let ignoredCount = 0;
   let hasFailures = false;
 
@@ -123,23 +123,23 @@ export function planFill(args: PlanFillArgs): FillPlan {
       warnings.push(candidate.warning);
       actions.push({
         kind: "skip",
-        reason: "invalid_pair",
+        reason: "invalid_files",
         message: candidate.warning.message,
         failure: true,
         warning: candidate.warning,
-        scannedPair: candidate.scannedPair,
+        scannedFiles: candidate.scannedFiles,
         diagnosticPath: candidate.diagnosticPath,
       });
       continue;
     }
 
-    const pair = candidate.pair;
+    const files = candidate.files;
     const ignored =
       matchesIgnoreRule != null &&
       ignoreRules.some((rule) =>
         matchesIgnoreRule(rule, {
-          sourceId: pair.meta.id,
-          projectName: pair.meta.projectName,
+          sourceId: files.meta.id,
+          projectName: files.meta.projectName,
         }),
       );
 
@@ -148,31 +148,31 @@ export function planFill(args: PlanFillArgs): FillPlan {
       actions.push({
         kind: "skip",
         reason: "ignored",
-        message: `Skipping conversation ${pair.meta.id.slice(0, 8)} because it matches clogignore.`,
+        message: `Skipping conversation ${files.meta.id.slice(0, 8)} because it matches clogignore.`,
         failure: false,
-        pair,
+        files,
       });
       continue;
     }
 
-    validForCollision.push(pair);
+    validForCollision.push(files);
   }
 
   const duplicateKeys = findDuplicateIdentityKeys(validForCollision);
   const duplicateKeySet = new Set(duplicateKeys);
   for (const key of duplicateKeys) {
-    const group = validForCollision.filter((pair) => identityKey(pair.meta.source, pair.meta.id) === key);
+    const group = validForCollision.filter((files) => identityKey(files.meta.source, files.meta.id) === key);
     const first = group[0]!;
     const warning: ClogWarning = {
       code: "pair_duplicate_identity",
       message: `Skipping duplicate input identity ${first.meta.source}/${first.meta.id} - ${group.length} files claim the same conversation.`,
-      pair: {
+      conversation: {
         source: first.meta.source,
         id: first.meta.id,
       },
-      paths: group.flatMap((pair) => [
-        formatDiagnosticPath(pair.metaPath),
-        formatDiagnosticPath(pair.jsonlPath),
+      paths: group.flatMap((files) => [
+        formatDiagnosticPath(files.metaPath),
+        formatDiagnosticPath(files.jsonlPath),
       ]),
     };
     hasFailures = true;
@@ -188,19 +188,19 @@ export function planFill(args: PlanFillArgs): FillPlan {
   }
 
   const uniqueValid = validForCollision.filter(
-    (pair) => !duplicateKeySet.has(identityKey(pair.meta.source, pair.meta.id)),
+    (files) => !duplicateKeySet.has(identityKey(files.meta.source, files.meta.id)),
   );
 
   if (mode === "own") {
-    const mismatches = uniqueValid.filter((pair) => pair.meta.author !== author);
+    const mismatches = uniqueValid.filter((files) => files.meta.author !== author);
     if (mismatches.length > 0) {
-      for (const pair of mismatches) {
+      for (const files of mismatches) {
         actions.push({
           kind: "skip",
           reason: "author_mismatch",
-          message: `Skipping ${pair.meta.id.slice(0, 8)} - its author "${pair.meta.author}" does not match configured author "${author}".`,
+          message: `Skipping ${files.meta.id.slice(0, 8)} - its author "${files.meta.author}" does not match configured author "${author}".`,
           failure: true,
-          pair,
+          files,
         });
       }
 
@@ -225,19 +225,19 @@ export function planFill(args: PlanFillArgs): FillPlan {
   );
   const incompleteSourceSet = new Set(incompleteSources);
 
-  for (const pair of uniqueValid) {
-    const key = identityKey(pair.meta.source, pair.meta.id);
+  for (const files of uniqueValid) {
+    const key = identityKey(files.meta.source, files.meta.id);
     const owner = rowsByIdentity.get(key);
-    const managedPath = getManagedPath(pair, mode);
+    const managedPath = getManagedPath(files, mode);
 
     if (!owner) {
       if (localCandidateKeys.has(key) && mode === "file") {
         actions.push({
           kind: "skip",
           reason: "local_unsaved_precedence",
-          message: `Skipping ${pair.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.meta.id.slice(0, 8)}' to keep source metadata, or re-run with --own to import this conversation as an editable local copy.`,
+          message: `Skipping ${files.meta.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${files.meta.id.slice(0, 8)}' to keep source metadata, or re-run with --own to import this conversation as an editable local copy.`,
           failure: false,
-          pair,
+          files,
         });
         continue;
       }
@@ -245,14 +245,14 @@ export function planFill(args: PlanFillArgs): FillPlan {
       if (
         mode === "file" &&
         !localCandidateKeys.has(key) &&
-        incompleteSourceSet.has(pair.meta.source)
+        incompleteSourceSet.has(files.meta.source)
       ) {
         actions.push({
           kind: "skip",
           reason: "source_discovery_incomplete",
-          message: `Skipping ${pair.meta.id.slice(0, 8)} because the ${pair.meta.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          message: `Skipping ${files.meta.id.slice(0, 8)} because the ${files.meta.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
           failure: true,
-          pair,
+          files,
         });
         hasFailures = true;
         continue;
@@ -260,11 +260,11 @@ export function planFill(args: PlanFillArgs): FillPlan {
 
       actions.push({
         kind: "insert",
-        pair,
+        files,
         managedPath,
         copyContent: true,
         conversation: buildConversationFromFillPair({
-          pair,
+          files,
           managedPath,
           originKind: mode === "own" ? "local" : "file",
           importTime,
@@ -275,7 +275,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
 
     const planned = planFillCollision({
       mode,
-      pair,
+      files,
       owner,
       managedPath,
     });
@@ -308,11 +308,11 @@ export function isFillWriteAction(action: FillAction): action is FillWriteAction
 
 function planFillCollision(args: {
   mode: FillMode;
-  pair: ValidatedPair;
+  files: ValidatedConversationFiles;
   owner: SavedConversationMeta;
   managedPath: string;
 }): FillAction {
-  const { mode, pair, owner, managedPath } = args;
+  const { mode, files, owner, managedPath } = args;
 
   if (owner.originKind === "local") {
     return {
@@ -320,10 +320,10 @@ function planFillCollision(args: {
       reason: "local_saved_precedence",
       message:
         mode === "own"
-          ? `Skipping ${pair.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill --own' will not replace local metadata or content; remove the local copy first if you want this pair to replace it.`
-          : `Skipping ${pair.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill' imports read-only copies and will not replace local metadata or content.`,
+          ? `Skipping ${files.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill --own' will not replace local metadata or content; remove the local copy first if you want this files to replace it.`
+          : `Skipping ${files.meta.id.slice(0, 8)} - this conversation is already saved locally. 'clog fill' imports read-only copies and will not replace local metadata or content.`,
       failure: false,
-      pair,
+      files,
       owner,
     };
   }
@@ -334,10 +334,10 @@ function planFillCollision(args: {
       reason: mode === "own" ? "unsupported_promotion" : "git_collision",
       message:
         mode === "own"
-          ? `Skipping ${pair.meta.id.slice(0, 8)} - this synced conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`
-          : `Skipping ${pair.meta.id.slice(0, 8)} - a synced read-only copy already owns this identity.`,
+          ? `Skipping ${files.meta.id.slice(0, 8)} - this synced conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`
+          : `Skipping ${files.meta.id.slice(0, 8)} - a synced read-only copy already owns this identity.`,
       failure: true,
-      pair,
+      files,
       owner,
     };
   }
@@ -346,9 +346,9 @@ function planFillCollision(args: {
     return {
       kind: "skip",
       reason: "unsupported_promotion",
-      message: `Skipping ${pair.meta.id.slice(0, 8)} - this imported conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`,
+      message: `Skipping ${files.meta.id.slice(0, 8)} - this imported conversation is read-only and cannot be made editable. Remove it from clog first, then re-run with --own to import it as an editable local copy.`,
       failure: true,
-      pair,
+      files,
       owner,
     };
   }
@@ -356,11 +356,11 @@ function planFillCollision(args: {
   if (
     classifyAdapterVersion(
       owner.transcriptProjectionVersion,
-      pair.transcriptProjectionVersion,
+      files.transcriptProjectionVersion,
     ) === "version_skew" ||
     classifyAdapterVersion(
       owner.relationshipInspection.version,
-      pair.relationshipInspection.version,
+      files.relationshipInspection.version,
     ) === "version_skew"
   ) {
     const warning: ClogWarning = {
@@ -379,17 +379,17 @@ function planFillCollision(args: {
       reason: "adapter_version_skew",
       message: warning.message,
       failure: true,
-      pair,
+      files,
       owner,
       warning,
     };
   }
 
-  const merged = mergeFilePairIntoConversation(owner, pair, managedPath);
+  const merged = mergeFilePairIntoConversation(owner, files, managedPath);
   if (!merged) {
     return {
       kind: "unchanged",
-      pair,
+      files,
       owner,
       managedPath,
     };
@@ -398,7 +398,7 @@ function planFillCollision(args: {
   return {
     kind: "update",
     rowId: owner.id,
-    pair,
+    files,
     managedPath,
     copyContent: merged.copyContent,
     conversation: merged.conversation,
@@ -406,34 +406,34 @@ function planFillCollision(args: {
 }
 
 function buildConversationFromFillPair(args: {
-  pair: ValidatedPair;
+  files: ValidatedConversationFiles;
   managedPath: string;
   originKind: Extract<OriginKind, "local" | "file">;
   importTime: string;
   discoveredAt?: string;
 }): SavedConversationMeta {
-  const { pair, managedPath, originKind, importTime, discoveredAt } = args;
+  const { files, managedPath, originKind, importTime, discoveredAt } = args;
   return {
-    id: pair.meta.id,
-    sourceId: pair.meta.id,
-    source: pair.meta.source,
-    title: pair.meta.title,
-    summary: pair.meta.summary,
-    summaryKind: pair.meta.summaryKind,
-    summaryExtraction: pair.meta.summaryExtraction,
-    author: pair.meta.author,
-    projectName: pair.meta.projectName,
+    id: files.meta.id,
+    sourceId: files.meta.id,
+    source: files.meta.source,
+    title: files.meta.title,
+    summary: files.meta.summary,
+    summaryKind: files.meta.summaryKind,
+    summaryExtraction: files.meta.summaryExtraction,
+    author: files.meta.author,
+    projectName: files.meta.projectName,
     projectPath: null,
-    tags: [...pair.meta.tags],
-    slug: pair.meta.slug,
-    createdAt: pair.meta.createdAt,
+    tags: [...files.meta.tags],
+    slug: files.meta.slug,
+    createdAt: files.meta.createdAt,
     discoveredAt: discoveredAt ?? importTime,
-    modifiedAt: pair.meta.modifiedAt,
+    modifiedAt: files.meta.modifiedAt,
     state: "saved",
-    savedAt: pair.meta.savedAt,
-    savedMessageCount: pair.messageCount,
+    savedAt: files.meta.savedAt,
+    savedMessageCount: files.messageCount,
     saveVersion: 1,
-    transcriptProjectionVersion: pair.transcriptProjectionVersion,
+    transcriptProjectionVersion: files.transcriptProjectionVersion,
     sourcePath: managedPath,
     filePath: managedPath,
     sourceMtime: null,
@@ -441,27 +441,27 @@ function buildConversationFromFillPair(args: {
     originKind,
     originRef: null,
     relationshipInspection: {
-      status: pair.relationshipInspection.status,
-      version: pair.relationshipInspection.version,
-      diagnostic: pair.relationshipInspection.diagnostic,
+      status: files.relationshipInspection.status,
+      version: files.relationshipInspection.version,
+      diagnostic: files.relationshipInspection.diagnostic,
     },
-    relationships: pair.relationshipInspection.relationships,
+    relationships: files.relationshipInspection.relationships,
   };
 }
 
 function mergeFilePairIntoConversation(
   existing: SavedConversationMeta,
-  pair: ValidatedPair,
+  files: ValidatedConversationFiles,
   managedPath: string,
 ): { conversation: SavedConversationMeta; copyContent: boolean } | null {
-  const titleChanged = existing.title !== pair.meta.title;
-  const summaryChanged = existing.summary !== pair.meta.summary;
-  const contentChanged = existing.savedMessageCount !== pair.messageCount;
+  const titleChanged = existing.title !== files.meta.title;
+  const summaryChanged = existing.summary !== files.meta.summary;
+  const contentChanged = existing.savedMessageCount !== files.messageCount;
   const projectionChanged =
-    existing.transcriptProjectionVersion !== pair.transcriptProjectionVersion;
+    existing.transcriptProjectionVersion !== files.transcriptProjectionVersion;
   const refreshedRelationshipInspection = preserveConfirmedRelationship(
     existing,
-    pair.relationshipInspection,
+    files.relationshipInspection,
   );
   const relationshipChanged =
     JSON.stringify({
@@ -472,20 +472,20 @@ function mergeFilePairIntoConversation(
     existing.sourcePath !== managedPath || existing.filePath !== managedPath;
   const extractionChanged =
     JSON.stringify(existing.summaryExtraction ?? null) !==
-    JSON.stringify(pair.meta.summaryExtraction ?? null);
+    JSON.stringify(files.meta.summaryExtraction ?? null);
 
   const metadataChanged =
     titleChanged ||
     summaryChanged ||
-    existing.author !== pair.meta.author ||
-    existing.projectName !== pair.meta.projectName ||
-    existing.slug !== pair.meta.slug ||
-    existing.createdAt !== pair.meta.createdAt ||
-    existing.modifiedAt !== pair.meta.modifiedAt ||
-    existing.savedAt !== pair.meta.savedAt ||
-    existing.summaryKind !== pair.meta.summaryKind ||
+    existing.author !== files.meta.author ||
+    existing.projectName !== files.meta.projectName ||
+    existing.slug !== files.meta.slug ||
+    existing.createdAt !== files.meta.createdAt ||
+    existing.modifiedAt !== files.meta.modifiedAt ||
+    existing.savedAt !== files.meta.savedAt ||
+    existing.summaryKind !== files.meta.summaryKind ||
     extractionChanged ||
-    !tagsEqual(existing.tags, pair.meta.tags);
+    !tagsEqual(existing.tags, files.meta.tags);
 
   if (
     !metadataChanged &&
@@ -501,23 +501,23 @@ function mergeFilePairIntoConversation(
     copyContent: contentChanged || projectionChanged || pathChanged,
     conversation: {
       ...existing,
-      sourceId: pair.meta.id,
-      source: pair.meta.source,
-      title: pair.meta.title,
-      summary: pair.meta.summary,
-      summaryKind: pair.meta.summaryKind,
-      summaryExtraction: pair.meta.summaryExtraction,
-      author: pair.meta.author,
-      projectName: pair.meta.projectName,
+      sourceId: files.meta.id,
+      source: files.meta.source,
+      title: files.meta.title,
+      summary: files.meta.summary,
+      summaryKind: files.meta.summaryKind,
+      summaryExtraction: files.meta.summaryExtraction,
+      author: files.meta.author,
+      projectName: files.meta.projectName,
       projectPath: null,
-      tags: [...pair.meta.tags],
-      slug: pair.meta.slug,
-      createdAt: pair.meta.createdAt,
-      modifiedAt: pair.meta.modifiedAt,
+      tags: [...files.meta.tags],
+      slug: files.meta.slug,
+      createdAt: files.meta.createdAt,
+      modifiedAt: files.meta.modifiedAt,
       state: "saved",
-      savedAt: pair.meta.savedAt,
-      savedMessageCount: pair.messageCount,
-      transcriptProjectionVersion: pair.transcriptProjectionVersion,
+      savedAt: files.meta.savedAt,
+      savedMessageCount: files.messageCount,
+      transcriptProjectionVersion: files.transcriptProjectionVersion,
       relationshipInspection: {
         status: refreshedRelationshipInspection.status,
         version: refreshedRelationshipInspection.version,
@@ -536,10 +536,10 @@ function mergeFilePairIntoConversation(
   };
 }
 
-function findDuplicateIdentityKeys(pairs: ValidatedPair[]): string[] {
+function findDuplicateIdentityKeys(pairs: ValidatedConversationFiles[]): string[] {
   const counts = new Map<string, number>();
-  for (const pair of pairs) {
-    const key = identityKey(pair.meta.source, pair.meta.id);
+  for (const files of pairs) {
+    const key = identityKey(files.meta.source, files.meta.id);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
 
@@ -552,12 +552,12 @@ function buildPlanResult(args: {
   actions: FillAction[];
   warnings: ClogWarning[];
   ignoredCount: number;
-  validPairs: ValidatedPair[];
+  validPairs: ValidatedConversationFiles[];
   author: string;
   hasFailures: boolean;
   hasAuthorGuardFailure: boolean;
 }): FillPlan {
-  const hiddenForeignAuthorIds = new Set<string>();
+  const hiddenExternalAuthorIds = new Set<string>();
   for (const action of args.actions) {
     if (
       args.author &&
@@ -565,7 +565,7 @@ function buildPlanResult(args: {
       action.conversation.originKind === "file" &&
       action.conversation.author !== args.author
     ) {
-      hiddenForeignAuthorIds.add(action.conversation.id);
+      hiddenExternalAuthorIds.add(action.conversation.id);
     }
   }
 
@@ -573,11 +573,11 @@ function buildPlanResult(args: {
     actions: args.actions,
     warnings: args.warnings,
     ignoredCount: args.ignoredCount,
-    hiddenForeignAuthorCount: hiddenForeignAuthorIds.size,
+    hiddenExternalAuthorCount: hiddenExternalAuthorIds.size,
     allValidCandidatesMatchAuthor:
       args.validPairs.length > 0 &&
       args.author.length > 0 &&
-      args.validPairs.every((pair) => pair.meta.author === args.author),
+      args.validPairs.every((files) => files.meta.author === args.author),
     hasFailures:
       args.hasFailures ||
       args.actions.some((action) => action.kind === "skip" && action.failure),

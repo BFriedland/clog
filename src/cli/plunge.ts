@@ -445,7 +445,7 @@ async function inspectDatabase(
         check: 12,
         subsystem: "checkpoints",
         severity: "corruption",
-        message: `Row has invalid timestamp field${invalidTimestampParts.length === 1 ? "" : "s"}: ${invalidTimestampParts.join(", ")}.`,
+        message: `Conversation record has invalid timestamp field${invalidTimestampParts.length === 1 ? "" : "s"}: ${invalidTimestampParts.join(", ")}.`,
         recovery: "Investigate this conversation manually. Do not rewrite history.",
         sortKey: row.id,
       }));

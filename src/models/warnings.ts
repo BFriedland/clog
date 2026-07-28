@@ -14,7 +14,7 @@ export type ClogWarningCode =
   | "conversation_relationship_cycle"
   | "conversation_relationship_observation_conflict"
   | ClaudeTranscriptWarningCode
-  | PairWarningCode;
+  | ConversationFilesWarningCode;
 
 type ClaudeTranscriptWarningCode =
   | "claude_transcript_leaf_order_fallback"
@@ -26,7 +26,7 @@ type ClaudeTranscriptWarningCode =
   | "claude_transcript_tool_result_mismatch"
   | "claude_transcript_compaction_history_missing";
 
-type PairWarningCode =
+type ConversationFilesWarningCode =
   | "pair_incomplete"
   | "pair_invalid_metadata"
   | "pair_id_mismatch"
@@ -75,10 +75,6 @@ export interface ClogWarning {
   guidance?: string;
   paths?: string[];
   conversation?: {
-    id: string;
-    source: string;
-  };
-  pair?: {
     author?: string;
     source: string;
     id: string;

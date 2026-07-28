@@ -1495,7 +1495,7 @@ describe("ephemeral local source scans", () => {
     expect(collapsed.stdout).toContain(secondChildId.slice(0, 8));
     expect(collapsed.stdout).toContain("[2 branches]");
     expect(collapsed.stdout).toContain(
-      "Rows marked with a branch count show the most recently updated branch.",
+      "Conversations marked with a branch count show the most recently updated branch.",
     );
     expect(collapsed.stdout).toContain("clog list --all-branches");
     expect(expanded.stdout).toContain(parentId.slice(0, 8));
@@ -1503,7 +1503,7 @@ describe("ephemeral local source scans", () => {
     expect(expanded.stdout).toContain(secondChildId.slice(0, 8));
     expect(expanded.stdout).not.toContain("[2 branches]");
     expect(expanded.stdout).not.toContain(
-      "Rows marked with a branch count show the most recently updated branch.",
+      "Conversations marked with a branch count show the most recently updated branch.",
     );
     expect(expanded.stdout).toContain("[superseded]");
     expect(

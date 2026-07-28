@@ -14,38 +14,38 @@ import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import { nowIso } from "../utils/time.js";
 import { isValidSourceKey } from "../utils/source-keys.js";
 import {
-  readPairMetadata,
-  scanPairs,
-  validatePair,
-  type PairMetadata,
-  type ScannedPair,
-  type ValidatedPair,
-} from "./pairs.js";
+  readSidecar,
+  scanConversationFiles,
+  validateConversationFiles,
+  type SidecarMeta,
+  type ScannedConversationFiles,
+  type ValidatedConversationFiles,
+} from "./conversation-files.js";
 
 interface SourceIdentity {
   source: string;
   id: string;
 }
 
-export interface GitValidatedPair {
+export interface GitValidatedConversationFiles {
   author: string;
   source: string;
   id: string;
-  pair: ValidatedPair;
+  validated: ValidatedConversationFiles;
 }
 
-type GitPairScanResult =
-  | { kind: "valid"; pair: GitValidatedPair }
+type GitScanResult =
+  | { kind: "valid"; files: GitValidatedConversationFiles }
   | {
       kind: "invalid";
-      scannedPair: ScannedPair;
+      scannedFiles: ScannedConversationFiles;
       warning: ClogWarning;
       reportWarning?: boolean;
       protectedIdentities: SourceIdentity[];
     };
 
-export interface GitPairScan {
-  results: GitPairScanResult[];
+export interface GitCheckoutScan {
+  results: GitScanResult[];
   warnings: ClogWarning[];
 }
 
@@ -57,15 +57,15 @@ type ReconcileSkipReason =
   | "local_saved_owner"
   | "file_owner"
   | "other_git_owner"
-  | "invalid_pair"
+  | "invalid_files"
   | "adapter_version_skew";
 
 export type ReconcileAction =
-  | { kind: "insert"; pair: GitValidatedPair; conversation: SavedConversationMeta }
+  | { kind: "insert"; files: GitValidatedConversationFiles; conversation: SavedConversationMeta }
   | {
       kind: "update";
       rowId: string;
-      pair: GitValidatedPair;
+      files: GitValidatedConversationFiles;
       conversation: SavedConversationMeta;
     }
   | { kind: "delete"; rowId: string }
@@ -73,8 +73,8 @@ export type ReconcileAction =
       kind: "skip";
       reason: ReconcileSkipReason;
       message: string;
-      pair?: GitValidatedPair;
-      scannedPair?: ScannedPair;
+      files?: GitValidatedConversationFiles;
+      scannedFiles?: ScannedConversationFiles;
       owner?: SavedConversationMeta;
     };
 
@@ -87,7 +87,7 @@ export interface GitReconciliationPlan {
 }
 
 export interface PlanGitReconciliationArgs {
-  scan: GitPairScan;
+  scan: GitCheckoutScan;
   existingRows: SavedConversationMeta[];
   localCandidates?: LocalDiscoveryCandidate[];
   incompleteSources?: string[];
@@ -108,26 +108,26 @@ interface GitPathInfo {
   directoryDepth: number;
 }
 
-export async function scanGitCheckoutPairs(
+export async function scanGitCheckoutConversationFiles(
   rootDir: string,
   config: Config,
-): Promise<GitPairScan> {
-  const pairTree = await scanGitPairTree(rootDir);
-  const pairs = pairTree.pairs;
-  const results: GitPairScanResult[] = [];
-  const warnings: ClogWarning[] = [...pairTree.warnings];
+): Promise<GitCheckoutScan> {
+  const checkoutTree = await scanGitCheckoutTree(rootDir);
+  const allFiles = checkoutTree.files;
+  const results: GitScanResult[] = [];
+  const warnings: ClogWarning[] = [...checkoutTree.warnings];
 
-  for (const scannedPair of pairs) {
-    const pathInfo = getGitPathInfo(scannedPair);
-    const sourceDirectoryWarning = validateGitSourceDirectory(scannedPair, pathInfo);
+  for (const scannedFiles of allFiles) {
+    const pathInfo = getGitPathInfo(scannedFiles);
+    const sourceDirectoryWarning = validateGitSourceDirectory(scannedFiles, pathInfo);
     if (sourceDirectoryWarning) {
       results.push({
         kind: "invalid",
-        scannedPair,
+        scannedFiles,
         warning: sourceDirectoryWarning,
         reportWarning: shouldReportInvalidPairWarning(pathInfo),
         protectedIdentities: await getProtectedIdentities(
-          scannedPair,
+          scannedFiles,
           sourceDirectoryWarning,
           pathInfo,
         ),
@@ -135,22 +135,22 @@ export async function scanGitCheckoutPairs(
       continue;
     }
 
-    if (scannedPair.metaExists && scannedPair.jsonlExists) {
-      const parsedMeta = await readPairMetadata(scannedPair.metaPath);
-      if (parsedMeta.ok && parsedMeta.meta.id === scannedPair.stem) {
+    if (scannedFiles.metaExists && scannedFiles.jsonlExists) {
+      const parsedMeta = await readSidecar(scannedFiles.metaPath);
+      if (parsedMeta.ok && parsedMeta.meta.id === scannedFiles.stem) {
         const layoutWarning = validateGitLayoutMetadata(
-          scannedPair,
+          scannedFiles,
           parsedMeta.meta,
           pathInfo,
         );
         if (layoutWarning) {
           results.push({
             kind: "invalid",
-            scannedPair,
+            scannedFiles,
             warning: layoutWarning,
             reportWarning: shouldReportInvalidPairWarning(pathInfo),
             protectedIdentities: await getProtectedIdentities(
-              scannedPair,
+              scannedFiles,
               layoutWarning,
               pathInfo,
             ),
@@ -160,26 +160,26 @@ export async function scanGitCheckoutPairs(
       }
     }
 
-    const validation = await validatePair(scannedPair, config);
+    const validation = await validateConversationFiles(scannedFiles, config);
     if (validation.kind === "invalid") {
-      const warning = addPathPairToWarning(validation.warning, pathInfo);
+      const warning = addPathIdentityToWarning(validation.warning, pathInfo);
       results.push({
         kind: "invalid",
-        scannedPair,
+        scannedFiles,
         warning,
         reportWarning: shouldReportInvalidPairWarning(pathInfo),
-        protectedIdentities: await getProtectedIdentities(scannedPair, warning, pathInfo),
+        protectedIdentities: await getProtectedIdentities(scannedFiles, warning, pathInfo),
       });
       continue;
     }
 
     results.push({
       kind: "valid",
-      pair: {
+      files: {
         author: pathInfo.author!,
         source: pathInfo.source!,
         id: pathInfo.id,
-        pair: validation.pair,
+        validated: validation.files,
       },
     });
   }
@@ -206,7 +206,7 @@ export function planGitReconciliation(
   const protectedIdentities: SourceIdentity[] = [];
   const protectedKeys = new Set<string>();
   const presentKeys = new Set<string>();
-  const seenValidKeys = new Map<string, GitValidatedPair>();
+  const seenValidKeys = new Map<string, GitValidatedConversationFiles>();
   let ignoredCount = 0;
 
   const rowsByIdentity = new Map<string, SavedConversationMeta>();
@@ -231,34 +231,34 @@ export function planGitReconciliation(
       }
       actions.push({
         kind: "skip",
-        reason: "invalid_pair",
+        reason: "invalid_files",
         message: result.warning.message,
-        scannedPair: result.scannedPair,
+        scannedFiles: result.scannedFiles,
       });
       protectAll(result.protectedIdentities, protectedKeys, protectedIdentities);
       continue;
     }
 
-    const pair = result.pair;
-    const key = identityKey(pair.source, pair.id);
+    const entry = result.files;
+    const key = identityKey(entry.source, entry.id);
     const ignored =
       matchesIgnoreRule != null &&
       ignoreRules.some((rule) =>
         matchesIgnoreRule(rule, {
-          sourceId: pair.id,
-          projectName: pair.pair.meta.projectName,
+          sourceId: entry.id,
+          projectName: entry.validated.meta.projectName,
         }),
       );
 
     if (ignored) {
       ignoredCount += 1;
       presentKeys.add(key);
-      protectAll([{ source: pair.source, id: pair.id }], protectedKeys, protectedIdentities);
+      protectAll([{ source: entry.source, id: entry.id }], protectedKeys, protectedIdentities);
       actions.push({
         kind: "skip",
         reason: "ignored",
-        message: `Skipping remote conversation ${formatGitPairPath(pair)} because it matches clogignore.`,
-        pair,
+        message: `Skipping remote conversation ${formatGitFilesPath(entry)} because it matches clogignore.`,
+        files: entry,
       });
       continue;
     }
@@ -268,14 +268,14 @@ export function planGitReconciliation(
       actions.push({
         kind: "skip",
         reason: "duplicate",
-        message: `Skipping duplicate remote conversation ${formatGitPairPath(pair)} - ${formatGitPairPath(winner)} was chosen first by deterministic checkout order.`,
-        pair,
+        message: `Skipping duplicate remote conversation ${formatGitFilesPath(entry)} - ${formatGitFilesPath(winner)} was chosen first by deterministic checkout order.`,
+        files: entry,
       });
       presentKeys.add(key);
       continue;
     }
 
-    seenValidKeys.set(key, pair);
+    seenValidKeys.set(key, entry);
     presentKeys.add(key);
     const existingForRemote = inScopeRowsByIdentity.get(key);
 
@@ -285,8 +285,8 @@ export function planGitReconciliation(
         actions.push({
           kind: "skip",
           reason: ownerSkipReason(owner),
-          message: ownerSkipMessage(pair, owner),
-          pair,
+          message: ownerSkipMessage(entry, owner),
+          files: entry,
           owner,
         });
         continue;
@@ -296,26 +296,26 @@ export function planGitReconciliation(
         actions.push({
           kind: "skip",
           reason: "local_unsaved_owner",
-          message: `Skipping remote conversation ${pair.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${pair.id.slice(0, 8)}' to keep the local copy.`,
-          pair,
+          message: `Skipping remote conversation ${entry.id.slice(0, 8)} - a local unsaved source copy already exists. Run 'clog save ${entry.id.slice(0, 8)}' to keep the local copy.`,
+          files: entry,
         });
         continue;
       }
 
-      if (!owner && incompleteSourceSet.has(pair.source)) {
+      if (!owner && incompleteSourceSet.has(entry.source)) {
         actions.push({
           kind: "skip",
           reason: "local_discovery_incomplete",
-          message: `Skipping remote conversation ${pair.id.slice(0, 8)} because the ${pair.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
-          pair,
+          message: `Skipping remote conversation ${entry.id.slice(0, 8)} because the ${entry.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          files: entry,
         });
         continue;
       }
 
       actions.push({
         kind: "insert",
-        pair,
-        conversation: buildConversationFromGitPair(pair, remoteUrl),
+        files: entry,
+        conversation: buildConversationFromGitFiles(entry, remoteUrl),
       });
       continue;
     }
@@ -323,11 +323,11 @@ export function planGitReconciliation(
     if (
       classifyAdapterVersion(
         existingForRemote.transcriptProjectionVersion,
-        pair.pair.transcriptProjectionVersion,
+        entry.validated.transcriptProjectionVersion,
       ) === "version_skew" ||
       classifyAdapterVersion(
         existingForRemote.relationshipInspection.version,
-        pair.pair.relationshipInspection.version,
+        entry.validated.relationshipInspection.version,
       ) === "version_skew"
     ) {
       const warning: ClogWarning = {
@@ -346,18 +346,18 @@ export function planGitReconciliation(
         kind: "skip",
         reason: "adapter_version_skew",
         message: warning.message,
-        pair,
+        files: entry,
         owner: existingForRemote,
       });
       continue;
     }
 
-    const updated = mergeGitPairIntoConversation(existingForRemote, pair, remoteUrl);
+    const updated = mergeGitFilesIntoConversation(existingForRemote, entry, remoteUrl);
     if (updated) {
       actions.push({
         kind: "update",
         rowId: existingForRemote.id,
-        pair,
+        files: entry,
         conversation: updated,
       });
     }
@@ -383,61 +383,61 @@ export function planGitReconciliation(
   };
 }
 
-function buildConversationFromGitPair(
-  pair: GitValidatedPair,
+function buildConversationFromGitFiles(
+  files: GitValidatedConversationFiles,
   remoteUrl: string,
 ): SavedConversationMeta {
   const now = nowIso();
   return {
-    id: pair.pair.meta.id,
-    sourceId: pair.pair.meta.id,
-    source: pair.pair.meta.source,
-    title: pair.pair.meta.title,
-    summary: pair.pair.meta.summary,
-    summaryKind: pair.pair.meta.summaryKind,
-    summaryExtraction: pair.pair.meta.summaryExtraction,
-    author: pair.pair.meta.author,
-    projectName: pair.pair.meta.projectName,
+    id: files.validated.meta.id,
+    sourceId: files.validated.meta.id,
+    source: files.validated.meta.source,
+    title: files.validated.meta.title,
+    summary: files.validated.meta.summary,
+    summaryKind: files.validated.meta.summaryKind,
+    summaryExtraction: files.validated.meta.summaryExtraction,
+    author: files.validated.meta.author,
+    projectName: files.validated.meta.projectName,
     projectPath: null,
-    tags: [...pair.pair.meta.tags],
-    slug: pair.pair.meta.slug,
-    createdAt: pair.pair.meta.createdAt,
+    tags: [...files.validated.meta.tags],
+    slug: files.validated.meta.slug,
+    createdAt: files.validated.meta.createdAt,
     discoveredAt: now,
-    modifiedAt: pair.pair.meta.modifiedAt,
+    modifiedAt: files.validated.meta.modifiedAt,
     state: "saved",
-    savedAt: pair.pair.meta.savedAt,
-    savedMessageCount: pair.pair.messageCount,
+    savedAt: files.validated.meta.savedAt,
+    savedMessageCount: files.validated.messageCount,
     saveVersion: 1,
-    transcriptProjectionVersion: pair.pair.transcriptProjectionVersion,
-    sourcePath: pair.pair.jsonlPath,
-    filePath: pair.pair.jsonlPath,
+    transcriptProjectionVersion: files.validated.transcriptProjectionVersion,
+    sourcePath: files.validated.jsonlPath,
+    filePath: files.validated.jsonlPath,
     sourceMtime: null,
     indexedAt: null,
     originKind: "git",
     originRef: remoteUrl,
     relationshipInspection: {
-      status: pair.pair.relationshipInspection.status,
-      version: pair.pair.relationshipInspection.version,
-      diagnostic: pair.pair.relationshipInspection.diagnostic,
+      status: files.validated.relationshipInspection.status,
+      version: files.validated.relationshipInspection.version,
+      diagnostic: files.validated.relationshipInspection.diagnostic,
     },
-    relationships: pair.pair.relationshipInspection.relationships,
+    relationships: files.validated.relationshipInspection.relationships,
   };
 }
 
-function mergeGitPairIntoConversation(
+function mergeGitFilesIntoConversation(
   existing: SavedConversationMeta,
-  pair: GitValidatedPair,
+  files: GitValidatedConversationFiles,
   remoteUrl: string,
 ): SavedConversationMeta | null {
-  const titleChanged = existing.title !== pair.pair.meta.title;
-  const summaryChanged = existing.summary !== pair.pair.meta.summary;
-  const contentChanged = existing.savedMessageCount !== pair.pair.messageCount;
+  const titleChanged = existing.title !== files.validated.meta.title;
+  const summaryChanged = existing.summary !== files.validated.meta.summary;
+  const contentChanged = existing.savedMessageCount !== files.validated.messageCount;
   const projectionChanged =
     existing.transcriptProjectionVersion !==
-    pair.pair.transcriptProjectionVersion;
+    files.validated.transcriptProjectionVersion;
   const refreshedRelationshipInspection = preserveConfirmedRelationship(
     existing,
-    pair.pair.relationshipInspection,
+    files.validated.relationshipInspection,
   );
   const relationshipChanged =
     JSON.stringify({
@@ -445,25 +445,25 @@ function mergeGitPairIntoConversation(
       relationships: existing.relationships,
     }) !== JSON.stringify(refreshedRelationshipInspection);
   const pathChanged =
-    existing.sourcePath !== pair.pair.jsonlPath ||
-    existing.filePath !== pair.pair.jsonlPath;
+    existing.sourcePath !== files.validated.jsonlPath ||
+    existing.filePath !== files.validated.jsonlPath;
   const extractionChanged =
     JSON.stringify(existing.summaryExtraction ?? null) !==
-    JSON.stringify(pair.pair.meta.summaryExtraction ?? null);
+    JSON.stringify(files.validated.meta.summaryExtraction ?? null);
 
   const metadataChanged =
     titleChanged ||
     summaryChanged ||
-    existing.author !== pair.pair.meta.author ||
-    existing.projectName !== pair.pair.meta.projectName ||
-    existing.slug !== pair.pair.meta.slug ||
-    existing.createdAt !== pair.pair.meta.createdAt ||
-    existing.modifiedAt !== pair.pair.meta.modifiedAt ||
-    existing.savedAt !== pair.pair.meta.savedAt ||
+    existing.author !== files.validated.meta.author ||
+    existing.projectName !== files.validated.meta.projectName ||
+    existing.slug !== files.validated.meta.slug ||
+    existing.createdAt !== files.validated.meta.createdAt ||
+    existing.modifiedAt !== files.validated.meta.modifiedAt ||
+    existing.savedAt !== files.validated.meta.savedAt ||
     contentChanged ||
-    existing.summaryKind !== pair.pair.meta.summaryKind ||
+    existing.summaryKind !== files.validated.meta.summaryKind ||
     extractionChanged ||
-    !tagsEqual(existing.tags, pair.pair.meta.tags);
+    !tagsEqual(existing.tags, files.validated.meta.tags);
 
   if (
     !metadataChanged &&
@@ -476,27 +476,27 @@ function mergeGitPairIntoConversation(
 
   return {
     ...existing,
-    title: pair.pair.meta.title,
-    summary: pair.pair.meta.summary,
-    summaryKind: pair.pair.meta.summaryKind,
-    summaryExtraction: pair.pair.meta.summaryExtraction,
-    author: pair.pair.meta.author,
-    projectName: pair.pair.meta.projectName,
-    tags: [...pair.pair.meta.tags],
-    slug: pair.pair.meta.slug,
-    createdAt: pair.pair.meta.createdAt,
-    modifiedAt: pair.pair.meta.modifiedAt,
-    savedAt: pair.pair.meta.savedAt,
-    savedMessageCount: pair.pair.messageCount,
-    transcriptProjectionVersion: pair.pair.transcriptProjectionVersion,
+    title: files.validated.meta.title,
+    summary: files.validated.meta.summary,
+    summaryKind: files.validated.meta.summaryKind,
+    summaryExtraction: files.validated.meta.summaryExtraction,
+    author: files.validated.meta.author,
+    projectName: files.validated.meta.projectName,
+    tags: [...files.validated.meta.tags],
+    slug: files.validated.meta.slug,
+    createdAt: files.validated.meta.createdAt,
+    modifiedAt: files.validated.meta.modifiedAt,
+    savedAt: files.validated.meta.savedAt,
+    savedMessageCount: files.validated.messageCount,
+    transcriptProjectionVersion: files.validated.transcriptProjectionVersion,
     relationshipInspection: {
       status: refreshedRelationshipInspection.status,
       version: refreshedRelationshipInspection.version,
       diagnostic: refreshedRelationshipInspection.diagnostic,
     },
     relationships: refreshedRelationshipInspection.relationships,
-    sourcePath: pair.pair.jsonlPath,
-    filePath: pair.pair.jsonlPath,
+    sourcePath: files.validated.jsonlPath,
+    filePath: files.validated.jsonlPath,
     indexedAt:
       titleChanged || summaryChanged || contentChanged || projectionChanged
         ? null
@@ -506,22 +506,22 @@ function mergeGitPairIntoConversation(
   };
 }
 
-function getGitPathInfo(pair: ScannedPair): GitPathInfo {
-  const parts = pair.relativeDir.split("/").filter(Boolean);
+function getGitPathInfo(entry: ScannedConversationFiles): GitPathInfo {
+  const parts = entry.relativeDir.split("/").filter(Boolean);
   return {
     author: parts[0] ?? null,
     source: parts[1] ?? null,
-    id: pair.stem,
+    id: entry.stem,
     directoryDepth: parts.length,
   };
 }
 
-async function scanGitPairTree(rootDir: string): Promise<{
-  pairs: ScannedPair[];
+async function scanGitCheckoutTree(rootDir: string): Promise<{
+  files: ScannedConversationFiles[];
   warnings: ClogWarning[];
 }> {
   const warnings = await collectSourceDirectoryWarnings(rootDir);
-  const pairs = await scanPairs(rootDir, {
+  const allFiles = await scanConversationFiles(rootDir, {
     shouldDescend: ({ relativeDir, entryName }) => {
       const parts = relativeDir.split("/").filter(Boolean);
       if (parts.length === 0) {
@@ -532,7 +532,7 @@ async function scanGitPairTree(rootDir: string): Promise<{
     },
   });
 
-  return { pairs, warnings };
+  return { files: allFiles, warnings };
 }
 
 async function collectSourceDirectoryWarnings(
@@ -592,7 +592,7 @@ async function collectSourceDirectoryWarnings(
 }
 
 function validateGitSourceDirectory(
-  pair: ScannedPair,
+  entry: ScannedConversationFiles,
   pathInfo: GitPathInfo,
 ): ClogWarning | null {
   if (!pathInfo.author || !pathInfo.source || pathInfo.directoryDepth < 2) {
@@ -605,45 +605,45 @@ function validateGitSourceDirectory(
 
   return {
     code: "pair_layout_mismatch",
-    message: `Skipping remote conversation ${pair.stem} - source directory "${pathInfo.source}" is not a valid source key.`,
-    pair: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
-    paths: [pair.metaPath, pair.jsonlPath],
+    message: `Skipping remote conversation ${entry.stem} - source directory "${pathInfo.source}" is not a valid source key.`,
+    conversation: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
+    paths: [entry.metaPath, entry.jsonlPath],
   };
 }
 
 function validateGitLayoutMetadata(
-  pair: ScannedPair,
-  meta: PairMetadata,
+  entry: ScannedConversationFiles,
+  meta: SidecarMeta,
   pathInfo: GitPathInfo,
 ): ClogWarning | null {
   if (!pathInfo.author || !pathInfo.source || pathInfo.directoryDepth !== 2) {
     return {
       code: "pair_layout_mismatch",
-      message: `Skipping remote conversation ${pair.stem} - expected git layout <author>/<source>/<id>.`,
-      pair: {
+      message: `Skipping remote conversation ${entry.stem} - expected git layout <author>/<source>/<id>.`,
+      conversation: {
         author: pathInfo.author ?? undefined,
         source: meta.source,
         id: meta.id,
       },
-      paths: [pair.metaPath, pair.jsonlPath],
+      paths: [entry.metaPath, entry.jsonlPath],
     };
   }
 
   if (pathInfo.source !== meta.source) {
     return {
       code: "pair_layout_mismatch",
-      message: `Skipping remote conversation ${pair.stem} - meta.source "${meta.source}" does not match directory "${pathInfo.source}".`,
-      pair: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
-      path: pair.metaPath,
+      message: `Skipping remote conversation ${entry.stem} - meta.source "${meta.source}" does not match directory "${pathInfo.source}".`,
+      conversation: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
+      path: entry.metaPath,
     };
   }
 
   if (pathInfo.author !== meta.author) {
     return {
       code: "pair_layout_mismatch",
-      message: `Skipping remote conversation ${pair.stem} - meta.author "${meta.author}" does not match directory "${pathInfo.author}".`,
-      pair: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
-      path: pair.metaPath,
+      message: `Skipping remote conversation ${entry.stem} - meta.author "${meta.author}" does not match directory "${pathInfo.author}".`,
+      conversation: { author: pathInfo.author, source: pathInfo.source, id: pathInfo.id },
+      path: entry.metaPath,
     };
   }
 
@@ -651,7 +651,7 @@ function validateGitLayoutMetadata(
 }
 
 async function getProtectedIdentities(
-  scannedPair: ScannedPair,
+  scannedFiles: ScannedConversationFiles,
   warning: ClogWarning,
   pathInfo: GitPathInfo,
 ): Promise<SourceIdentity[]> {
@@ -661,12 +661,12 @@ async function getProtectedIdentities(
     identities.push({ source: pathInfo.source, id: pathInfo.id });
   }
 
-  if (warning.pair && isValidSourceKey(warning.pair.source)) {
-    identities.push({ source: warning.pair.source, id: warning.pair.id });
+  if (warning.conversation && isValidSourceKey(warning.conversation.source)) {
+    identities.push({ source: warning.conversation.source, id: warning.conversation.id });
   }
 
-  if (scannedPair.metaExists) {
-    const identity = await readMetadataIdentity(scannedPair.metaPath);
+  if (scannedFiles.metaExists) {
+    const identity = await readMetadataIdentity(scannedFiles.metaPath);
     if (identity && isValidSourceKey(identity.source)) {
       identities.push(identity);
     }
@@ -702,17 +702,17 @@ async function readMetadataIdentity(metaPath: string): Promise<SourceIdentity | 
   return { source: record.source, id: record.id };
 }
 
-function addPathPairToWarning(
+function addPathIdentityToWarning(
   warning: ClogWarning,
   pathInfo: GitPathInfo,
 ): ClogWarning {
-  if (!pathInfo.author || !pathInfo.source || warning.pair) {
+  if (!pathInfo.author || !pathInfo.source || warning.conversation) {
     return warning;
   }
 
   return {
     ...warning,
-    pair: {
+    conversation: {
       author: pathInfo.author,
       source: pathInfo.source,
       id: pathInfo.id,
@@ -767,8 +767,8 @@ function ownerSkipReason(owner: SavedConversationMeta): ReconcileSkipReason {
   return "other_git_owner";
 }
 
-function ownerSkipMessage(pair: GitValidatedPair, owner: SavedConversationMeta): string {
-  const shortId = pair.id.slice(0, 8);
+function ownerSkipMessage(files: GitValidatedConversationFiles, owner: SavedConversationMeta): string {
+  const shortId = files.id.slice(0, 8);
 
   if (owner.originKind === "local") {
     return `Skipping remote conversation ${shortId} - the local saved copy takes precedence.`;
@@ -788,8 +788,8 @@ function isGitRowForRemote(
   return conversation.originKind === "git" && conversation.originRef === remoteUrl;
 }
 
-function formatGitPairPath(pair: GitValidatedPair): string {
-  return path.posix.join(pair.author, pair.source, pair.id);
+function formatGitFilesPath(files: GitValidatedConversationFiles): string {
+  return path.posix.join(files.author, files.source, files.id);
 }
 
 function tagsEqual(left: string[], right: string[]): boolean {

@@ -55,7 +55,7 @@ const sourceKeySchema = z.string().superRefine((value, ctx) => {
   });
 });
 
-const pairMetadataInputSchema = z.object({
+const sidecarInputSchema = z.object({
   id: z.string().min(1),
   title: z.string(),
   summary: z.string(),
@@ -108,16 +108,16 @@ const pairMetadataInputSchema = z.object({
   }
 });
 
-export const pairMetadataSchema = pairMetadataInputSchema.transform((meta) => ({
+export const sidecarSchema = sidecarInputSchema.transform((meta) => ({
   ...meta,
   summaryKind:
     meta.summaryKind ?? (meta.summary.trim() ? "curated" : "none"),
   summaryExtraction: meta.summaryExtraction ?? null,
 }));
 
-export type PairMetadata = z.infer<typeof pairMetadataSchema>;
+export type SidecarMeta = z.infer<typeof sidecarSchema>;
 
-export interface ScannedPair {
+export interface ScannedConversationFiles {
   rootDir: string;
   relativeDir: string;
   stem: string;
@@ -128,7 +128,7 @@ export interface ScannedPair {
   jsonlExists: boolean;
 }
 
-export interface ScanPairsOptions {
+export interface ScanConversationFilesOptions {
   shouldDescend?: (entry: {
     rootDir: string;
     currentDir: string;
@@ -136,43 +136,43 @@ export interface ScanPairsOptions {
     entryName: string;
     entryPath: string;
   }) => boolean;
-  diagnostics?: PairDiagnosticAdapter;
+  diagnostics?: ScanDiagnosticAdapter;
 }
 
-export interface PairDiagnosticAdapter {
+export interface ScanDiagnosticAdapter {
   formatPath(physicalPath: string): string;
-  formatPairPath(normalizedRelativePath: string): string;
+  formatFilesPath(normalizedRelativePath: string): string;
   translateFilesystemError(operation: string, physicalPath: string, error: unknown): Error;
 }
 
-export interface ValidatedPair {
+export interface ValidatedConversationFiles {
   rootDir: string;
   relativeDir: string;
   stem: string;
   normalizedRelativePath: string;
   metaPath: string;
   jsonlPath: string;
-  meta: PairMetadata;
+  meta: SidecarMeta;
   messageCount: number;
   transcriptProjectionVersion: number;
   relationshipInspection: RelationshipInspection & { version: number };
 }
 
-export type PairValidationResult =
-  | { kind: "valid"; pair: ValidatedPair }
+export type ConversationFilesValidationResult =
+  | { kind: "valid"; files: ValidatedConversationFiles }
   | { kind: "invalid"; warning: ClogWarning };
 
-export interface WritePairArgs {
+export interface WriteConversationFilesArgs {
   metaPath: string;
   jsonlPath: string;
-  meta: PairMetadata;
+  meta: SidecarMeta;
   jsonl: Buffer | string;
   mode?: number;
 }
 
-export function conversationToPairMetadata(
+export function conversationToSidecar(
   conversation: ConversationMeta,
-): PairMetadata {
+): SidecarMeta {
   if (conversation.savedAt == null) {
     throw new Error(
       `Cannot serialize conversation ${conversation.id} metadata: savedAt is null (not yet saved).`,
@@ -199,7 +199,7 @@ export function conversationToPairMetadata(
     projectName: conversation.projectName,
     savedAt: conversation.savedAt,
     modifiedAt: conversation.modifiedAt,
-    source: conversation.source as PairMetadata["source"],
+    source: conversation.source as SidecarMeta["source"],
     createdAt: conversation.createdAt,
     slug: conversation.slug,
     relationshipInspection: {
@@ -211,31 +211,31 @@ export function conversationToPairMetadata(
   };
 }
 
-export function serializePairMetadata(meta: PairMetadata): string {
+export function serializeSidecar(meta: SidecarMeta): string {
   return `${JSON.stringify(meta, null, 2)}\n`;
 }
 
-export async function writePairMetadata(
+export async function writeSidecar(
   filePath: string,
-  meta: PairMetadata,
+  meta: SidecarMeta,
   options: { mode?: number } = {},
 ): Promise<void> {
-  await writeFileAtomic(filePath, serializePairMetadata(meta), options);
+  await writeFileAtomic(filePath, serializeSidecar(meta), options);
 }
 
-export interface ParsePairMetadataResult {
+export interface ParseSidecarResult {
   ok: true;
-  meta: PairMetadata;
+  meta: SidecarMeta;
 }
 
-export interface ParsePairMetadataError {
+export interface ParseSidecarError {
   ok: false;
   reason: string;
 }
 
-export function parsePairMetadata(
+export function parseSidecar(
   raw: string,
-): ParsePairMetadataResult | ParsePairMetadataError {
+): ParseSidecarResult | ParseSidecarError {
   let parsed: unknown;
 
   try {
@@ -247,7 +247,7 @@ export function parsePairMetadata(
     };
   }
 
-  const result = pairMetadataSchema.safeParse(parsed);
+  const result = sidecarSchema.safeParse(parsed);
 
   if (!result.success) {
     return {
@@ -261,9 +261,9 @@ export function parsePairMetadata(
   return { ok: true, meta: result.data };
 }
 
-export async function readPairMetadata(
+export async function readSidecar(
   filePath: string,
-): Promise<ParsePairMetadataResult | ParsePairMetadataError> {
+): Promise<ParseSidecarResult | ParseSidecarError> {
   let raw: string;
 
   try {
@@ -275,15 +275,15 @@ export async function readPairMetadata(
     };
   }
 
-  return parsePairMetadata(raw);
+  return parseSidecar(raw);
 }
 
-export async function scanPairs(
+export async function scanConversationFiles(
   dir: string,
-  options: ScanPairsOptions = {},
-): Promise<ScannedPair[]> {
+  options: ScanConversationFilesOptions = {},
+): Promise<ScannedConversationFiles[]> {
   const rootDir = path.resolve(dir);
-  const groups = new Map<string, ScannedPair>();
+  const groups = new Map<string, ScannedConversationFiles>();
 
   await scanPairDir(rootDir, rootDir, groups, options);
 
@@ -292,12 +292,12 @@ export async function scanPairs(
   );
 }
 
-export async function validatePair(
-  pair: ScannedPair,
+export async function validateConversationFiles(
+  pair: ScannedConversationFiles,
   config: Config,
-  diagnostics?: PairDiagnosticAdapter,
-): Promise<PairValidationResult> {
-  const pairDisplayPath = diagnostics?.formatPairPath(pair.normalizedRelativePath)
+  diagnostics?: ScanDiagnosticAdapter,
+): Promise<ConversationFilesValidationResult> {
+  const pairDisplayPath = diagnostics?.formatFilesPath(pair.normalizedRelativePath)
     ?? pair.normalizedRelativePath;
   const metaDisplayPath = diagnostics?.formatPath(pair.metaPath) ?? pair.metaPath;
   const jsonlDisplayPath = diagnostics?.formatPath(pair.jsonlPath) ?? pair.jsonlPath;
@@ -335,7 +335,7 @@ export async function validatePair(
     };
   }
 
-  const parsed = parsePairMetadata(raw);
+  const parsed = parseSidecar(raw);
   if (!parsed.ok) {
     return {
       kind: "invalid",
@@ -348,7 +348,7 @@ export async function validatePair(
   }
 
   const { meta } = parsed;
-  const pairWarning = { source: meta.source, id: meta.id };
+  const warningIdentity = { source: meta.source, id: meta.id };
 
   if (meta.id !== pair.stem) {
     return {
@@ -358,7 +358,7 @@ export async function validatePair(
         message: diagnostics
           ? `Skipping conversation ${pairDisplayPath} - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`
           : `Skipping conversation - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
-        pair: pairWarning,
+        conversation: warningIdentity,
         path: metaDisplayPath,
       },
     };
@@ -370,7 +370,7 @@ export async function validatePair(
       warning: {
         code: "unsupported_source",
         message: `Skipping conversation ${pairDisplayPath} - source "${meta.source}" is not supported by this clog build.`,
-        pair: { author: meta.author, source: meta.source, id: meta.id },
+        conversation: { author: meta.author, source: meta.source, id: meta.id },
         path: metaDisplayPath,
         source: meta.source,
       },
@@ -400,7 +400,7 @@ export async function validatePair(
       warning: {
         code: "adapter_version_skew",
         message: `Skipping conversation ${pairDisplayPath} - relationship metadata was written by a newer clog version.`,
-        pair: pairWarning,
+        conversation: warningIdentity,
         path: metaDisplayPath,
         source: meta.source,
         guidance: "Upgrade clog before importing or synchronizing this conversation.",
@@ -461,7 +461,7 @@ export async function validatePair(
       warning: {
         code: "pair_invalid_content",
         message: `Skipping conversation ${pairDisplayPath} - ${reason}`,
-        pair: pairWarning,
+        conversation: warningIdentity,
         path: jsonlDisplayPath,
       },
     };
@@ -469,7 +469,7 @@ export async function validatePair(
 
   return {
     kind: "valid",
-    pair: {
+    files: {
       rootDir: pair.rootDir,
       relativeDir: pair.relativeDir,
       stem: pair.stem,
@@ -484,9 +484,9 @@ export async function validatePair(
   };
 }
 
-export async function writePair(args: WritePairArgs): Promise<void> {
+export async function writeConversationFiles(args: WriteConversationFilesArgs): Promise<void> {
   await writeFileAtomic(args.jsonlPath, args.jsonl, { mode: args.mode });
-  await writePairMetadata(args.metaPath, args.meta, { mode: args.mode });
+  await writeSidecar(args.metaPath, args.meta, { mode: args.mode });
 }
 
 function cloneExtraction(
@@ -499,8 +499,8 @@ function cloneExtraction(
 async function scanPairDir(
   rootDir: string,
   currentDir: string,
-  groups: Map<string, ScannedPair>,
-  options: ScanPairsOptions,
+  groups: Map<string, ScannedConversationFiles>,
+  options: ScanConversationFilesOptions,
 ): Promise<void> {
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
 
@@ -560,7 +560,7 @@ async function scanPairDir(
 
     const pair =
       existing ??
-      buildScannedPair(rootDir, currentDir, relativeDir, side.stem, normalizedRelativePath);
+      buildScannedConversationFiles(rootDir, currentDir, relativeDir, side.stem, normalizedRelativePath);
 
     if (side.kind === "meta") {
       pair.metaExists = true;
@@ -579,13 +579,13 @@ function filesystemErrorCode(error: unknown): string | null {
   return typeof code === "string" && code.length > 0 ? code : null;
 }
 
-function buildScannedPair(
+function buildScannedConversationFiles(
   rootDir: string,
   pairDir: string,
   relativeDir: string,
   stem: string,
   normalizedRelativePath: string,
-): ScannedPair {
+): ScannedConversationFiles {
   return {
     rootDir,
     relativeDir,
