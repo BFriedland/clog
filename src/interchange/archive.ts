@@ -43,11 +43,11 @@ function isPairArchiveEntryName(name: string): boolean {
 
 export function validateArchiveEntryName(name: string): void {
   if (name.length === 0) {
-    throw new ArchiveError("Archive pair entry name cannot be empty.");
+    throw new ArchiveError("Archive entry name cannot be empty.");
   }
 
   if (path.posix.isAbsolute(name) || path.win32.isAbsolute(name)) {
-    throw new ArchiveError(`Archive pair entry is absolute: ${JSON.stringify(name)}.`);
+    throw new ArchiveError(`Archive entry is absolute: ${JSON.stringify(name)}.`);
   }
 
   const components = name.split("/");
@@ -62,27 +62,27 @@ export function validateArchivePathComponent(
 ): void {
   if (component.length === 0) {
     throw new ArchiveError(
-      `Archive pair entry contains an empty path component: ${JSON.stringify(completeName)}.`,
+      `Archive entry contains an empty path component: ${JSON.stringify(completeName)}.`,
     );
   }
   if (component === "." || component === "..") {
     throw new ArchiveError(
-      `Archive pair entry contains a traversal component: ${JSON.stringify(completeName)}.`,
+      `Archive entry contains a traversal component: ${JSON.stringify(completeName)}.`,
     );
   }
   if (FORBIDDEN_COMPONENT_CHARACTERS.test(component)) {
     throw new ArchiveError(
-      `Archive pair entry contains a forbidden path character: ${JSON.stringify(completeName)}.`,
+      `Archive entry contains a forbidden path character: ${JSON.stringify(completeName)}.`,
     );
   }
   if (component.endsWith(" ") || component.endsWith(".")) {
     throw new ArchiveError(
-      `Archive pair entry contains a path component ending in a space or period: ${JSON.stringify(completeName)}.`,
+      `Archive entry contains a path component ending in a space or period: ${JSON.stringify(completeName)}.`,
     );
   }
   if (usesWindowsReservedPathBasename(component)) {
     throw new ArchiveError(
-      `Archive pair entry contains a reserved Windows path name: ${JSON.stringify(completeName)}.`,
+      `Archive entry contains a reserved Windows path name: ${JSON.stringify(completeName)}.`,
     );
   }
 }
@@ -117,12 +117,12 @@ export async function createDeterministicPairArchive(
       stat = await fs.lstat(entry.physicalPath);
     } catch (error) {
       throw new ArchiveError(
-        `Could not inspect staged pair entry ${JSON.stringify(entry.name)}${formatErrorCode(error)}.`,
+        `Could not inspect staged entry ${JSON.stringify(entry.name)}${formatErrorCode(error)}.`,
       );
     }
     if (!stat.isFile()) {
       throw new ArchiveError(
-        `Staged pair entry is not an ordinary file: ${JSON.stringify(entry.name)}.`,
+        `Staged entry is not an ordinary file: ${JSON.stringify(entry.name)}.`,
       );
     }
     selectedBytes += stat.size;
@@ -138,7 +138,7 @@ export async function createDeterministicPairArchive(
       data = await fs.readFile(entry.physicalPath);
     } catch (error) {
       throw new ArchiveError(
-        `Could not read staged pair entry ${JSON.stringify(entry.name)}${formatErrorCode(error)}.`,
+        `Could not read staged entry ${JSON.stringify(entry.name)}${formatErrorCode(error)}.`,
       );
     }
     zippable[entry.name] = [data, { mtime: fixedModificationTime, level: 6 }];
@@ -148,7 +148,7 @@ export async function createDeterministicPairArchive(
   try {
     archive = zipSync(zippable, { level: 6 });
   } catch {
-    throw new ArchiveError("Could not create the archive from staged conversation pairs.");
+    throw new ArchiveError("Could not create the archive from the staged conversation files.");
   }
   assertArchiveByteLimit(archive.byteLength);
   return archive;
@@ -193,7 +193,7 @@ export async function extractPairArchive(
 
   if (selectedRecordCount === 0) {
     throw new ArchiveError(
-      `Archive ${archiveDisplayPath} contains no conversation pair files.`,
+      `Archive ${archiveDisplayPath} contains no conversation files.`,
     );
   }
 
@@ -221,7 +221,7 @@ function selectedEntryBytes(file: UnzipFileInfo): number {
   if (file.compression === 0) {
     if (file.size !== file.originalSize) {
       throw new ArchiveError(
-        `Stored archive pair entry ${JSON.stringify(file.name)} declares inconsistent compressed and uncompressed sizes.`,
+        `Stored archive entry ${JSON.stringify(file.name)} declares inconsistent compressed and uncompressed sizes.`,
       );
     }
     return file.size;
@@ -232,7 +232,7 @@ function selectedEntryBytes(file: UnzipFileInfo): number {
   }
 
   throw new ArchiveError(
-    `Archive pair entry ${JSON.stringify(file.name)} uses unsupported compression method ${file.compression}.`,
+    `Archive entry ${JSON.stringify(file.name)} uses unsupported compression method ${file.compression}.`,
   );
 }
 
@@ -274,7 +274,7 @@ async function collectPairFiles(
     dirEntries = await fs.readdir(current, { withFileTypes: true });
   } catch (error) {
     throw new ArchiveError(
-      `Could not read staged pair directory${formatErrorCode(error)}.`,
+      `Could not read the staging directory${formatErrorCode(error)}.`,
     );
   }
 
@@ -305,7 +305,7 @@ function assertBudget(label: string, observed: number, limit: number): void {
     return;
   }
   throw new ArchiveResourceError(
-    `Archive ${label} observed ${observed}; limit is ${limit}. Use unpacked pair-directory input or output instead.`,
+    `Archive ${label} observed ${observed}; limit is ${limit}. Use directory input or output instead.`,
   );
 }
 

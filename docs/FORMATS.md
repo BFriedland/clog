@@ -313,7 +313,7 @@ The remote path tuple is `(author, source, id)`:
 A valid pair in the wrong author or source directory is a
 `pair_layout_mismatch` — layout damage, not invalid metadata. These layout
 invariants are git-specific: pair directories used by `clog drain --format
-pair` and `clog fill` are layout-neutral and require no author directories.
+dir` and `clog fill` are layout-neutral and require no author directories.
 
 **Provenance by presence.** A pair's presence in the repository is what
 establishes its git provenance; the `.meta.json` carries only objective

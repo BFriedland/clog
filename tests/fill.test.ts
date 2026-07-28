@@ -73,7 +73,7 @@ describe("clog fill", () => {
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      `Skipping conversation pair ${inputPath}${path.sep}${id}`,
+      `Skipping conversation ${inputPath}${path.sep}${id}`,
     );
     expect(result.stderr).toContain(
       `paths=${inputPath}${path.sep}${id}.meta.json, ${inputPath}${path.sep}${id}.jsonl`,
@@ -117,7 +117,7 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, ["."]);
 
     expect(result.error).toBeNull();
-    expect(result.stderr).toContain(`Skipping conversation pair .${path.sep}${id}`);
+    expect(result.stderr).toContain(`Skipping conversation .${path.sep}${id}`);
     expect(result.stderr).not.toContain(pairDir);
   });
 
@@ -131,7 +131,7 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, ["~"]);
 
     expect(result.error).toBeNull();
-    expect(result.stderr).toContain(`Skipping conversation pair ~${path.sep}${id}`);
+    expect(result.stderr).toContain(`Skipping conversation ~${path.sep}${id}`);
     expect(result.stderr).not.toContain(fakeHome);
   });
 
@@ -168,7 +168,7 @@ describe("clog fill", () => {
     const result = await runBuiltCommandCapturingError(buildFillCommand, ["./empty"]);
 
     expect(result.error).toBeInstanceOf(Error);
-    expect((result.error as Error).message).toBe("No conversation pairs found in ./empty.");
+    expect((result.error as Error).message).toBe("No conversations found in ./empty.");
     expect((result.error as Error).message).not.toContain(emptyDir);
   });
 
@@ -200,7 +200,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain(`Processed 1 conversation pair from ${archivePath}`);
+    expect(result.stderr).toContain(`Imported 1 conversation from ${archivePath}`);
     expect(await getConversationById(id)).toMatchObject({
       title: "Archived pair",
       author: "bob",
@@ -362,7 +362,7 @@ describe("clog fill", () => {
 
     expect(result.error).toMatchObject({ exitCode: 2 });
     expect((result.error as Error).message).toBe(
-      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
+      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or export directory.`,
     );
   });
 
@@ -378,7 +378,7 @@ describe("clog fill", () => {
     expect((result.error as Error).message).toContain(
       `Archive zip file bytes observed ${MAX_ARCHIVE_BYTES + 1}; limit is ${MAX_ARCHIVE_BYTES}`,
     );
-    expect((result.error as Error).message).toContain("Use unpacked pair-directory input");
+    expect((result.error as Error).message).toContain("Use directory input");
     expect(
       readFileSpy.mock.calls.some(([filePath]) => String(filePath) === inputPath),
     ).toBe(false);
@@ -399,8 +399,8 @@ describe("clog fill", () => {
 
     for (const [inputPath, message] of [
       [malformedPath, "could not be decoded"],
-      [emptyPath, "contains no conversation pair files"],
-      [pairlessPath, "contains no conversation pair files"],
+      [emptyPath, "contains no conversation files"],
+      [pairlessPath, "contains no conversation files"],
       [unsafePath, "traversal component"],
     ] as const) {
       const result = await runBuiltCommandCapturingError(buildFillCommand, [inputPath]);
@@ -425,7 +425,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.stderr).toContain(
-      `Skipping conversation pair ${path.join(pairDir, id)}`,
+      `Skipping conversation ${path.join(pairDir, id)}`,
     );
   });
 
@@ -447,7 +447,7 @@ describe("clog fill", () => {
     ]);
 
     expect(result.error).toBeNull();
-    expect(result.stderr).toContain(`Skipping conversation pair ${inputPath}${incompleteId}`);
+    expect(result.stderr).toContain(`Skipping conversation ${inputPath}${incompleteId}`);
     expect(result.stderr).toContain(`from ${inputPath}`);
     expect(result.stderr).not.toContain(`pairs${path.sep}${path.sep}`);
   });
@@ -464,7 +464,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.stderr).toContain(
-      `Skipping conversation pair ${inputPath}${path.sep}${id}`,
+      `Skipping conversation ${inputPath}${path.sep}${id}`,
     );
     expect(result.stderr).toContain(`path=${inputPath}${path.sep}${id}.meta.json`);
     expect(result.stderr).not.toContain(pairDir);
@@ -515,7 +515,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).message).toBe(
-      "Failed to read pair directory ./pairs (EACCES)",
+      "Failed to read conversation files directory ./pairs (EACCES)",
     );
     expect((result.error as Error).message).not.toContain(physicalPairDir);
   });
@@ -576,7 +576,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain("Processed 1 conversation pair");
+    expect(result.stderr).toContain("Imported 1 conversation");
     expect(result.stderr).toContain("clog list --all");
 
     const row = await getConversationById(id);
@@ -608,7 +608,7 @@ describe("clog fill", () => {
     const withDbCalls = withDbSpy.mock.calls.length;
 
     expect(result.error).toBeNull();
-    expect(result.stderr).toContain("Processed 3 conversation pair");
+    expect(result.stderr).toContain("Imported 3 conversation");
     expect(withDbCalls).toBe(1);
   });
 
@@ -672,7 +672,7 @@ describe("clog fill", () => {
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      `error: Skipping conversation pair ${path.join(pairDir, "broken", badId)} - incomplete pair`,
+      `error: Skipping conversation ${path.join(pairDir, "broken", badId)} - incomplete`,
     );
     expect(result.stderr).not.toContain("input pairs could not be imported");
     expect(result.stderr).toContain(
@@ -707,7 +707,7 @@ describe("clog fill", () => {
       "error: 2 input pairs could not be imported. Re-run with --show-all-errors to list each pair.",
     );
     expect(result.stderr).toContain("--show-all-errors");
-    expect(result.stderr).not.toContain("incomplete pair");
+    expect(result.stderr).not.toContain("incomplete");
     expect(result.stderr).toContain("no conversations were imported");
 
     const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
@@ -719,10 +719,10 @@ describe("clog fill", () => {
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${path.join(pairDir, firstBadId)} - incomplete pair`,
+      `error: Skipping conversation ${path.join(pairDir, firstBadId)} - incomplete`,
     );
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${path.join(pairDir, "nested", secondBadId)} - incomplete pair`,
+      `error: Skipping conversation ${path.join(pairDir, "nested", secondBadId)} - incomplete`,
     );
   });
 
@@ -759,7 +759,7 @@ describe("clog fill", () => {
     expect(dryRun.exitCode).toBe(1);
     expect(dryRun.stderr).toContain('source "future.agent", which this clog build cannot read');
     expect(dryRun.stderr).toContain("Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.");
-    expect(dryRun.stderr).toContain("Use a clog build with an adapter for the unsupported source, or use --allow-partial to import the valid pairs.");
+    expect(dryRun.stderr).toContain("Use a clog build with an adapter for the unsupported source, or use --allow-partial to import the valid conversations.");
     expect(dryRun.stderr).toContain("no conversations would be imported");
     expect(await getConversationById(goodId)).toBeNull();
     expect(await getConversationById(unknownId)).toBeNull();
@@ -782,9 +782,9 @@ describe("clog fill", () => {
 
     expect(partialImport.error).toBeNull();
     expect(partialImport.exitCode).toBe(1);
-    expect(partialImport.stderr).toContain("Use a clog build with an adapter for that source to import that pair.");
+    expect(partialImport.stderr).toContain("Use a clog build with an adapter for that source to import that conversation.");
     expect(partialImport.stderr).not.toContain("re-run with --allow-partial to import the rest");
-    expect(partialImport.stderr).toContain("Processed 2 conversation pairs");
+    expect(partialImport.stderr).toContain("Imported 1 conversation");
     expect(partialImport.stderr).toContain("(1 new; 1 skipped)");
     expect(await getConversationById(goodId)).not.toBeNull();
     expect(await getConversationById(unknownId)).toBeNull();
@@ -840,7 +840,7 @@ describe("clog fill", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("error: 2 input pairs could not be imported");
     expect(result.stderr).not.toContain("error: 4 input pairs could not be imported");
-    expect(result.stderr).toContain('error: 2 pairs use source "future-agent"');
+    expect(result.stderr).toContain('error: 2 conversations use source "future-agent"');
     expect(result.stderr).not.toContain(`    carol/future-agent/${firstUnsupportedId}`);
     expect(result.stderr).not.toContain(`    carol/future-agent/${secondUnsupportedId}`);
 
@@ -852,12 +852,12 @@ describe("clog fill", () => {
     expect(expanded.error).toBeNull();
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${inputPath}${path.sep}${firstInvalidId} - incomplete pair`,
+      `error: Skipping conversation ${inputPath}${path.sep}${firstInvalidId} - incomplete`,
     );
     expect(expanded.stderr).toContain(
-      `error: Skipping conversation pair ${inputPath}${path.sep}${secondInvalidId} - incomplete pair`,
+      `error: Skipping conversation ${inputPath}${path.sep}${secondInvalidId} - incomplete`,
     );
-    expect(expanded.stderr).toContain('error: 2 pairs use source "future-agent"');
+    expect(expanded.stderr).toContain('error: 2 conversations use source "future-agent"');
     expect(expanded.stderr).toContain(
       `    ${inputPath}${path.sep}carol${path.sep}future-agent${path.sep}${firstUnsupportedId}`,
     );
@@ -913,7 +913,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain("Dry run: would process 1 conversation pair");
+    expect(result.stderr).toContain("Dry run: would import 1 conversation");
     expect(await getConversationById(id)).toBeNull();
     expect(writeSpy).not.toHaveBeenCalled();
     await expect(fs.stat(getImportConversationPath("claude-code", id))).rejects.toMatchObject({
@@ -939,7 +939,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("incomplete pair");
+    expect(result.stderr).toContain("incomplete");
     expect(result.stderr).toContain("no conversations would be imported");
     expect(result.stderr).not.toContain("would process");
     expect(result.stderr).not.toContain("1 new");
@@ -987,7 +987,7 @@ describe("clog fill", () => {
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("error: 2 input pairs could not be imported");
-    expect(result.stderr).toContain("Re-run with --show-all-errors to see each pair error");
+    expect(result.stderr).toContain("Re-run with --show-all-errors to see each error");
     expect(result.stderr).not.toContain("pair author");
 
     const expanded = await runBuiltCommandCapturingError(buildFillCommand, [
@@ -1000,10 +1000,10 @@ describe("clog fill", () => {
     expect(expanded.exitCode).toBe(1);
     expect(expanded.stderr).not.toContain("error: 2 input pairs could not be imported");
     expect(expanded.stderr).toContain(
-      `error: Skipping ${firstForeignId.slice(0, 8)} - pair author "bob" does not match configured author "alice".`,
+      `error: Skipping ${firstForeignId.slice(0, 8)} - its author "bob" does not match configured author "alice".`,
     );
     expect(expanded.stderr).toContain(
-      `error: Skipping ${secondForeignId.slice(0, 8)} - pair author "carol" does not match configured author "alice".`,
+      `error: Skipping ${secondForeignId.slice(0, 8)} - its author "carol" does not match configured author "alice".`,
     );
   });
 
@@ -1137,7 +1137,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBeUndefined();
-    expect(result.stderr).toContain("Processed 2 conversation pairs");
+    expect(result.stderr).toContain("Imported 1 conversation");
     expect(result.stderr).toContain("(1 new; 1 skipped)");
     expect(result.stderr).toContain(
       `notice: Skipping conversation ${ignoredId.slice(0, 8)} because it matches clogignore.`,
@@ -1174,7 +1174,7 @@ describe("clog fill", () => {
       "notice: 2 input pairs were skipped because matching conversations are already saved locally.",
     );
     expect(collapsed.stderr).toContain(
-      "notice: 2 conversation pairs were skipped by clogignore.",
+      "notice: 2 conversations were skipped by clogignore.",
     );
     expect(collapsed.stderr.match(/Re-run with --show-all-errors to list each conversation\./g))
       .toHaveLength(2);
@@ -1207,7 +1207,7 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain('pair author "bob"');
+    expect(result.stderr).toContain('its author "bob"');
     expect(result.stderr).toContain(
       "error: One or more conversations by another author were found while importing with --own",
     );

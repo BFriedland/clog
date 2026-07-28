@@ -63,12 +63,12 @@ interface BenignSkipGroup {
 export function buildFillCommand(): Command {
   return new Command("fill")
     .alias("import")
-    .description("Import conversation pair files from a zip archive or directory")
-    .argument("<path>", "Zip archive or directory containing conversation pair files")
-    .option("--own", "Restore pairs authored by the configured user as editable local rows")
-    .option("--dry-run", "Plan the import without writing managed files or database rows")
-    .option("--allow-partial", "Skip failure-class candidates and import valid candidates")
-    .option("--show-all-errors", "Show every per-pair error and skipped conversation")
+    .description("Import conversations from a clog zip archive or export directory")
+    .argument("<path>", "Zip archive or directory containing exported conversations")
+    .option("--own", "Import your own conversations as editable local copies")
+    .option("--dry-run", "Preview the import without changing anything")
+    .option("--allow-partial", "Import the conversations that are valid and skip the ones that would fail")
+    .option("--show-all-errors", "Show every per-conversation error and skipped conversation")
     .action(async (dir: string, options: FillOptions) => {
       await runFillCommand(dir, options);
     });
@@ -100,7 +100,7 @@ async function runPreparedFillCommand(
 ): Promise<void> {
   const scannedPairs = await scanPairs(input.physicalRoot, { diagnostics: input });
   if (scannedPairs.length === 0) {
-    throw new ClogError(`No conversation pairs found in ${input.suppliedPath}.`);
+    throw new ClogError(`No conversations found in ${input.suppliedPath}.`);
   }
 
   const candidates: FillCandidate[] = [];
@@ -216,8 +216,8 @@ function formatFillAbortMessage(
       ? "Dry run: one or more conversations by another author were found while importing with --own; no conversations would be imported."
       : "error: One or more conversations by another author were found while importing with --own; no conversations were imported.";
     const detailGuidance = shouldMentionShowAll
-      ? "Re-run with --show-all-errors to see each pair error"
-      : "Fix the pair errors";
+      ? "Re-run with --show-all-errors to see each error"
+      : "Fix the errors";
     return `${base} ${detailGuidance}, or run clog fill without --own to import them as read-only copies.`;
   }
 
@@ -226,7 +226,7 @@ function formatFillAbortMessage(
     : `error: Errors were found while importing from the ${input.inputDescription}; no conversations were imported.`;
 
   if (shouldMentionShowAll) {
-    return `${base} Re-run with --show-all-errors to see each pair error, or use --allow-partial to import the valid pairs.`;
+    return `${base} Re-run with --show-all-errors to see each error, or use --allow-partial to import the valid conversations.`;
   }
 
   const collapsedPairErrorCount = countBlockedPairs(getCollapsedPairErrorActions(plan));
@@ -237,13 +237,13 @@ function formatFillAbortMessage(
       ? "use a clog build with an adapter for the unsupported source"
       : "use a clog build with adapters for the unsupported sources";
   if (hasUnsupportedSources && collapsedPairErrorCount === 0) {
-    return `${base} ${capitalize(adapterGuidance)}, or use --allow-partial to import the valid pairs.`;
+    return `${base} ${capitalize(adapterGuidance)}, or use --allow-partial to import the valid conversations.`;
   }
   if (hasUnsupportedSources) {
-    return `${base} Fix the ${input.inputDescription}, ${adapterGuidance}, or use --allow-partial to import the valid pairs.`;
+    return `${base} Fix the ${input.inputDescription}, ${adapterGuidance}, or use --allow-partial to import the valid conversations.`;
   }
 
-  return `${base} Fix the ${input.inputDescription}, or use --allow-partial to import the valid pairs.`;
+  return `${base} Fix the ${input.inputDescription}, or use --allow-partial to import the valid conversations.`;
 }
 
 function getManagedPath(pair: ValidatedPair, mode: FillMode): string {
@@ -391,10 +391,10 @@ function renderUnsupportedSourceGroups(
   for (const group of groups) {
     const count = countBlockedPairs(group.actions);
     const guidance = allowPartial
-      ? `Use a clog build with an adapter for that source to import ${count === 1 ? "that pair" : "those pairs"}.`
+      ? `Use a clog build with an adapter for that source to import ${count === 1 ? "that conversation" : "those conversations"}.`
       : "Use a clog build with an adapter for that source, or re-run with --allow-partial to import the rest.";
     process.stderr.write(
-      `error: ${count} ${count === 1 ? "pair uses" : "pairs use"} source "${group.source}", which this clog build cannot read. ${guidance}\n`,
+      `error: ${count} ${count === 1 ? "conversation uses" : "conversations use"} source "${group.source}", which this clog build cannot read. ${guidance}\n`,
     );
 
     if (!showAllErrors) {
@@ -481,11 +481,11 @@ function formatBenignSkipSummary(
     : " Re-run with --show-all-errors to list each conversation.";
 
   if (reason === "ignored") {
-    return `${count} conversation pairs were skipped by clogignore.${expansion}`;
+    return `${count} conversation${count === 1 ? " was" : "s were"} skipped by clogignore.${expansion}`;
   }
 
   if (reason === "local_unsaved_precedence") {
-    return `${count} input pairs were skipped because matching unsaved local source copies already exist. Save the local conversations to keep their source metadata, or re-run with --own to import these conversations as editable local copies.${expansion}`;
+    return `${count} conversation${count === 1 ? " was" : "s were"} skipped because matching unsaved local source copies already exist. Save the local conversations to keep their source metadata, or re-run with --own to import these conversations as editable local copies.${expansion}`;
   }
 
   if (reason === "local_saved_precedence") {
@@ -544,8 +544,9 @@ function renderFillSummary(args: {
   dryRun: boolean;
 }): void {
   const { stats, input, dryRun } = args;
-  const total =
-    stats.newCount + stats.updatedCount + stats.unchangedCount + stats.skippedCount;
+  // The headline count is the number of conversations actually imported;
+  // skipped conversations appear only in the parenthetical note.
+  const imported = stats.newCount + stats.updatedCount + stats.unchangedCount;
   const changedParts = [];
   if (stats.newCount > 0) changedParts.push(`${stats.newCount} new`);
   if (stats.updatedCount > 0) changedParts.push(`${stats.updatedCount} updated`);
@@ -558,10 +559,10 @@ function renderFillSummary(args: {
         ? changedParts.join(", ")
         : skippedPart;
   const note = noteText ? ` (${noteText})` : "";
-  const verb = dryRun ? "Dry run: would process" : "Processed";
+  const verb = dryRun ? "Dry run: would import" : "Imported";
 
   process.stderr.write(
-    `${verb} ${total} conversation pair${total === 1 ? "" : "s"} from ${input.formatSummaryPath()}${note}\n`,
+    `${verb} ${imported} conversation${imported === 1 ? "" : "s"} from ${input.formatSummaryPath()}${note}\n`,
   );
 }
 

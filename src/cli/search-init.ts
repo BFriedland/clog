@@ -71,7 +71,7 @@ export async function runSearchInitCommand(): Promise<void> {
   });
 
   if (!accepted) {
-    process.stdout.write("Vector search setup cancelled.\n");
+    process.stdout.write("Operation cancelled.\n");
     return;
   }
 

@@ -470,7 +470,7 @@ export async function resolveConversationView(
 
     if (incompleteSources.length > 0 && !exactQualifiedMatch) {
       throw new ClogError(
-        `Could not determine whether conversation "${input}" exists because source discovery was incomplete for ${incompleteSources.join(", ")}.`,
+        `Could not determine whether conversation "${input}" exists because the source scan was incomplete for ${incompleteSources.join(", ")}.`,
       );
     }
   }

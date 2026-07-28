@@ -39,7 +39,7 @@ export async function applyFillWriteAction(
   }
 
   throw new ClogError(
-    `clog fill cannot write conversation ${conversation.id.slice(0, 8)} because git rows are owned by sync.`,
+    `Conversation ${conversation.id.slice(0, 8)} came from your sync remote - update it with "clog sync pull".`,
   );
 }
 
@@ -73,7 +73,7 @@ function validateFillWriteTargetInDb(
   }
 
   throw new ClogError(
-    `clog fill cannot write conversation ${conversation.id.slice(0, 8)} because git rows are owned by sync.`,
+    `Conversation ${conversation.id.slice(0, 8)} came from your sync remote - update it with "clog sync pull".`,
   );
 }
 

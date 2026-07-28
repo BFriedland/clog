@@ -125,7 +125,7 @@ export async function withPreparedFillInput<T>(
   const leadingBytes = await readLeadingBytes(directoryInput.physicalRoot, inputPath);
   if (classifyZipSignature(leadingBytes) == null) {
     throw new UsageError(
-      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or unpacked pair directory.`,
+      `Import file is not a recognized zip archive: ${inputPath}. Use a zip archive or export directory.`,
     );
   }
 

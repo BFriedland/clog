@@ -52,7 +52,7 @@ describe("archive interchange helper", () => {
     ["trailing period", "claude-code./id.jsonl"],
     ["reserved device name", "CON/id.jsonl"],
   ])("rejects a selected entry with a %s", (_label, name) => {
-    expect(() => validateArchiveEntryName(name)).toThrow(/Archive pair entry/);
+    expect(() => validateArchiveEntryName(name)).toThrow(/Archive entry/);
   });
 
   it("requires a stored conversation ID to be exactly one path component", () => {
@@ -156,7 +156,7 @@ describe("archive interchange helper", () => {
 
     await expect(
       extractPairArchive(modified, output, "stored-mismatch.zip"),
-    ).rejects.toThrow(/Stored archive pair entry.*inconsistent compressed and uncompressed sizes/);
+    ).rejects.toThrow(/Stored archive entry.*inconsistent compressed and uncompressed sizes/);
     await expect(fs.access(output)).rejects.toThrow();
   });
 

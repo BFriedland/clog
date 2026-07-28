@@ -49,7 +49,7 @@ export function buildShowCommand(): Command {
     .option("--path", "Print the resolved conversation content path")
     .option("--json", "Render the conversation as structured JSON")
     .option("--md", "Render the conversation as Markdown")
-    .option("--raw", "Emit the exact resolved conversation content bytes")
+    .option("--raw", "Print the conversation's file content byte-for-byte")
     .option("--first, --head <n>", "Render the first N parsed messages")
     .option("--last, --tail <n>", "Render the last N parsed messages")
     .action(async (id: string, options: ShowOptions) => {

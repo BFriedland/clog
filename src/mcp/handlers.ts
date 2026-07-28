@@ -236,7 +236,7 @@ export const listInputSchema = z
     origin: z
       .enum(["local", "remote"])
       .optional()
-      .describe("Use local for locally writable rows, remote for imported read-only rows."),
+      .describe("Use local for locally writable conversations, remote for imported read-only conversations."),
     allBranches: z
       .boolean()
       .default(false)
@@ -340,7 +340,7 @@ export const searchInputSchema = z
     origin: z
       .enum(["local", "remote"])
       .optional()
-      .describe("Use local for locally writable rows, remote for imported read-only rows."),
+      .describe("Use local for locally writable conversations, remote for imported read-only conversations."),
     allBranches: z
       .boolean()
       .default(false)

@@ -103,7 +103,7 @@ This gives agents the following tools:
 
 | Tool | What it does |
 |------|-------------|
-| `list_conversations` | List saved conversations by default, with each conversation's branches grouped into one row unless `allBranches` is true |
+| `list_conversations` | List saved conversations by default, with each conversation's branches grouped into one result unless `allBranches` is true |
 | `get_conversation` | Load one saved conversation's messages, plus links to its other branches |
 | `update_conversation` | Edit title, summary, structured extraction, or tags on saved local conversations |
 | `browse_metadata` | List tags, projects, or authors |
@@ -170,11 +170,11 @@ pushes your saved conversations; `sync pull` imports your teammates'.
   conversations with your author name. `--all` includes other authors' imports;
   `--author bob` filters to one person.
 - Imported conversations are read-only — you can view but not edit git-synced or
-  default `clog fill` rows.
+  default `clog fill` imports.
 - Removing one of your saved local conversations retracts it from the remote on
   next push.
 - Use `clog exclude` to ignore projects or conversations, and `clog remove` if
-  you also want to delete current local DB rows.
+  you also want to remove them from clog's database.
 - `clog refresh` reconciles from the git checkout without fetching — handy if
   you ran `git pull` manually in `~/.clog/remote/`.
 
@@ -185,7 +185,7 @@ clog drain myproject                             # creates a file: ./clog-export
 clog drain myproject -o ./my-project-export.zip  # write to an explicit path
 ```
 
-`clog drain myproject --format pair -o ./clog-export/` writes the same
+`clog drain myproject --format dir -o ./clog-export/` writes the same
 conversations as an unpacked directory instead of a zip.
 
 Import an export as read-only conversations, or add `--own` to restore your
@@ -232,12 +232,12 @@ or a rewind), clog groups them and shows it once by default;
 
 | Command | What it does |
 |---------|-------------|
-| `clog save [selector...]` | Save unsaved conversations by ID/project, or resave saved conversations with pending changes (`--all`) |
+| `clog save [selector...]` | Save unsaved conversations by ID/project, or update saved ones that have new messages (`--all`) |
 | `clog diff [id...]` | Show new messages since last save (`--head N`, `--tail N`, `--first N`, `--last N`) |
 | `clog show <id>` | Display one conversation as a terminal view, JSON (`--json`), Markdown (`--md`), raw content bytes (`--raw`), or its content path (`--path`); parsed formats support `--head N`/`--first N` and `--tail N`/`--last N` |
 | `clog path <id>` | Print the content path for a conversation |
-| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to an unpacked pair directory with `--format pair` (`clog export` is an alias; `-o, --output`, `--include-imported`, `--yes`) |
-| `clog fill <path>` | Import a clog zip archive or unpacked conversation-pair directory as read-only conversations (`clog import` is an alias) |
+| `clog drain [selector...]` | Export saved conversations to a zip archive by default, or to a directory with `--format dir` (`clog export` is an alias; `-o, --output`, `--include-imported`, `--yes`) |
+| `clog fill <path>` | Import a clog zip archive or export directory as read-only conversations (`clog import` is an alias) |
 | `clog plunge` | Audit local clog state for obvious corruption (`--json`, `--verbose`) |
 
 `clog show --json` prints a structured conversation object for scripts,

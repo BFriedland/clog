@@ -885,7 +885,7 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Nothing to save.");
-      expect(stdout).not.toContain("Saved conversations to resave:");
+      expect(stdout).not.toContain("Saved conversations with new messages:");
 
       const saved = await getConversationById(convId);
       expect(saved?.saveVersion).toBe(1);
@@ -1626,7 +1626,7 @@ describe("cli", () => {
       await insertConversation(makeConversation({ id: convId, sourceId: convId, author: "bob" }));
 
       const { stdout } = await runBuiltCommand(buildRenameAuthorCommand, ["bob", "robert"]);
-      expect(stdout).toContain("Aborted");
+      expect(stdout).toContain("Operation cancelled");
 
       const reloaded = await getConversationById(convId);
       expect(reloaded?.author).toBe("bob");
@@ -2065,7 +2065,7 @@ describe("cli", () => {
         ]);
         expect(result.stdout).toBe("");
         expect(String((result.error as Error)?.message ?? "")).toMatch(
-          /Curated raw file is missing/i,
+          /The saved copy is missing/i,
         );
       },
     );
@@ -2504,7 +2504,7 @@ describe("cli", () => {
       expect(stdout).toContain("Nothing to save.");
     });
 
-    it("shows saved rows that need resaving under 'Saved conversations to resave:'", async () => {
+    it("shows saved rows that need resaving under 'Saved conversations with new messages:'", async () => {
       await seedSavedConversationWithRawMessages(
         "c1111111-1111-1111-1111-111111111111",
         1,
@@ -2513,9 +2513,9 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Saved conversations to resave:");
+      expect(stdout).toContain("Saved conversations with new messages:");
       expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("1 conversation");
       expect(stdout).not.toContain("Saved change");
       expect(stdout).toContain('use "clog save" to save these updates');
     });
@@ -2599,9 +2599,9 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Saved conversations to resave:");
+      expect(stdout).toContain("Saved conversations with new messages:");
       expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("1 conversation");
       expect(stdout).not.toContain("Saved with refreshed raw copy");
       expect(stdout).toContain('use "clog save" to save these updates');
     });
@@ -2617,7 +2617,7 @@ describe("cli", () => {
       const { stdout } = await runBuiltCommand(buildStatusCommand, ["--conversations"]);
       expect(stdout).toContain("c3434343");
       expect(stdout).toContain("Conversation fallback");
-      expect(stdout).toContain("modified:");
+      expect(stdout).toContain("new messages:");
     });
 
     it("--source adds the source column after the short id", async () => {
@@ -2677,9 +2677,9 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Saved conversations to resave:");
+      expect(stdout).toContain("Saved conversations with new messages:");
       expect(stdout).toContain("webapp");
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("1 conversation");
       expect(stdout).not.toContain("Checkpoint lag");
       expect(stdout).toContain('use "clog save" to save these updates');
     });
@@ -2710,7 +2710,7 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Nothing to save.");
-      expect(stdout).not.toContain("Saved conversations to resave:");
+      expect(stdout).not.toContain("Saved conversations with new messages:");
       expect(stdout).not.toContain("Metadata changed");
     });
 
@@ -2740,7 +2740,7 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Nothing to save.");
-      expect(stdout).not.toContain("Saved conversations to resave:");
+      expect(stdout).not.toContain("Saved conversations with new messages:");
       expect(stdout).not.toContain("Saved conversations whose source files changed:");
 
       const rescanned = await getConversationById(convId);
@@ -2776,7 +2776,7 @@ describe("cli", () => {
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Saved conversations whose source files changed:");
-      expect(stdout).not.toContain("Saved conversations to resave:");
+      expect(stdout).not.toContain("Saved conversations with new messages:");
     });
 
     it("shows saved source changes separately from saved rows ready to resave", async () => {
@@ -2818,10 +2818,10 @@ describe("cli", () => {
       );
 
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
-      expect(stdout).toContain("Saved conversations to resave:");
+      expect(stdout).toContain("Saved conversations with new messages:");
       expect(stdout).toContain("Saved conversations whose source files changed:");
       expect(stdout).toContain('use "clog save <id>" to refresh the saved copy from its source file');
-      expect(stdout).toContain("1 modified");
+      expect(stdout).toContain("1 conversation");
       expect(stdout).toContain("1 conversation");
       expect(stdout).not.toContain("1 source");
     });
@@ -3188,7 +3188,7 @@ describe("cli", () => {
 
       expect(stdout).toContain("Refreshed 0 conversation(s)");
       expect(stderr).toContain(
-        "Skipped 1 remote conversation pair(s) because of clogignore",
+        "Skipped 1 remote conversation(s) because of clogignore",
       );
       expect(stderr.match(/because of clogignore/g)).toHaveLength(1);
     });

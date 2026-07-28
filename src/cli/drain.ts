@@ -37,7 +37,7 @@ import { collectProjectDrainTargets } from "./project-targets.js";
 import { scanLocalSources } from "./scan.js";
 import { resolveConversationSelectors } from "./selectors.js";
 
-type DrainFormat = "archive" | "pair";
+type DrainFormat = "archive" | "dir";
 
 interface DrainOptions {
   output?: string;
@@ -65,11 +65,11 @@ interface DrainResults {
 export function buildDrainCommand(): Command {
   return new Command("drain")
     .alias("export")
-    .description("Export saved conversations as a zip archive or unpacked pair files")
+    .description("Export saved conversations as a zip archive or a directory")
     .argument("[selectors...]", "Conversation IDs or project selectors to export")
-    .option("-o, --output <path>", "Archive file or unpacked pair-directory destination")
-    .option("-f, --format <fmt>", "Output format: archive or pair", "archive")
-    .option("--force", "Replace eligible existing output")
+    .option("-o, --output <path>", "Archive file or directory destination")
+    .option("-f, --format <fmt>", "Output format: archive or dir", "archive")
+    .option("--force", "Overwrite existing output files")
     .option(
       "--include-imported",
       "Include imported conversations when no selector or filter is supplied",
@@ -79,10 +79,10 @@ export function buildDrainCommand(): Command {
       "Export saved local conversations without prompting when no selector or filter is supplied",
     )
     .option("--show-all-errors", "Show every per-conversation export failure")
-    .option("-p, --project <name>", "Exact project metadata filter")
-    .option("-a, --author <name>", "Exact author metadata filter")
-    .option("-t, --tag <tag>", "Exact tag metadata filter")
-    .option("--origin <origin>", "Exact origin filter: local or remote")
+    .option("-p, --project <name>", "Only conversations from this project (exact match)")
+    .option("-a, --author <name>", "Only conversations by this author (exact match)")
+    .option("-t, --tag <tag>", "Only conversations with this tag (exact match)")
+    .option("--origin <origin>", "Only conversations from this origin: local or remote")
     .addOption(new Option("--to <path>").hideHelp())
     .addOption(new Option("--to-dir <dir>").hideHelp())
     .addOption(new Option("--raw").hideHelp())
@@ -140,12 +140,12 @@ async function runDrainCommand(
     );
   }
 
-  const destination = format === "pair"
+  const destination = format === "dir"
     ? options.output!
     : options.output ?? "./clog-export.zip";
 
   if (bare) {
-    if (format === "pair") {
+    if (format === "dir") {
       await assertPairDestinationBeforeConfirmation(destination);
     } else {
       await assertArchivePublicationDestination(destination, {
@@ -166,7 +166,7 @@ async function runDrainCommand(
     }
   }
 
-  if (format === "pair") {
+  if (format === "dir") {
     await drainPairsToDirectory(resolved.conversations, {
       config,
       force: options.force === true,
@@ -228,8 +228,8 @@ function validateDrainOptions(
   options: DrainOptions,
   format: DrainFormat,
 ): void {
-  if (format === "pair" && options.output == null) {
-    throw new UsageError("--format pair requires -o <dir>.");
+  if (format === "dir" && options.output == null) {
+    throw new UsageError("--format dir requires -o <dir>.");
   }
 
   if (options.output != null && options.output.trim().length === 0) {
@@ -370,13 +370,13 @@ async function assertPairDestinationBeforeConfirmation(
       return;
     }
     throw new ClogError(
-      `Could not inspect pair export destination ${targetDir}: ${formatError(error)}`,
+      `Could not inspect the export destination ${targetDir}: ${formatError(error)}`,
     );
   }
 
   if (!destinationStat.isDirectory()) {
     throw new ClogError(
-      `Pair export destination is not a directory: ${targetDir}`,
+      `Export destination is not a directory: ${targetDir}`,
     );
   }
 }
@@ -395,7 +395,7 @@ async function drainPairsToDirectory(
     await fs.mkdir(options.targetDir, { recursive: true });
   } catch (error) {
     throw new ClogError(
-      `Could not create pair export directory ${options.targetDir}: ${formatError(error)}`,
+      `Could not create the export directory ${options.targetDir}: ${formatError(error)}`,
     );
   }
 
@@ -552,7 +552,7 @@ async function writeConversationPair(
     if (await pathExists(metaPath)) conflicts.push(metaPath);
     if (conflicts.length > 0) {
       throw new ClogError(
-        `Output pair already exists: ${conflicts.join(", ")}. Use --force to overwrite it.`,
+        `Output file${conflicts.length === 1 ? "" : "s"} already exist${conflicts.length === 1 ? "s" : ""}: ${conflicts.join(", ")}. Use --force to overwrite.`,
       );
     }
   }
@@ -624,14 +624,19 @@ function reportDrainSummary(
 
 function parseFormat(value?: string): DrainFormat {
   if (value == null || value === "archive") return "archive";
-  if (value === "pair") return "pair";
+  if (value === "dir") return "dir";
+  if (value === "pair") {
+    throw new UsageError(
+      "--format pair was renamed. Use --format dir to export an unpacked directory.",
+    );
+  }
   if (value === "json" || value === "md") {
     throw new UsageError(
       `--format ${value} was removed from clog drain. Use 'clog show <id> --${value}' instead.`,
     );
   }
   throw new UsageError(
-    `--format must be "archive" or "pair", got "${value}".`,
+    `--format must be "archive" or "dir", got "${value}".`,
   );
 }
 
@@ -688,7 +693,7 @@ function dedupeAndSortConversations(
 
 function protectPrivateStagingError(error: unknown, stagingRoot: string): unknown {
   if (error instanceof Error && error.message.includes(stagingRoot)) {
-    return new ClogError("Could not write the private staged conversation pair.");
+    return new ClogError("Could not stage the conversation files for export.");
   }
   return error;
 }

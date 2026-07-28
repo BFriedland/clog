@@ -124,8 +124,8 @@ const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
-    .description("Audit local clog state for obvious corruption")
-    .option("--json", "Emit a machine-readable report")
+    .description("Check clog's database and files for problems")
+    .option("--json", "Output the report as JSON")
     .option("--verbose", "Show conversation metadata details in human-readable output")
     .action(async (options: { json?: boolean; verbose?: boolean }) => {
       const report = await runPlungeCommand({
@@ -398,8 +398,8 @@ async function inspectDatabase(
         check: 3,
         subsystem: "database",
         severity: "corruption",
-        message: `Row uses invalid source key "${row.source}" (${formatSourceKeyValidationReason(sourceValidation.reason)}).`,
-        recovery: "Investigate this row manually.",
+        message: `Conversation record uses invalid source key "${row.source}" (${formatSourceKeyValidationReason(sourceValidation.reason)}).`,
+        recovery: "Investigate this conversation manually.",
         sortKey: row.id,
       }));
     }
@@ -411,8 +411,8 @@ async function inspectDatabase(
         check: 4,
         subsystem: "database",
         severity: "corruption",
-        message: `Built-in source row has id ${JSON.stringify(row.id)} but source_id ${JSON.stringify(row.source_id)}.`,
-        recovery: "Investigate this row manually.",
+        message: `Built-in source conversation record has id ${JSON.stringify(row.id)} but source_id ${JSON.stringify(row.source_id)}.`,
+        recovery: "Investigate this conversation manually.",
         sortKey: row.id,
       }));
     }
@@ -424,7 +424,7 @@ async function inspectDatabase(
         subsystem: "database",
         severity: "corruption",
         message: tagsCheck.message,
-        recovery: "Investigate this row manually.",
+        recovery: "Investigate this conversation manually.",
         sortKey: row.id,
       }));
     }
@@ -446,7 +446,7 @@ async function inspectDatabase(
         subsystem: "checkpoints",
         severity: "corruption",
         message: `Row has invalid timestamp field${invalidTimestampParts.length === 1 ? "" : "s"}: ${invalidTimestampParts.join(", ")}.`,
-        recovery: "Investigate this row manually. Do not rewrite history.",
+        recovery: "Investigate this conversation manually. Do not rewrite history.",
         sortKey: row.id,
       }));
     } else if (
@@ -459,7 +459,7 @@ async function inspectDatabase(
         subsystem: "checkpoints",
         severity: "corruption",
         message: "saved_at is later than modified_at when parsed as instants.",
-        recovery: "Investigate this row manually. Do not rewrite history.",
+        recovery: "Investigate this conversation manually. Do not rewrite history.",
         sortKey: row.id,
       }));
     }
@@ -481,7 +481,7 @@ async function inspectDatabase(
         subsystem: "checkpoints",
         severity: "corruption",
         message: saveMetadataProblems.join("; "),
-        recovery: "Investigate this row manually.",
+        recovery: "Investigate this conversation manually.",
         sortKey: row.id,
       }));
     }
@@ -523,7 +523,7 @@ async function inspectDatabase(
         severity: "corruption",
         message: pathProblems.join("; "),
         recovery: projectionVersionSkew
-          ? "Upgrade clog before attempting to recreate this conversation's curated raw file."
+          ? "Upgrade clog before attempting to recreate this conversation's saved copy."
           : rawRecoveryForRow(row),
         paths: [expectedPath, ...(filePath ? [filePath] : [])],
         sortKey: row.id,
@@ -556,10 +556,10 @@ async function inspectDatabase(
         check: 8,
         subsystem: "raw",
         severity: "corruption",
-        message: `Curated raw file could not be parsed by the ${row.source} adapter: ${error instanceof Error ? error.message : "unknown parse error"}`,
+        message: `The saved copy could not be parsed by the ${row.source} adapter: ${error instanceof Error ? error.message : "unknown parse error"}`,
         recovery:
           await pathExists(String(row.source_path))
-            ? `Run "clog save ${row.id}" to recreate the curated raw file from source.`
+            ? `Run "clog save ${row.id}" to recreate the saved copy from source.`
             : "Inspect the raw file manually.",
         paths: [verifiedFilePath],
         sortKey: row.id,

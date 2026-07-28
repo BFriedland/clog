@@ -87,7 +87,7 @@ async function runRemoteAdd(
         default: false,
       });
       if (!proceed) {
-        process.stdout.write("Aborted.\n");
+        process.stdout.write("Operation cancelled.\n");
         return;
       }
     }
@@ -120,7 +120,7 @@ async function runRemoteAdd(
         default: false,
       });
       if (!proceed) {
-        process.stdout.write("Aborted.\n");
+        process.stdout.write("Operation cancelled.\n");
         return;
       }
     }
@@ -186,7 +186,7 @@ async function runRemoteRemove(options: { yes: boolean }): Promise<void> {
     );
     const proceed = await confirm({ message: "Continue?", default: false });
     if (!proceed) {
-      process.stdout.write("Aborted.\n");
+      process.stdout.write("Operation cancelled.\n");
       return;
     }
   }

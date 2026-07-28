@@ -129,7 +129,7 @@ function buildTalkPrompt(state: ClogState): string {
     "",
     "Ask the user whether they would like to:",
     state.unsummarizedSaved > 0
-      ? `  1. Summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries. Explain briefly that summaries are optional metadata that help future agents scan the library, filter by topic/outcome/tools, and choose which transcripts to read. If picked, read \`summarization_guide\` first, then list candidates with \`list_conversations({ origin: "local" })\` so imported read-only rows stay out of the batch, then call \`get_conversation\` and \`update_conversation\` per conversation.`
+      ? `  1. Summarize the ${state.unsummarizedSaved} conversation(s) without structured summaries. Explain briefly that summaries are optional metadata that help future agents scan the library, filter by topic/outcome/tools, and choose which transcripts to read. If picked, read \`summarization_guide\` first, then list candidates with \`list_conversations({ origin: "local" })\` so imported read-only conversations stay out of the batch, then call \`get_conversation\` and \`update_conversation\` per conversation.`
       : "",
     state.unsummarizedSaved > 0
       ? "  2. Explore their existing saved conversations. If picked, call `analysis_suggestions` for opinionated starting points, or follow the user's lead."

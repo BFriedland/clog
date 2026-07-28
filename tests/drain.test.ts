@@ -275,7 +275,7 @@ describe("clog drain archive transport", () => {
       "--tag",
       "pair-partial",
       "--format",
-      "pair",
+      "dir",
       "-o",
       output,
     ]);
@@ -328,7 +328,7 @@ describe("clog drain archive transport", () => {
     const blocked = await runBuiltCommandCapturingError(buildDrainCommand, [
       conversation.id,
       "--format",
-      "pair",
+      "dir",
       "-o",
       output,
     ]);
@@ -340,7 +340,7 @@ describe("clog drain archive transport", () => {
     const forced = await runBuiltCommandCapturingError(buildDrainCommand, [
       conversation.id,
       "--format",
-      "pair",
+      "dir",
       "-o",
       output,
       "--force",
@@ -492,7 +492,7 @@ describe("clog drain archive transport", () => {
     await seedSavedConversation(id);
     const createArchiveMock = vi.mocked(createDeterministicPairArchive);
     const resourceFailure = () => new ArchiveResourceError(
-      `Archive selected pair bytes observed ${MAX_SELECTED_PAIR_BYTES + 1}; limit is ${MAX_SELECTED_PAIR_BYTES}. Use unpacked pair-directory input or output instead.`,
+      `Archive selected pair bytes observed ${MAX_SELECTED_PAIR_BYTES + 1}; limit is ${MAX_SELECTED_PAIR_BYTES}. Use directory input or output instead.`,
     );
 
     const absentOutput = path.join(tempDir, "absent-resource-output.zip");
@@ -751,7 +751,7 @@ describe("clog drain archive transport", () => {
     const result = await runInteractiveCli([
       "drain",
       "--format",
-      "pair",
+      "dir",
       "-o",
       output,
     ], "n\n", {
@@ -866,13 +866,13 @@ describe("clog drain archive transport", () => {
     const missingPairOutput = await runBuiltCommandCapturingError(buildDrainCommand, [
       conversation.id,
       "--format",
-      "pair",
+      "dir",
     ]);
     expect(missingPairOutput.error).toMatchObject({ exitCode: 2 });
 
     const bareMissingPairOutput = await runBuiltCommandCapturingError(buildDrainCommand, [
       "--format",
-      "pair",
+      "dir",
     ]);
     expect(bareMissingPairOutput.error).toMatchObject({ exitCode: 2 });
     expect((bareMissingPairOutput.error as Error).message).toContain("requires -o");

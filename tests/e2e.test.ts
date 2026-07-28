@@ -123,7 +123,7 @@ describe("e2e", () => {
     const { stdout } = await run(["status"]);
 
     expect(stdout).toContain("Nothing to save.");
-    expect(stdout).not.toContain("Saved conversations to resave:");
+    expect(stdout).not.toContain("Saved conversations with new messages:");
     expect(stdout).not.toContain("Saved conversations whose source files changed:");
     expect(stdout).not.toContain("Unsaved conversations:");
   });
@@ -301,12 +301,12 @@ describe("e2e", () => {
         "One or more conversations by another author were found while importing with --own",
       );
       expect(failedOwnImport.stderr).toContain(
-        "Fix the pair errors, or run clog fill without --own to import them as read-only copies.",
+        "Fix the errors, or run clog fill without --own to import them as read-only copies.",
       );
     }
 
     const fill = await run(["import", exportArchive]);
-    expect(fill.stderr).toContain("Processed 1 conversation pair");
+    expect(fill.stderr).toContain("Imported 1 conversation");
     expect(fill.stderr).toContain("clog list --all");
 
     const hiddenList = await run(["list"]);
@@ -321,7 +321,7 @@ describe("e2e", () => {
     expect(show.stdout).toContain("Foreign fill round trip");
     expect(show.stdout).toContain("State:   saved");
 
-    await run(["drain", id.slice(0, 8), "--format", "pair", "-o", roundTripDir]);
+    await run(["drain", id.slice(0, 8), "--format", "dir", "-o", roundTripDir]);
     expect(JSON.parse(await fs.readFile(
       path.join(roundTripDir, "claude-code", `${id}.meta.json`),
       "utf8",
@@ -343,7 +343,7 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
-    await run(["drain", id.slice(0, 8), "--format", "pair", "-o", exportDir]);
+    await run(["drain", id.slice(0, 8), "--format", "dir", "-o", exportDir]);
 
     clogHome = path.join(tempDir, ".clog-import-own");
     await run(["config", "set", "author", "alice"]);
@@ -369,7 +369,7 @@ describe("e2e", () => {
     expect(diff.stdout).toContain("Follow-up after restore");
 
     const readyStatus = await run(["status"]);
-    expect(readyStatus.stdout).toContain("Saved conversations to resave:");
+    expect(readyStatus.stdout).toContain("Saved conversations with new messages:");
     expect(readyStatus.stdout).toContain("api-service");
 
     const saved = await run(["save"]);
@@ -769,12 +769,12 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.enabled", "false"]);
 
     const summary = await run(["status"]);
-    expect(summary.stdout).toContain('run "clog status --undiscoverable" for details');
+    expect(summary.stdout).toContain('run "clog status --missing-project" for details');
 
-    const detailed = await run(["status", "--undiscoverable"]);
-    expect(detailed.stdout).toContain("Undiscoverable conversations:");
+    const detailed = await run(["status", "--missing-project"]);
+    expect(detailed.stdout).toContain("Conversations without a project path:");
     expect(detailed.stdout).toContain("claude-code");
-    expect(detailed.stdout).not.toContain('run "clog status --undiscoverable" for details');
+    expect(detailed.stdout).not.toContain('run "clog status --missing-project" for details');
   });
 
   it("status reports Codex undiscoverable conversations in the summary and details", async () => {
@@ -804,15 +804,15 @@ describe("e2e", () => {
     await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
 
     const summary = await run(["status"]);
-    expect(summary.stdout).toContain("1 undiscoverable");
-    expect(summary.stdout).toContain('run "clog status --undiscoverable" for details');
+    expect(summary.stdout).toContain("1 without a project path");
+    expect(summary.stdout).toContain('run "clog status --missing-project" for details');
     expect(summary.stderr).not.toContain("project path missing");
 
-    const detailed = await run(["status", "--undiscoverable"]);
-    expect(detailed.stdout).toContain("1 undiscoverable");
-    expect(detailed.stdout).toContain("Undiscoverable conversations:");
+    const detailed = await run(["status", "--missing-project"]);
+    expect(detailed.stdout).toContain("1 without a project path");
+    expect(detailed.stdout).toContain("Conversations without a project path:");
     expect(detailed.stdout).toContain("codex-cli");
-    expect(detailed.stdout).not.toContain('run "clog status --undiscoverable" for details');
+    expect(detailed.stdout).not.toContain('run "clog status --missing-project" for details');
   });
 
   it("status collapses repeated Codex source_id_mismatch warnings into one stderr line", async () => {
@@ -900,7 +900,7 @@ describe("e2e", () => {
     expect(stderr).toContain(
       "warning: Skipped 2 conversation(s): project path missing: these conversation files have no cwd metadata.",
     );
-    expect(stderr).toContain('hint: Run "clog status --undiscoverable" for details.');
+    expect(stderr).toContain('hint: Run "clog status --missing-project" for details.');
     expect(stderr).not.toContain(`${firstId}.jsonl`);
     expect(stderr).not.toContain(`${secondId}.jsonl`);
   });

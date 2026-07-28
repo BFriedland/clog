@@ -57,7 +57,7 @@ export function buildRemoveCommand(): Command {
 
         const accepted = await confirm("Continue?");
         if (!accepted) {
-          process.stdout.write("Aborted.\n");
+          process.stdout.write("Operation cancelled.\n");
           return;
         }
       }

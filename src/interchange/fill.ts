@@ -165,7 +165,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
     const first = group[0]!;
     const warning: ClogWarning = {
       code: "pair_duplicate_identity",
-      message: `Skipping duplicate input identity ${first.meta.source}/${first.meta.id} - ${group.length} pairs claim the same conversation.`,
+      message: `Skipping duplicate input identity ${first.meta.source}/${first.meta.id} - ${group.length} files claim the same conversation.`,
       pair: {
         source: first.meta.source,
         id: first.meta.id,
@@ -198,7 +198,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
         actions.push({
           kind: "skip",
           reason: "author_mismatch",
-          message: `Skipping ${pair.meta.id.slice(0, 8)} - pair author "${pair.meta.author}" does not match configured author "${author}".`,
+          message: `Skipping ${pair.meta.id.slice(0, 8)} - its author "${pair.meta.author}" does not match configured author "${author}".`,
           failure: true,
           pair,
         });
@@ -250,7 +250,7 @@ export function planFill(args: PlanFillArgs): FillPlan {
         actions.push({
           kind: "skip",
           reason: "source_discovery_incomplete",
-          message: `Skipping ${pair.meta.id.slice(0, 8)} because ${pair.meta.source} discovery did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          message: `Skipping ${pair.meta.id.slice(0, 8)} because the ${pair.meta.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
           failure: true,
           pair,
         });

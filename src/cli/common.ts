@@ -40,7 +40,7 @@ const VERBOSE_WARNINGS_GUIDANCE = 'Run "clog status --verbose-warnings" for the 
 class SourceFileMissingError extends ClogError {
   constructor(conversationId: string) {
     super(
-      `Source file is missing for ${conversationId}. Run "clog status" to refresh discovery.`,
+      `Source file is missing for ${conversationId}. Run "clog status" to rescan your sources.`,
     );
     this.name = "SourceFileMissingError";
   }
@@ -121,7 +121,7 @@ export function resolveContentPath(conversation: ConversationMeta): string {
   }
 
   if (!conversation.filePath) {
-    throw new ClogError(`Conversation ${conversation.id} has no curated raw file.`);
+    throw new ClogError(`Conversation ${conversation.id} has no saved copy.`);
   }
 
   return conversation.filePath;
@@ -292,7 +292,7 @@ export function getScanWarningsForCommand(
     baseWarnings.push({
       code: "path_filter_without_project",
       message: `Skipped ${scanResult.counts.undiscoverable} conversation(s): project path missing: these conversation files have no cwd metadata.`,
-      guidance: 'Run "clog status --undiscoverable" for details.',
+      guidance: 'Run "clog status --missing-project" for details.',
     });
   }
 
@@ -835,7 +835,7 @@ export async function getSaveCandidate(
   }
 
   if (!conversation.filePath) {
-    throw new ClogError(`Conversation ${conversation.id} has no curated raw file.`);
+    throw new ClogError(`Conversation ${conversation.id} has no saved copy.`);
   }
 
   const rawExists = await pathExists(conversation.filePath);
@@ -851,7 +851,7 @@ export async function getSaveCandidate(
     }
 
     throw new ClogError(
-      `Curated raw file is missing for ${conversation.id}, and the source file is unavailable. Run "clog status" to refresh discovery.`,
+      `The saved copy is missing for ${conversation.id}, and the source file is unavailable. Run "clog status" to rescan your sources.`,
     );
   }
 
@@ -900,7 +900,7 @@ function wrapMissingContentError(
 
   if (conversation.filePath && attemptedPath === conversation.filePath) {
     return new ConversationContentUnavailableError(
-      `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
+      `The saved copy is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
     );
   }
 

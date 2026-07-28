@@ -175,7 +175,7 @@ export function conversationToPairMetadata(
 ): PairMetadata {
   if (conversation.savedAt == null) {
     throw new Error(
-      `Cannot serialize conversation ${conversation.id} to pair metadata: savedAt is null (not yet saved).`,
+      `Cannot serialize conversation ${conversation.id} metadata: savedAt is null (not yet saved).`,
     );
   }
 
@@ -307,7 +307,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_incomplete",
-        message: `Skipping conversation pair ${pairDisplayPath} - incomplete pair (${
+        message: `Skipping conversation ${pairDisplayPath} - incomplete (${
           !pair.metaExists ? "missing .meta.json" : "missing .jsonl"
         }).`,
         paths: [metaDisplayPath, jsonlDisplayPath],
@@ -329,7 +329,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_invalid_metadata",
-        message: `Skipping conversation pair ${pairDisplayPath} - ${reason}`,
+        message: `Skipping conversation ${pairDisplayPath} - ${reason}`,
         path: metaDisplayPath,
       },
     };
@@ -341,7 +341,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_invalid_metadata",
-        message: `Skipping conversation pair ${pairDisplayPath} - invalid .meta.json: ${parsed.reason}`,
+        message: `Skipping conversation ${pairDisplayPath} - invalid .meta.json: ${parsed.reason}`,
         path: metaDisplayPath,
       },
     };
@@ -356,8 +356,8 @@ export async function validatePair(
       warning: {
         code: "pair_id_mismatch",
         message: diagnostics
-          ? `Skipping conversation pair ${pairDisplayPath} - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`
-          : `Skipping conversation pair - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
+          ? `Skipping conversation ${pairDisplayPath} - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`
+          : `Skipping conversation - filename stem "${pair.stem}" does not match meta.id "${meta.id}".`,
         pair: pairWarning,
         path: metaDisplayPath,
       },
@@ -369,7 +369,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "unsupported_source",
-        message: `Skipping conversation pair ${pairDisplayPath} - source "${meta.source}" is not supported by this clog build.`,
+        message: `Skipping conversation ${pairDisplayPath} - source "${meta.source}" is not supported by this clog build.`,
         pair: { author: meta.author, source: meta.source, id: meta.id },
         path: metaDisplayPath,
         source: meta.source,
@@ -399,7 +399,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "adapter_version_skew",
-        message: `Skipping conversation pair ${pairDisplayPath} - relationship metadata was written by a newer clog version.`,
+        message: `Skipping conversation ${pairDisplayPath} - relationship metadata was written by a newer clog version.`,
         pair: pairWarning,
         path: metaDisplayPath,
         source: meta.source,
@@ -460,7 +460,7 @@ export async function validatePair(
       kind: "invalid",
       warning: {
         code: "pair_invalid_content",
-        message: `Skipping conversation pair ${pairDisplayPath} - ${reason}`,
+        message: `Skipping conversation ${pairDisplayPath} - ${reason}`,
         pair: pairWarning,
         path: jsonlDisplayPath,
       },
@@ -512,7 +512,7 @@ async function scanPairDir(
     }
     if (options.diagnostics) {
       throw options.diagnostics.translateFilesystemError(
-        "Failed to read pair directory",
+        "Failed to read conversation files directory",
         currentDir,
         error,
       );

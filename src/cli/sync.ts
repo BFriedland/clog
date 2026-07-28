@@ -244,7 +244,7 @@ async function ensureCheckoutExists(remoteUrl: string): Promise<void> {
     const actualUrl = await gitRemoteGetUrl(root);
     if (actualUrl && actualUrl !== remoteUrl) {
       throw new ClogError(
-        `The checkout at ${root} points to ${actualUrl}, which does not match the configured remote ${remoteUrl}. Aborting.`,
+        `The checkout at ${root} points to ${actualUrl}, which does not match the configured remote ${remoteUrl}.`,
       );
     }
     return;
@@ -304,7 +304,7 @@ function renderReconciliationMessages(
 ): void {
   if (stats.ignored > 0) {
     process.stderr.write(
-      `warning: Skipped ${stats.ignored} remote conversation pair(s) because of clogignore.\n`,
+      `warning: Skipped ${stats.ignored} remote conversation(s) because of clogignore.\n`,
     );
   }
 

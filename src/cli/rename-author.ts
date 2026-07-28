@@ -32,7 +32,7 @@ export async function runRenameAuthor(
   );
 
   if (!proceed) {
-    process.stdout.write("Aborted.\n");
+    process.stdout.write("Operation cancelled.\n");
     return;
   }
 

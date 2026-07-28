@@ -60,7 +60,7 @@ export function buildSaveCommand(): Command {
   return new Command("save")
     .description("Save conversations")
     .argument("[selectors...]", "Conversation IDs or project names to save")
-    .option("--all", "Save all unsaved conversations and saved pending changes")
+    .option("--all", "Save all unsaved conversations and update saved ones that have new messages")
     .action(async (selectors: string[], options: { all?: boolean }) => {
       if (options.all && selectors.length > 0) {
         throw new UsageError(
@@ -305,7 +305,7 @@ async function confirmRestoredOverwriteIfNeeded(
   }
 
   const accepted = await confirm(
-    `Conversation ${conversation.id.slice(0, 8)} was restored from pair files. Refreshing it will overwrite the managed raw copy with the live local source file. Continue?`,
+    `Conversation ${conversation.id.slice(0, 8)} was restored from an import. Refreshing it will overwrite the saved copy with the live local source file. Continue?`,
   );
   if (!accepted) {
     process.stdout.write(

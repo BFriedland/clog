@@ -117,7 +117,7 @@ export async function readConversationRaw(
     ) {
       if (conversation.state === "unsaved") {
         throw new ClogError(
-          `Source file is missing for ${conversation.id}. Run "clog status" to refresh discovery.`,
+          `Source file is missing for ${conversation.id}. Run "clog status" to rescan your sources.`,
         );
       }
 
@@ -129,12 +129,12 @@ export async function readConversationRaw(
 
       if (isNonLocalConversation(conversation)) {
         throw new ClogError(
-          `Imported content file is missing for ${conversation.id}. Remove the imported row and import it again from its source.`,
+          `Imported content file is missing for ${conversation.id}. Remove the imported conversation and import it again from its source.`,
         );
       }
 
       throw new ClogError(
-        `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
+        `The saved copy is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
       );
     }
 

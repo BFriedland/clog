@@ -42,7 +42,7 @@ async function runRefresh(): Promise<void> {
   renderWarnings(stats.warnings);
   if (stats.ignored > 0) {
     process.stderr.write(
-      `warning: Skipped ${stats.ignored} remote conversation pair(s) because of clogignore.\n`,
+      `warning: Skipped ${stats.ignored} remote conversation(s) because of clogignore.\n`,
     );
   }
   for (const notice of stats.notices) {

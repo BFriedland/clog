@@ -501,7 +501,7 @@ describe("mcp handlers", () => {
             description: "Filter by author metadata using case-insensitive substring matching.",
           },
           origin: {
-            description: "Use local for locally writable rows, remote for imported read-only rows.",
+            description: "Use local for locally writable conversations, remote for imported read-only conversations.",
           },
           limit: {
             default: 10,
@@ -1266,7 +1266,7 @@ describe("mcp handlers", () => {
     await fs.rm(path.join(tempDir, "raw", "claude-code", "abc12345-1234-1234-1234-123456789012.jsonl"));
 
     await expect(handleGet({ id: "abc12345", tail: 20 })).rejects.toThrow(
-      'Curated raw file is missing for abc12345-1234-1234-1234-123456789012. Run "clog save abc12345" to recreate it from source if the source file is still available.',
+      'The saved copy is missing for abc12345-1234-1234-1234-123456789012. Run "clog save abc12345" to recreate it from source if the source file is still available.',
     );
   });
 

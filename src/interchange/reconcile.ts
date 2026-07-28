@@ -306,7 +306,7 @@ export function planGitReconciliation(
         actions.push({
           kind: "skip",
           reason: "local_discovery_incomplete",
-          message: `Skipping remote conversation ${pair.id.slice(0, 8)} because ${pair.source} discovery did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
+          message: `Skipping remote conversation ${pair.id.slice(0, 8)} because the ${pair.source} scan did not complete, so clog could not determine whether a local unsaved source copy owns this identity.`,
           pair,
         });
         continue;
@@ -572,7 +572,7 @@ async function collectSourceDirectoryWarnings(
       if (!isValidSourceKey(source)) {
         warnings.push({
           code: "pair_layout_mismatch",
-          message: `Invalid source directory "${author}/${source}" in remote checkout - the directory name is not a valid source key, so any conversation pairs found there were skipped.`,
+          message: `Invalid source directory "${author}/${source}" in remote checkout - the directory name is not a valid source key, so any conversations found there were skipped.`,
           source,
         });
         continue;
@@ -581,7 +581,7 @@ async function collectSourceDirectoryWarnings(
       if (!isSourceParseSupported(source)) {
         warnings.push({
           code: "unsupported_source",
-          message: `Unsupported source directory "${author}/${source}" in remote checkout - any conversation pairs found there were skipped; matching rows are protected from deletion.`,
+          message: `Unsupported source directory "${author}/${source}" in remote checkout - any conversations found there were skipped; matching conversations are protected from deletion.`,
           source,
         });
       }

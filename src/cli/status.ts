@@ -32,14 +32,14 @@ interface StatusEntry {
 export function buildStatusCommand(): Command {
   return new Command("status")
     .description("Show unsaved conversations and saved conversations needing attention")
-    .option("--source", "show conversation rows with the source column after the short ID")
-    .option("-c, --conversations", "show one row per conversation")
-    .option("--undiscoverable", "list conversations skipped due to missing project path")
+    .option("--source", "show the source column after the short ID")
+    .option("-c, --conversations", "show one line per conversation")
+    .option("--missing-project", "list conversations skipped because their files have no project path")
     .option("--verbose-warnings", "show every scan warning individually instead of aggregating repeats")
     .action(async (options: {
       source?: boolean;
       conversations?: boolean;
-      undiscoverable?: boolean;
+      missingProject?: boolean;
       verboseWarnings?: boolean;
     }) => {
       const config = await loadConfig();
@@ -107,7 +107,7 @@ export function buildStatusCommand(): Command {
 
       if (readySaved.length > 0) {
         sections.push(() => {
-          process.stdout.write("Saved conversations to resave:\n");
+          process.stdout.write("Saved conversations with new messages:\n");
           process.stdout.write(
             `${dimText('  (use "clog save" to save these updates)')}\n`,
           );
@@ -167,7 +167,7 @@ export function buildStatusCommand(): Command {
         process.stdout.write("Nothing to save.\n");
         if (cleanSaved.length > 0) {
           process.stdout.write(
-            `${dimText('Saved conversations are up to date. Use "clog list" to browse the curated set.')}\n`,
+            `${dimText('Saved conversations are up to date. Use "clog list" to browse your saved conversations.')}\n`,
           );
         } else {
           process.stdout.write(
@@ -187,27 +187,27 @@ export function buildStatusCommand(): Command {
       if (counts.filtered || counts.ignored || counts.undiscoverable) {
         const parts = `${counts.filtered} filtered by config, ${counts.ignored} ignored by clogignore`;
         const undiscoverableCount = counts.undiscoverable
-          ? `, ${counts.undiscoverable} undiscoverable`
+          ? `, ${counts.undiscoverable} without a project path`
           : "";
-        const undiscoverableHint = counts.undiscoverable && !options.undiscoverable
-          ? `; run "clog status --undiscoverable" for details`
+        const undiscoverableHint = counts.undiscoverable && !options.missingProject
+          ? `; run "clog status --missing-project" for details`
           : "";
         process.stdout.write(
           `\n${dimText(`(${parts}${undiscoverableCount}${undiscoverableHint})`)}\n`,
         );
       }
 
-      if (options.undiscoverable) {
+      if (options.missingProject) {
         if (scanResult.undiscoverable.length > 0) {
-          process.stdout.write("\nUndiscoverable conversations:\n");
+          process.stdout.write("\nConversations without a project path:\n");
           process.stdout.write(
-            `${dimText("  (project path missing: these conversation files have no cwd metadata)")}\n`,
+            `${dimText("  (these conversation files have no cwd metadata, so clog skips them)")}\n`,
           );
           for (const entry of scanResult.undiscoverable) {
             process.stdout.write(`    ${entry.source}  ${entry.path}\n`);
           }
         } else {
-          process.stdout.write("\nNo undiscoverable conversations found.\n");
+          process.stdout.write("\nNo conversations are missing a project path.\n");
         }
       }
 
@@ -293,7 +293,10 @@ function renderStatusLikeRows(
 
   for (const entry of entries) {
     const { conversation } = entry;
-    const prefix = colorizeStatusLabel(`${entry.label}:`.padEnd(12), entry.tone);
+    const prefix = colorizeStatusLabel(
+      `${statusLabelDisplay(entry.label)}:`.padEnd(14),
+      entry.tone,
+    );
     const id = `${conversation.id.slice(0, 8)}`.padEnd(10);
     const source = options.includeSource ? `${conversation.source}`.padEnd(13) : "";
     const date = formatDate(conversation.createdAt).padEnd(12);
@@ -408,11 +411,17 @@ function formatProjectCounts(entries: StatusEntry[]): string {
 }
 
 function formatProjectCount(label: StatusLabel, count: number): string {
-  if (label === "source") {
+  if (label === "source" || label === "modified") {
     return `${count} conversation${count === 1 ? "" : "s"}`;
   }
 
   return `${count} ${label}`;
+}
+
+// Display words for the per-conversation status prefix. The internal label
+// values stay stable; only the printed text avoids internal jargon.
+function statusLabelDisplay(label: StatusLabel): string {
+  return label === "modified" ? "new messages" : label;
 }
 
 function formatLatestConversationDate(entries: StatusEntry[]): string {

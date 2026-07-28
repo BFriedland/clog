@@ -156,7 +156,7 @@ enough candidates for the user's requested scope.
   unless the user explicitly asks you to. Those have been hand-edited.
 - Imported conversations are read-only — clog rejects \`update_conversation\` on them.
   When listing candidates, always pass
-  \`origin: "local"\` to \`list_conversations\` so imported rows are filtered out
+  \`origin: "local"\` to \`list_conversations\` so imported conversations are filtered out
   up front rather than discovered when a write fails.
 
 ## After summarization

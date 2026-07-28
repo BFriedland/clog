@@ -255,7 +255,7 @@ describe("workflow", () => {
 
       const editStatus = await runBuiltCommand(buildStatusCommand, []);
       expect(editStatus.stdout).toContain("Nothing to save.");
-      expect(editStatus.stdout).not.toContain("Saved conversations to resave:");
+      expect(editStatus.stdout).not.toContain("Saved conversations with new messages:");
       const allSave = await runBuiltCommand(buildSaveCommand, ["--all"]);
       expect(allSave.stdout).toContain("No conversations need saving");
 
@@ -267,7 +267,7 @@ describe("workflow", () => {
 
       const tagStatus = await runBuiltCommand(buildStatusCommand, []);
       expect(tagStatus.stdout).toContain("Nothing to save.");
-      expect(tagStatus.stdout).not.toContain("Saved conversations to resave:");
+      expect(tagStatus.stdout).not.toContain("Saved conversations with new messages:");
       const projectSave = await runBuiltCommand(buildSaveCommand, ["webapp"]);
       expect(projectSave.stdout).toContain("No conversations need saving");
 
@@ -279,7 +279,7 @@ describe("workflow", () => {
 
       const untagStatus = await runBuiltCommand(buildStatusCommand, []);
       expect(untagStatus.stdout).toContain("Nothing to save.");
-      expect(untagStatus.stdout).not.toContain("Saved conversations to resave:");
+      expect(untagStatus.stdout).not.toContain("Saved conversations with new messages:");
       const bareSave = await runBuiltCommand(buildSaveCommand, []);
       expect(bareSave.stdout).toContain("No conversations need saving");
 
