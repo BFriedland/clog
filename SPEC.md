@@ -202,7 +202,7 @@ clog/
 │   │   ├── handlers.ts      # Tool handler implementations (extracted for testability)
 │   │   └── guides/          # Bundled agent guidance returned by MCP tools
 │   ├── db/                  # Database layer
-│   │   ├── schema.ts        # Table definitions + migrations
+│   │   ├── schema.ts        # Table definitions + schema versioning
 │   │   └── index.ts         # Query functions
 │   ├── conversations/       # Saved-plus-unsaved view composition and write guards
 │   │   └── view.ts          # Identity deduplication, view filtering, and ID resolution
@@ -534,50 +534,33 @@ CREATE TABLE conversation_relationships (
 
 #### 3.4.1 Schema Versioning and Migration
 
-The `schema_version` table tracks the current schema version as a single integer. On startup, the DB layer compares this against the expected version and runs migrations for any versions in between.
+The `schema_version` table stores one integer that identifies the conversation
+database schema. Following the pre-release migration squash, schema version 10
+is the first public clog baseline. It contains the saved-only `conversations`
+table, adapter-versioned relationship inspection and transcript-projection
+fields, and the `conversation_relationships` table defined above.
 
-Migrations are version-gated: each migration checks `currentVersion < N` and applies the necessary ALTER TABLE or other DDL statements. If a migration's change already exists (e.g., a column was added in a fresh install that includes it in the CREATE TABLE), the migration handles this gracefully (e.g., catching "column already exists" errors).
+A fresh database with no clog application tables is created directly at schema
+version 10. An unversioned database that already contains `conversations` or
+`conversation_relationships` is rejected rather than stamped as current. A
+database whose stored version differs from the version expected by the running
+clog build is also rejected without being rewritten. The incompatibility error
+instructs the database owner to archive the complete `CLOG_HOME` before
+resetting it because saved summaries, tags, author edits, and other curated
+metadata cannot be reconstructed from source scans alone.
 
-Fresh installs create all tables with the latest schema and set the version to the current value. Existing databases are migrated incrementally.
+The equality-only compatibility check is a one-time pre-publication baseline,
+not a policy that permits released clog versions to discard user databases.
+The first schema change after the initial release will add an ordinary forward
+migration from version 10. Later clog builds must migrate supported older
+databases forward so saved curation and managed conversation artifacts remain
+available.
 
-| Version | Changes |
-|---------|---------|
-| 1 | Initial schema (Phase 1) |
-| 2 | Add `indexed_at` for Phase 2 semantic search |
-| 3 | Add legacy `origin` for Phase 3 team sharing |
-| 4 | Rename save checkpoint fields and the saved state value from the legacy publish terminology |
-| 5 | Add `summary_kind` and `summary_extraction` for agent-assisted summarization |
-| 6 | Constrain the version-6 conversation state to `discovered` and `saved` |
-| 7 | Split legacy `origin` into `origin_kind` and `origin_ref` |
-| 8 | Rename the conversation lifecycle state from `discovered` to `unsaved` |
-| 9 | Drop cached unsaved rows, remove the persisted `state` column, and require valid save checkpoints on every row |
-| 10 | Add adapter-versioned relationship inspection, the immediate-parent relationship table, and saved transcript-projection versions |
-
-Phase 2 (§10) adds: `indexed_at` column (migration version 2)
-Phase 3 (§11.4) adds: `origin_kind` and `origin_ref` columns (migration version 7, after the legacy version-3 sync marker)
-The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
-The summarization migration (version 5) adds `summary_kind` with a default of `none` and a CHECK constraint over `none`, `imported`, `generated`, and `curated`; adds nullable `summary_extraction`; and back-fills `summary_kind = 'curated'` for existing rows whose `summary` is non-empty. This conservative back-fill prevents agent summarization from overwriting prose the user may already have edited.
-The provenance migration (version 7) rebuilds the conversations table for sql.js compatibility, replaces legacy `origin` with `origin_kind` and `origin_ref`, back-fills rows whose legacy `origin` value is null as `origin_kind = 'local', origin_ref = NULL`, and back-fills rows whose legacy `origin` value is non-null as `origin_kind = 'git', origin_ref = <legacy origin URL>`.
-The state terminology migration (version 8) rebuilds the conversations table for sql.js compatibility, changes the `state` column default and CHECK constraint to `unsaved`/`saved`, and rewrites legacy `state = 'discovered'` rows to `state = 'unsaved'`. Version 8 was the last schema that persisted lifecycle state.
-The saved-only storage migration (version 9) validates every legacy saved row's save checkpoints, then rebuilds the conversations table without the `state` column and copies only saved rows. Invalid saved checkpoints fail the migration without replacing the existing database. Legacy unsaved rows are disposable discovery cache entries and are dropped. Version 9 was the fresh-install baseline before conversation relationships were added.
-The conversation-relationship migration (version 10) adds relationship
-inspection status, version, and diagnostic fields; adds the
-`conversation_relationships` table; and adds
-`transcript_projection_version`. Existing rows begin unexamined and are brought
-to current adapter contracts by ordinary command startup plus an explicit
-content refresh. Fresh installs create version 10 directly.
-
-Before the pre-publication migration history is collapsed, every live database
-must reach schema version 10, every built-in-source row must have the installed
-adapter's current relationship-inspection and transcript-projection versions,
-and no row may remain unexamined. Current `unknown` rows are allowed only after
-their diagnostics are reviewed. Refresh preserves curation, managed raw bytes,
-save checkpoints until content is explicitly reparsed, and current
-`sourceMtime`; it never downgrades a newer adapter stamp. Rows refreshed under a
-new transcript projection clear stale semantic-search state. `clog index` then
-rebuilds conversation-record-owned vectors for default-indexed endpoints and
-conservatively retained branches; vectors from older projections remain
-unsearchable.
+Before the pre-publication migration history was removed, the release-readiness
+audit confirmed that every retained database had reached schema version 10.
+Every saved built-in-source row used the installed adapter's current relationship
+inspection and transcript projection, and each remaining database had an
+approved audit, archive, or reinitialization disposition.
 
 Database membership means that a branch has a conversation record in clog's
 durable saved collection. The database does not store lifecycle state or
@@ -4233,7 +4216,8 @@ The first line is always a readable summary for `git log --oneline`. The `+`/`~`
 
 #### DB schema changes
 
-- Add `origin_kind` and `origin_ref` to conversations table (see §11.4, migration version 7 per §3.4.1)
+- The version-10 public baseline includes `origin_kind` and `origin_ref` on
+  `conversations` for provenance; see §11.4 and §3.4.1.
 
 #### Config schema changes
 
@@ -4310,7 +4294,7 @@ tests/
 ├── chunker.test.ts          # Turn-based chunking logic (Phase 2)
 ├── cli.test.ts              # CLI command unit tests (error handling, output, edge cases)
 ├── config.test.ts           # Config schema, load/save, defaults, init
-├── db.test.ts               # Saved-row CRUD, schema migration/constraints, project filtering
+├── db.test.ts               # Saved-row CRUD, schema baseline/constraints, project filtering
 ├── mcp.test.ts              # MCP tool handler tests (list, get, update, browse, search)
 ├── models.test.ts           # Zod schema validation for conversation and message types
 ├── scan.test.ts             # Ephemeral scan views, completeness, filtering, and read-only guarantees
@@ -4383,7 +4367,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 - Schema creation succeeds and is idempotent
 - CRUD operations for conversation metadata
-- Saved-only schema creation and migration from persisted lifecycle rows
+- Saved-only schema creation and rejection of incompatible or unversioned databases
 - First-save insertion and saved checkpoint constraints
 - ID prefix resolution (min 4 chars, ambiguity detection)
 - Source-qualified ID resolution (`prefix@source`) and ambiguity errors with copy-pasteable candidates
@@ -4401,7 +4385,7 @@ The application code respects `CLOG_HOME` for the data directory. Source locatio
 
 **Summaries tests** (`summaries.test.ts`):
 
-- Schema v5 migration and round-trip persistence for `summaryKind` and `summaryExtraction`
+- Round-trip persistence for `summaryKind` and `summaryExtraction`
 - MCP `update_conversation` summary-kind rules, including generated defaults, curated overrides, clearing behavior, and extraction-only edits
 - `clog edit --summary` curation behavior
 - Unsummarized predicate used by `clog talk` and the post-save hint

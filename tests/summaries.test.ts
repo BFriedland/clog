@@ -4,11 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  getConversationById,
-  withDb,
-} from "../src/db/index.js";
-import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
+import { getConversationById } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   handleAnalysisSuggestions,
@@ -79,123 +75,6 @@ describe("agent-assisted summarization", () => {
       const loaded = await getConversationById(conversation.id);
       expect(loaded?.summaryKind).toBe("none");
       expect(loaded?.summaryExtraction).toBeNull();
-    });
-
-    it("upgrades a v4-shaped DB to v5 and back-fills summaryKind='curated' for non-empty summaries", async () => {
-      // Construct a v4-shaped database directly: no summary_kind or
-      // summary_extraction columns, with schema_version = 4. Then trigger
-      // ensureCurrentSchema through a normal withDb call and verify both the
-      // new columns and the back-fill behavior.
-      await withDb(
-        (db) => {
-          db.exec("DROP TABLE IF EXISTS conversations");
-          db.exec("DROP TABLE IF EXISTS schema_version");
-          db.exec("CREATE TABLE schema_version (version INTEGER NOT NULL)");
-          db.exec(`
-            CREATE TABLE conversations (
-              id TEXT PRIMARY KEY,
-              source_id TEXT NOT NULL,
-              source TEXT NOT NULL,
-              title TEXT NOT NULL,
-              summary TEXT DEFAULT '',
-              author TEXT NOT NULL,
-              project_name TEXT,
-              project_path TEXT,
-              tags_json TEXT DEFAULT '[]',
-              slug TEXT,
-              created_at TEXT NOT NULL,
-              discovered_at TEXT NOT NULL,
-              modified_at TEXT NOT NULL,
-              state TEXT NOT NULL DEFAULT 'discovered'
-                CHECK(state IN ('discovered','staged','saved')),
-              saved_at TEXT,
-              saved_message_count INTEGER,
-              save_version INTEGER DEFAULT 0,
-              source_path TEXT NOT NULL,
-              file_path TEXT,
-              source_mtime TEXT,
-              indexed_at TEXT,
-              origin TEXT DEFAULT NULL,
-              UNIQUE(source, source_id)
-            )
-          `);
-          db.run("INSERT INTO schema_version (version) VALUES (?)", [4]);
-          db.run(
-            `INSERT INTO conversations (id, source_id, source, title, summary, author,
-              created_at, discovered_at, modified_at, state, saved_at,
-              saved_message_count, save_version, source_path)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              "11111111-1234-1234-1234-123456789012",
-              "src1",
-              "claude-code",
-              "Has a summary",
-              "Existing summary text",
-              "alice",
-              "2026-01-01T00:00:00.000Z",
-              "2026-01-01T00:00:00.000Z",
-              "2026-01-01T00:00:00.000Z",
-              "saved",
-              "2026-01-01T00:00:00.000Z",
-              1,
-              1,
-              "/tmp/x",
-            ],
-          );
-          db.run(
-            `INSERT INTO conversations (id, source_id, source, title, summary, author,
-              created_at, discovered_at, modified_at, state, saved_at,
-              saved_message_count, save_version, source_path)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              "22222222-1234-1234-1234-123456789012",
-              "src2",
-              "claude-code",
-              "Blank summary",
-              "",
-              "alice",
-              "2026-01-01T00:00:00.000Z",
-              "2026-01-01T00:00:00.000Z",
-              "2026-01-01T00:00:00.000Z",
-              "saved",
-              "2026-01-01T00:00:00.000Z",
-              1,
-              1,
-              "/tmp/x",
-            ],
-          );
-        },
-        { mode: "write" },
-      );
-
-      // Sanity: the v4 DB has no summary_kind column yet.
-      const v4Columns = await withDb(
-        (db) => {
-          const result = db.exec("PRAGMA table_info(conversations)");
-          return new Set(
-            result[0]?.values.map((row) => String(row[1])) ?? [],
-          );
-        },
-        { mode: "diagnostic" },
-      );
-      expect(v4Columns.has("summary_kind")).toBe(false);
-      expect(v4Columns.has("summary_extraction")).toBe(false);
-
-      // Trigger the migration through ordinary read access.
-      await withDb(() => undefined, { mode: "read" });
-
-      const populated = await getConversationById(
-        "11111111-1234-1234-1234-123456789012",
-      );
-      const blank = await getConversationById(
-        "22222222-1234-1234-1234-123456789012",
-      );
-
-      expect(populated?.summaryKind).toBe("curated");
-      expect(populated?.summaryExtraction).toBeNull();
-      expect(blank?.summaryKind).toBe("none");
-      expect(blank?.summaryExtraction).toBeNull();
-      expect(CURRENT_SCHEMA_VERSION).toBe(10);
     });
   });
 
