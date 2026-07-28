@@ -328,6 +328,12 @@ The `search` and `remote` config blocks are managed by `clog search --init` and 
 | `CLOG_HOME` | Override the data directory (default: `~/.clog`) |
 | `CLOG_DEBUG` | Bypass CLI error wrapping and surface raw stack traces |
 
+## Windows support
+
+Running clog on Windows has not yet been tested. If you want to try to run clog
+on Windows, you should run clog and your coding agents inside WSL so their
+conversation files and the `CLOG_HOME` directory stay on the Linux filesystem.
+
 ## Documentation
 
 - [docs/DESIGN.md](docs/DESIGN.md) — why clog is shaped the way it is
