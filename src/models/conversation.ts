@@ -81,6 +81,83 @@ export const messageSchema = z.object({
 
 export type Message = z.infer<typeof messageSchema>;
 
+export const conversationBranchPointSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("source-turn"),
+    id: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("source-message"),
+    id: z.string().min(1),
+  }),
+]);
+
+export type ConversationBranchPoint = z.infer<
+  typeof conversationBranchPointSchema
+>;
+
+export const conversationRelationshipSchema = z.object({
+  kind: z.literal("branch"),
+  parent: z.object({
+    source: z.string().min(1),
+    sourceId: z.string().min(1),
+  }),
+  evidence: z.enum(["source", "inferred"]),
+  branchPoint: conversationBranchPointSchema.nullable(),
+});
+
+export type ConversationRelationship = z.infer<
+  typeof conversationRelationshipSchema
+>;
+
+export const relationshipInspectionStateSchema = z.object({
+  status: z.enum(["unexamined", "none_found", "linked", "unknown"]),
+  version: z.number().int().positive().nullable(),
+  diagnostic: z.string().min(1).nullable(),
+});
+
+export type RelationshipInspectionState = z.infer<
+  typeof relationshipInspectionStateSchema
+>;
+
+export const relationshipInspectionSchema = relationshipInspectionStateSchema
+  .extend({
+    relationships: z.array(conversationRelationshipSchema),
+  })
+  .superRefine((inspection, context) => {
+    validateRelationshipInspection(inspection, context);
+  });
+
+export type RelationshipInspection = z.infer<
+  typeof relationshipInspectionSchema
+>;
+
+export function preserveConfirmedRelationship(
+  current: Pick<
+    ConversationMeta,
+    "relationshipInspection" | "relationships"
+  >,
+  incoming: RelationshipInspection,
+): RelationshipInspection {
+  const currentHasConfirmedRelationship = current.relationships.some(
+    (relationship) => relationship.evidence === "source",
+  );
+  const incomingHasOnlyInferredRelationships =
+    incoming.relationships.length > 0 &&
+    incoming.relationships.every(
+      (relationship) => relationship.evidence === "inferred",
+    );
+  if (currentHasConfirmedRelationship && incomingHasOnlyInferredRelationships) {
+    return {
+      status: "linked",
+      version: incoming.version,
+      diagnostic: null,
+      relationships: current.relationships,
+    };
+  }
+  return incoming;
+}
+
 const conversationMetaBaseShape = {
   id: z.string(),
   sourceId: z.string(),
@@ -103,6 +180,12 @@ const conversationMetaBaseShape = {
   indexedAt: z.string().nullable(),
   originKind: originKindSchema,
   originRef: z.string().nullable(),
+  relationshipInspection: relationshipInspectionStateSchema.default({
+    status: "unexamined",
+    version: null,
+    diagnostic: null,
+  }),
+  relationships: z.array(conversationRelationshipSchema).default([]),
 };
 
 export const savedConversationMetaSchema = z.object({
@@ -111,6 +194,12 @@ export const savedConversationMetaSchema = z.object({
   savedAt: z.string(),
   savedMessageCount: z.number().int().nonnegative(),
   saveVersion: z.number().int().positive(),
+  transcriptProjectionVersion: z.number().int().positive().nullable().default(null),
+}).superRefine((conversation, context) => {
+  validateRelationshipInspection({
+    ...conversation.relationshipInspection,
+    relationships: conversation.relationships,
+  }, context);
 });
 
 export const unsavedConversationViewSchema = z.object({
@@ -119,9 +208,15 @@ export const unsavedConversationViewSchema = z.object({
   savedAt: z.null(),
   savedMessageCount: z.null(),
   saveVersion: z.literal(0),
+  transcriptProjectionVersion: z.null().default(null),
+}).superRefine((conversation, context) => {
+  validateRelationshipInspection({
+    ...conversation.relationshipInspection,
+    relationships: conversation.relationships,
+  }, context);
 });
 
-export const conversationMetaSchema = z.discriminatedUnion("state", [
+export const conversationMetaSchema = z.union([
   savedConversationMetaSchema,
   unsavedConversationViewSchema,
 ]);
@@ -163,4 +258,65 @@ export function serializeSummaryExtraction(
 ): string | null {
   if (extraction == null) return null;
   return JSON.stringify(extraction);
+}
+
+function validateRelationshipInspection(
+  inspection: {
+    status: "unexamined" | "none_found" | "linked" | "unknown";
+    version: number | null;
+    diagnostic: string | null;
+    relationships: ConversationRelationship[];
+  },
+  context: z.RefinementCtx,
+): void {
+  const relationshipCount = inspection.relationships.length;
+  const versionIsNull = inspection.version == null;
+  const diagnosticIsNull = inspection.diagnostic == null;
+
+  if (
+    inspection.status === "unexamined" &&
+    (!versionIsNull || !diagnosticIsNull || relationshipCount !== 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "unexamined relationship inspection requires a null version, null diagnostic, and no relationships",
+    });
+    return;
+  }
+
+  if (
+    inspection.status === "none_found" &&
+    (versionIsNull || !diagnosticIsNull || relationshipCount !== 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "none_found relationship inspection requires a positive version, null diagnostic, and no relationships",
+    });
+    return;
+  }
+
+  if (
+    inspection.status === "linked" &&
+    (versionIsNull || !diagnosticIsNull || relationshipCount !== 1)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "linked relationship inspection requires a positive version, null diagnostic, and exactly one relationship",
+    });
+    return;
+  }
+
+  if (
+    inspection.status === "unknown" &&
+    (versionIsNull || diagnosticIsNull || relationshipCount !== 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "unknown relationship inspection requires a positive version, diagnostic, and no relationships",
+    });
+  }
 }

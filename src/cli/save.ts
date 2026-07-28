@@ -3,7 +3,13 @@ import { Command } from "commander";
 
 import { loadConfig } from "../config/index.js";
 import {
+  classifyInstalledRelationshipInspectionVersion,
+  classifyInstalledTranscriptProjectionVersion,
+  getAdapter,
+} from "../adapters/registry.js";
+import {
   attachCurrentSourceCandidate,
+  attachCurrentRelationshipInspection,
   findScanCandidateForConversation,
   isSourceDiscoveryComplete,
   listConversationView,
@@ -13,15 +19,18 @@ import {
 import {
   insertFirstSavedConversation,
   listConversations,
-  listConversationsNeedingIndex,
   saveLocalConversation,
 } from "../db/index.js";
 import {
   isUnsummarized,
+  preserveConfirmedRelationship,
   type ConversationMeta,
   type SavedConversationMeta,
 } from "../models/conversation.js";
-import { maybeAutoIndexConversations } from "../search/coherence.js";
+import {
+  listIndexEligibleConversationsNeedingIndex,
+  maybeAutoIndexConversations,
+} from "../search/coherence.js";
 import { searchAvailable } from "../search/deps.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
@@ -35,7 +44,7 @@ import {
   getSaveCandidate,
   isLikelyRestoredLocalConversation,
   pathsIdentifySameManagedCopy,
-  parseConversationMessagesFromPath,
+  parseConversationTranscriptFromPath,
   renderWarnings,
 } from "./common.js";
 import {
@@ -95,9 +104,21 @@ export function buildSaveCommand(): Command {
         const liveCandidate = scanResult
           ? findScanCandidateForConversation(originalConversation, scanResult)
           : undefined;
-        const conversation = scanResult
-          ? attachCurrentSourceCandidate(originalConversation, scanResult)
+        const sourceCurrentConversation = scanResult
+          ? {
+              ...attachCurrentSourceCandidate(
+                originalConversation,
+                scanResult,
+              ),
+              ...(liveCandidate
+                ? { createdAt: liveCandidate.metadata.createdAt }
+                : {}),
+            }
           : originalConversation;
+        const conversation = attachCurrentRelationshipInspection(
+          sourceCurrentConversation,
+          liveCandidate,
+        );
 
         if (
           conversation.state === "saved" &&
@@ -107,13 +128,31 @@ export function buildSaveCommand(): Command {
           throwDirectSavedSourceUnavailable(conversation, scanResult!);
         }
 
+        if (
+          conversation.state === "saved" &&
+          (
+            classifyInstalledTranscriptProjectionVersion(
+              conversation.source,
+              conversation.transcriptProjectionVersion,
+            ) === "version_skew" ||
+            classifyInstalledRelationshipInspectionVersion(
+              conversation.source,
+              conversation.relationshipInspection.version,
+            ) === "version_skew"
+          )
+        ) {
+          throw new ClogError(
+            `Conversation ${conversation.id.slice(0, 8)} was saved by a newer clog version. Upgrade clog before refreshing it.`,
+          );
+        }
+
         if (conversation.state === "unsaved") {
           const rawPath = defaultSaveFilePath(conversation);
           const saved = await insertFirstSavedConversation(
             conversation,
             async (): Promise<SavedConversationMeta> => {
               await ensureRawCopy(conversation);
-              const messages = await parseConversationMessagesFromPath(
+              const transcript = await parseConversationTranscriptFromPath(
                 config,
                 conversation.source,
                 rawPath,
@@ -129,7 +168,9 @@ export function buildSaveCommand(): Command {
                 saveVersion: 1,
                 savedAt: timestamp,
                 modifiedAt: timestamp,
-                savedMessageCount: messages.length,
+                savedMessageCount: transcript.messages.length,
+                transcriptProjectionVersion:
+                  transcript.transcriptProjectionVersion,
                 indexedAt: null,
               };
             },
@@ -139,33 +180,46 @@ export function buildSaveCommand(): Command {
           const candidate = liveCandidate === undefined
             ? await getSaveCandidate(conversation)
             : await getSaveCandidate(conversation, liveCandidate);
+          const relationshipCurrentConversation =
+            await reinspectSavedRelationshipsIfNeeded(
+              conversation,
+              candidate.path,
+              config,
+            );
           const rawPath =
-            !conversation.filePath
-              ? defaultSaveFilePath(conversation)
-              : conversation.filePath;
+            !relationshipCurrentConversation.filePath
+              ? defaultSaveFilePath(relationshipCurrentConversation)
+              : relationshipCurrentConversation.filePath;
 
-          if (!(await confirmRestoredOverwriteIfNeeded(conversation, candidate))) {
+          if (
+            !(await confirmRestoredOverwriteIfNeeded(
+              relationshipCurrentConversation,
+              candidate,
+            ))
+          ) {
             continue;
           }
 
           if (candidate.shouldRefreshRawCopy) {
-            await ensureRawCopy(conversation);
+            await ensureRawCopy(relationshipCurrentConversation);
           }
 
           const parsePath = candidate.shouldRefreshRawCopy ? rawPath : candidate.path;
-          const messages = await parseConversationMessagesFromPath(
+          const transcript = await parseConversationTranscriptFromPath(
             config,
             conversation.source,
             parsePath,
           );
           const timestamp = nowIso();
           const savedConversation: SavedConversationMeta = {
-            ...conversation,
+            ...relationshipCurrentConversation,
             filePath: rawPath,
-            saveVersion: conversation.saveVersion + 1,
+            saveVersion: relationshipCurrentConversation.saveVersion + 1,
             savedAt: timestamp,
             modifiedAt: timestamp,
-            savedMessageCount: messages.length,
+            savedMessageCount: transcript.messages.length,
+            transcriptProjectionVersion:
+              transcript.transcriptProjectionVersion,
             indexedAt: null,
           };
 
@@ -191,6 +245,44 @@ export function buildSaveCommand(): Command {
       await maybePrintUnindexedHint(config);
       await maybePrintSummarizationHint();
     });
+}
+
+async function reinspectSavedRelationshipsIfNeeded(
+  conversation: SavedConversationMeta,
+  inspectionPath: string,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<SavedConversationMeta> {
+  const versionClassification =
+    classifyInstalledRelationshipInspectionVersion(
+      conversation.source,
+      conversation.relationshipInspection.version,
+    );
+  if (versionClassification === "current") {
+    return conversation;
+  }
+  if (versionClassification === "version_skew") {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} was saved by a newer clog version. Upgrade clog before refreshing it.`,
+    );
+  }
+
+  const inspection = await getAdapter(
+    conversation.source,
+    config,
+  ).inspectRelationships(inspectionPath);
+  const refreshedInspection = preserveConfirmedRelationship(
+    conversation,
+    inspection,
+  );
+  return {
+    ...conversation,
+    relationshipInspection: {
+      status: refreshedInspection.status,
+      version: refreshedInspection.version,
+      diagnostic: refreshedInspection.diagnostic,
+    },
+    relationships: refreshedInspection.relationships,
+  };
 }
 
 // A save that would replace filled/restored content with a live local source
@@ -244,11 +336,11 @@ async function printSaveIndexingOutcome(
   }
 
   process.stdout.write(
-    `Indexing ${savedConversations.length} conversation(s) for vector search. Safe to interrupt; run "clog index" to resume.\n`,
+    'Indexing saved content for vector search. Safe to interrupt; run "clog index" to resume.\n',
   );
 
   const showProgress = process.stdout.isTTY && savedConversations.length > 1;
-  const indexedFailures = await maybeAutoIndexConversations(
+  const indexing = await maybeAutoIndexConversations(
     savedConversations,
     showProgress
       ? (completed, total) => {
@@ -260,16 +352,21 @@ async function printSaveIndexingOutcome(
       : undefined,
   );
 
-  for (const failedId of indexedFailures) {
+  for (const failedId of indexing.failedIds) {
     process.stderr.write(
       `warning: saved ${failedId.slice(0, 8)} but failed to index it for search\n`,
     );
   }
 
-  const indexedCount = savedConversations.length - indexedFailures.length;
+  const indexedCount = indexing.indexedIds.length;
   process.stdout.write(
     `Indexed ${indexedCount}/${savedConversations.length} conversation(s) for vector search.\n`,
   );
+  if (indexing.skippedIds.length > 0) {
+    process.stdout.write(
+      `Skipped ${indexing.skippedIds.length} superseded conversation(s); current branches remain searchable.\n`,
+    );
+  }
 }
 
 async function resolveSaveSelectors(
@@ -361,7 +458,9 @@ async function maybePrintUnindexedHint(
     return;
   }
 
-  const count = (await listConversationsNeedingIndex()).length;
+  const count = (await listIndexEligibleConversationsNeedingIndex({
+    indexAllBranches: config.search.indexAllBranches,
+  })).length;
   if (count === 0) {
     return;
   }

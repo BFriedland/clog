@@ -263,6 +263,33 @@ describe("plunge", () => {
     expect(findCheck(report, 8)?.message).toContain("could not be parsed");
   });
 
+  it("skips parse-based checks for a transcript stamped by a newer adapter", async () => {
+    await seedConfig();
+    const id = "34343434-3434-3434-3434-343434343434";
+    const rawPath = getRawConversationPath("claude-code", id);
+    await fs.mkdir(path.dirname(rawPath), { recursive: true });
+    await fs.writeFile(rawPath, "{not json}\n", "utf8");
+    await insertConversation(
+      makeConversation({
+        id,
+        sourceId: id,
+        state: "saved",
+        filePath: rawPath,
+        transcriptProjectionVersion: 3,
+      }),
+    );
+
+    const report = await generatePlungeReport();
+
+    expect(findCheck(report, 8)).toBeUndefined();
+    expect(findCheck(report, 9)).toBeUndefined();
+    expect(findCheck(report, 18)).toMatchObject({
+      severity: "info",
+      conversation: { id, source: "claude-code" },
+      message: expect.stringContaining("parse-based raw and checkpoint checks were skipped"),
+    });
+  });
+
   it("reports save checkpoint drift as informational when parsed messages are below saved_message_count", async () => {
     await seedConfig();
     const id = "44444444-4444-4444-4444-444444444444";

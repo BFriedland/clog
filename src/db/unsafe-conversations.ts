@@ -2,7 +2,9 @@ import type { Database } from "sql.js";
 
 import {
   type ConversationMeta,
+  type RelationshipInspection,
   type SavedConversationMeta,
+  relationshipInspectionSchema,
   savedConversationMetaSchema,
   serializeSummaryExtraction,
 } from "../models/conversation.js";
@@ -30,7 +32,11 @@ const CONVERSATION_UPDATE_SET_SQL = `
   source_mtime = ?,
   indexed_at = ?,
   origin_kind = ?,
-  origin_ref = ?
+  origin_ref = ?,
+  relationship_status = ?,
+  relationship_inspection_version = ?,
+  relationship_diagnostic = ?,
+  transcript_projection_version = ?
 `;
 
 export function unsafeInsertConversationInDb(
@@ -64,11 +70,16 @@ export function unsafeInsertConversationInDb(
         source_mtime,
         indexed_at,
         origin_kind,
-        origin_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        origin_ref,
+        relationship_status,
+        relationship_inspection_version,
+        relationship_diagnostic,
+        transcript_projection_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     conversationToParams(saved),
   );
+  replaceConversationRelationshipsInDb(db, saved.id, saved.relationships);
 }
 
 export function unsafeUpdateConversationInDb(
@@ -84,6 +95,7 @@ export function unsafeUpdateConversationInDb(
     `,
     [...conversationUpdateParams(saved), saved.id],
   );
+  replaceConversationRelationshipsInDb(db, saved.id, saved.relationships);
 }
 
 export function unsafeUpdateLocalConversationInDb(
@@ -102,11 +114,44 @@ export function unsafeUpdateLocalConversationInDb(
     [...conversationUpdateParams(saved), saved.id],
   );
 
-  return db.getRowsModified();
+  const rowsModified = db.getRowsModified();
+  if (rowsModified === 1) {
+    replaceConversationRelationshipsInDb(db, saved.id, saved.relationships);
+  }
+  return rowsModified;
 }
 
 export function unsafeDeleteConversationInDb(db: Database, id: string): void {
   db.run("DELETE FROM conversations WHERE id = ?", [id]);
+}
+
+export function unsafeReplaceRelationshipInspectionInDb(
+  db: Database,
+  id: string,
+  inspection: RelationshipInspection,
+): number {
+  const validated = relationshipInspectionSchema.parse(inspection);
+  db.run(
+    `
+      UPDATE conversations
+      SET
+        relationship_status = ?,
+        relationship_inspection_version = ?,
+        relationship_diagnostic = ?
+      WHERE id = ?
+    `,
+    [
+      validated.status,
+      validated.version,
+      validated.diagnostic,
+      id,
+    ],
+  );
+  const rowsModified = db.getRowsModified();
+  if (rowsModified === 1) {
+    replaceConversationRelationshipsInDb(db, id, validated.relationships);
+  }
+  return rowsModified;
 }
 
 function conversationToParams(conversation: SavedConversationMeta): unknown[] {
@@ -135,6 +180,10 @@ function conversationToParams(conversation: SavedConversationMeta): unknown[] {
     conversation.indexedAt,
     conversation.originKind,
     conversation.originRef,
+    conversation.relationshipInspection.status,
+    conversation.relationshipInspection.version,
+    conversation.relationshipInspection.diagnostic,
+    conversation.transcriptProjectionVersion,
   ];
 }
 
@@ -163,7 +212,43 @@ function conversationUpdateParams(conversation: SavedConversationMeta): unknown[
     conversation.indexedAt,
     conversation.originKind,
     conversation.originRef,
+    conversation.relationshipInspection.status,
+    conversation.relationshipInspection.version,
+    conversation.relationshipInspection.diagnostic,
+    conversation.transcriptProjectionVersion,
   ];
+}
+
+function replaceConversationRelationshipsInDb(
+  db: Database,
+  childId: string,
+  relationships: SavedConversationMeta["relationships"],
+): void {
+  db.run("DELETE FROM conversation_relationships WHERE child_id = ?", [childId]);
+  for (const relationship of relationships) {
+    db.run(
+      `
+        INSERT INTO conversation_relationships (
+          child_id,
+          relationship_kind,
+          parent_source,
+          parent_source_id,
+          evidence_kind,
+          branch_point_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        childId,
+        relationship.kind,
+        relationship.parent.source,
+        relationship.parent.sourceId,
+        relationship.evidence,
+        relationship.branchPoint == null
+          ? null
+          : JSON.stringify(relationship.branchPoint),
+      ],
+    );
+  }
 }
 
 function normalizeSummaryKind(

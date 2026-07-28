@@ -3,10 +3,23 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { classifyAdapterVersion } from "../adapters/adapter.js";
 import { getAdapter, isSourceParseSupported } from "../adapters/registry.js";
 import type { Config } from "../config/schema.js";
-import type { ConversationMeta, Message, SummaryExtraction } from "../models/conversation.js";
-import { summaryExtractionSchema, summaryKindSchema } from "../models/conversation.js";
+import type {
+  ConversationMeta,
+  Message,
+  RelationshipInspection,
+  SummaryExtraction,
+} from "../models/conversation.js";
+import {
+  conversationRelationshipSchema,
+  preserveConfirmedRelationship,
+  relationshipInspectionSchema,
+  relationshipInspectionStateSchema,
+  summaryExtractionSchema,
+  summaryKindSchema,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { writeFileAtomic } from "../utils/atomic-write.js";
 import { validateSourceKey } from "../utils/source-keys.js";
@@ -56,6 +69,43 @@ const pairMetadataInputSchema = z.object({
   source: sourceKeySchema,
   createdAt: isoTimestamp,
   slug: z.string().nullable(),
+  relationshipInspection: relationshipInspectionStateSchema.optional(),
+  relationships: z.array(conversationRelationshipSchema).optional(),
+}).superRefine((meta, context) => {
+  const hasInspection = meta.relationshipInspection !== undefined;
+  const hasRelationships = meta.relationships !== undefined;
+  if (hasInspection !== hasRelationships) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: hasInspection ? ["relationships"] : ["relationshipInspection"],
+      message:
+        "relationshipInspection and relationships must either both be present or both be absent",
+    });
+    return;
+  }
+
+  if (!hasInspection || !hasRelationships) {
+    return;
+  }
+
+  const result = relationshipInspectionSchema.safeParse({
+    ...meta.relationshipInspection,
+    relationships: meta.relationships,
+  });
+  if (result.success) {
+    return;
+  }
+
+  for (const issue of result.error.issues) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path:
+        issue.path[0] === "relationships"
+          ? issue.path
+          : ["relationshipInspection", ...issue.path],
+      message: issue.message,
+    });
+  }
 });
 
 export const pairMetadataSchema = pairMetadataInputSchema.transform((meta) => ({
@@ -104,6 +154,8 @@ export interface ValidatedPair {
   jsonlPath: string;
   meta: PairMetadata;
   messageCount: number;
+  transcriptProjectionVersion: number;
+  relationshipInspection: RelationshipInspection & { version: number };
 }
 
 export type PairValidationResult =
@@ -127,6 +179,15 @@ export function conversationToPairMetadata(
     );
   }
 
+  const relationshipInspection = relationshipInspectionSchema.parse({
+    ...(conversation.relationshipInspection ?? {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+    }),
+    relationships: conversation.relationships ?? [],
+  });
+
   return {
     id: conversation.id,
     title: conversation.title,
@@ -141,6 +202,12 @@ export function conversationToPairMetadata(
     source: conversation.source as PairMetadata["source"],
     createdAt: conversation.createdAt,
     slug: conversation.slug,
+    relationshipInspection: {
+      status: relationshipInspection.status,
+      version: relationshipInspection.version,
+      diagnostic: relationshipInspection.diagnostic,
+    },
+    relationships: relationshipInspection.relationships,
   };
 }
 
@@ -310,10 +377,76 @@ export async function validatePair(
     };
   }
 
+  const adapter = getAdapter(meta.source, config);
+  const portableInspection =
+    meta.relationshipInspection != null && meta.relationships != null
+      ? relationshipInspectionSchema.parse({
+          ...meta.relationshipInspection,
+          relationships: meta.relationships,
+        })
+      : null;
+  const portableInspectionClassification =
+    portableInspection == null
+      ? null
+      : classifyAdapterVersion(
+          portableInspection.version,
+          adapter.relationshipInspectionVersion,
+        );
+  if (
+    portableInspectionClassification === "version_skew"
+  ) {
+    return {
+      kind: "invalid",
+      warning: {
+        code: "adapter_version_skew",
+        message: `Skipping conversation pair ${pairDisplayPath} - relationship metadata was written by a newer clog version.`,
+        pair: pairWarning,
+        path: metaDisplayPath,
+        source: meta.source,
+        guidance: "Upgrade clog before importing or synchronizing this conversation.",
+      },
+    };
+  }
+
   let messages: Message[];
+  let transcriptProjectionVersion: number;
+  let relationshipInspection: RelationshipInspection & { version: number };
   try {
-    const adapter = getAdapter(meta.source, config);
-    messages = await adapter.parseMessages(pair.jsonlPath);
+    messages = (await adapter.parseTranscript(pair.jsonlPath)).messages;
+    transcriptProjectionVersion = adapter.transcriptProjectionVersion;
+    let inspection: RelationshipInspection;
+    if (
+      portableInspection != null &&
+      portableInspectionClassification === "current"
+    ) {
+      inspection = portableInspection;
+    } else {
+      const inspected = await adapter.inspectRelationships(pair.jsonlPath);
+      inspection =
+        portableInspection != null &&
+        portableInspectionClassification === "refreshable"
+          ? preserveConfirmedRelationship(
+              {
+                relationshipInspection: {
+                  status: portableInspection.status,
+                  version: portableInspection.version,
+                  diagnostic: portableInspection.diagnostic,
+                },
+                relationships: portableInspection.relationships,
+              },
+              inspected,
+            )
+          : inspected;
+    }
+    if (inspection.version == null) {
+      throw new Error(
+        `${meta.source} returned an unexamined relationship inspection for an imported conversation.`,
+      );
+    }
+    relationshipInspection = {
+      ...inspection,
+      version: inspection.version,
+    };
   } catch (error) {
     // A filesystem read failure carries a stable code; keep the display path on
     // `path` rather than repeating it in the message. Content parse failures
@@ -345,6 +478,8 @@ export async function validatePair(
       jsonlPath: pair.jsonlPath,
       meta,
       messageCount: messages.length,
+      transcriptProjectionVersion,
+      relationshipInspection,
     },
   };
 }

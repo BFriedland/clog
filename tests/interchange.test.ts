@@ -55,6 +55,12 @@ describe("conversation pair interchange", () => {
     if (validation.kind === "valid") {
       expect(validation.pair.meta).toEqual(meta);
       expect(validation.pair.messageCount).toBe(2);
+      expect(validation.pair.relationshipInspection).toEqual({
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+        relationships: [],
+      });
     }
   });
 
@@ -222,6 +228,230 @@ describe("conversation pair interchange", () => {
     }
   });
 
+  it("requires the inspection and relationships fields to be present together", () => {
+    const id = "b1020202-2020-2020-2020-202020202020";
+    const inspectionOnly = parsePairMetadata(JSON.stringify({
+      ...makePairMetadata(id),
+      relationshipInspection: {
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+      },
+    }));
+    const relationshipsOnly = parsePairMetadata(JSON.stringify({
+      ...makePairMetadata(id),
+      relationships: [],
+    }));
+
+    expect(inspectionOnly.ok).toBe(false);
+    expect(relationshipsOnly.ok).toBe(false);
+  });
+
+  it("round-trips inferred evidence and a tagged branch point", () => {
+    const id = "b1025252-2525-2525-2525-252525252525";
+    const metadata: PairMetadata = {
+      ...makePairMetadata(id),
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: "parent-with-inferred-evidence",
+        },
+        evidence: "inferred",
+        branchPoint: {
+          kind: "source-message",
+          id: "message-boundary",
+        },
+      }],
+    };
+
+    const result = parsePairMetadata(serializePairMetadata(metadata));
+
+    expect(result).toEqual({ ok: true, meta: metadata });
+  });
+
+  it.each([
+    {
+      status: "unexamined",
+      version: null,
+      diagnostic: null,
+      relationships: [branchRelationship("parent-unexamined")],
+    },
+    {
+      status: "none_found",
+      version: 2,
+      diagnostic: null,
+      relationships: [branchRelationship("parent-none")],
+    },
+    {
+      status: "linked",
+      version: 2,
+      diagnostic: null,
+      relationships: [],
+    },
+    {
+      status: "linked",
+      version: 2,
+      diagnostic: null,
+      relationships: [
+        branchRelationship("parent-one"),
+        branchRelationship("parent-two"),
+      ],
+    },
+    {
+      status: "unknown",
+      version: 2,
+      diagnostic: "conflicting_parent_provenance",
+      relationships: [branchRelationship("parent-unknown")],
+    },
+  ])(
+    "rejects $status relationship metadata with an invalid relationship count",
+    ({ status, version, diagnostic, relationships }) => {
+      const id = "b1030303-3030-3030-3030-303030303030";
+      const result = parsePairMetadata(JSON.stringify({
+        ...makePairMetadata(id),
+        relationshipInspection: { status, version, diagnostic },
+        relationships,
+      }));
+
+      expect(result.ok).toBe(false);
+    },
+  );
+
+  it("imports current relationship metadata without reinterpreting the raw artifact", async () => {
+    const id = "b1040404-4040-4040-4040-404040404040";
+    const relationship = branchRelationship("parent-from-metadata");
+    await writePair({
+      jsonlPath: path.join(tempDir, `${id}.jsonl`),
+      metaPath: path.join(tempDir, `${id}.meta.json`),
+      jsonl: makeClaudeJsonl(1),
+      meta: {
+        ...makePairMetadata(id),
+        relationshipInspection: {
+          status: "linked",
+          version: 2,
+          diagnostic: null,
+        },
+        relationships: [relationship],
+      },
+    });
+
+    const [pair] = await scanPairs(tempDir);
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation.kind).toBe("valid");
+    if (validation.kind === "valid") {
+      expect(validation.pair.relationshipInspection).toEqual({
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+        relationships: [relationship],
+      });
+    }
+  });
+
+  it("reinspects older relationship metadata from the raw artifact", async () => {
+    const id = "b1050505-5050-5050-5050-505050505050";
+    await writePair({
+      jsonlPath: path.join(tempDir, `${id}.jsonl`),
+      metaPath: path.join(tempDir, `${id}.meta.json`),
+      jsonl: makeClaudeJsonl(1),
+      meta: {
+        ...makePairMetadata(id),
+        relationshipInspection: {
+          status: "linked",
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [branchRelationship("obsolete-parent")],
+      },
+    });
+
+    const [pair] = await scanPairs(tempDir);
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation.kind).toBe("valid");
+    if (validation.kind === "valid") {
+      expect(validation.pair.relationshipInspection).toEqual({
+        status: "none_found",
+        version: 2,
+        diagnostic: null,
+        relationships: [],
+      });
+    }
+  });
+
+  it("does not replace older source-confirmed metadata with an inferred reinspection", async () => {
+    const id = "b1055555-5555-4555-8555-555555555555";
+    const confirmedRelationship = branchRelationship(
+      "b1555555-5555-4555-8555-555555555555",
+    );
+    await writePair({
+      jsonlPath: path.join(tempDir, `${id}.jsonl`),
+      metaPath: path.join(tempDir, `${id}.meta.json`),
+      jsonl: makeInferredClaudeJsonl(
+        id,
+        "b2555555-5555-4555-8555-555555555555",
+      ),
+      meta: {
+        ...makePairMetadata(id),
+        relationshipInspection: {
+          status: "linked",
+          version: 1,
+          diagnostic: null,
+        },
+        relationships: [confirmedRelationship],
+      },
+    });
+
+    const [pair] = await scanPairs(tempDir);
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation.kind).toBe("valid");
+    if (validation.kind === "valid") {
+      expect(validation.pair.relationshipInspection).toEqual({
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+        relationships: [confirmedRelationship],
+      });
+    }
+  });
+
+  it("rejects relationship metadata written by a newer adapter contract", async () => {
+    const id = "b1060606-6060-6060-6060-606060606060";
+    await writePair({
+      jsonlPath: path.join(tempDir, `${id}.jsonl`),
+      metaPath: path.join(tempDir, `${id}.meta.json`),
+      jsonl: makeClaudeJsonl(1),
+      meta: {
+        ...makePairMetadata(id),
+        relationshipInspection: {
+          status: "none_found",
+          version: 3,
+          diagnostic: null,
+        },
+        relationships: [],
+      },
+    });
+
+    const [pair] = await scanPairs(tempDir);
+    const validation = await validatePair(pair!, getDefaultConfig("alice"));
+
+    expect(validation).toEqual({
+      kind: "invalid",
+      warning: expect.objectContaining({
+        code: "adapter_version_skew",
+        guidance: expect.stringContaining("Upgrade clog"),
+      }),
+    });
+  });
+
   it("accepts syntactically valid unknown source keys in pair metadata", () => {
     const id = "b1111111-1111-1111-1111-111111111111";
     const result = parsePairMetadata(
@@ -326,4 +556,50 @@ function makeClaudeLines(messageCount: number): unknown[] {
     });
   }
   return lines;
+}
+
+function makeInferredClaudeJsonl(
+  childSourceId: string,
+  inferredParentSourceId: string,
+): string {
+  return `${[
+    {
+      type: "user",
+      uuid: "10000000-0000-4000-8000-000000000001",
+      parentUuid: null,
+      timestamp: "2026-02-19T09:15:00.000Z",
+      sessionId: childSourceId,
+      session_id: inferredParentSourceId,
+      cwd: "/tmp/api-service",
+      message: {
+        role: "user",
+        content: "Copied parent prompt",
+      },
+    },
+    {
+      type: "user",
+      uuid: "10000000-0000-4000-8000-000000000002",
+      parentUuid: "10000000-0000-4000-8000-000000000001",
+      timestamp: "2026-02-19T09:16:00.000Z",
+      sessionId: childSourceId,
+      session_id: childSourceId,
+      cwd: "/tmp/api-service",
+      message: {
+        role: "user",
+        content: "Fork prompt",
+      },
+    },
+  ].map((line) => JSON.stringify(line)).join("\n")}\n`;
+}
+
+function branchRelationship(parentSourceId: string) {
+  return {
+    kind: "branch" as const,
+    parent: {
+      source: "claude-code",
+      sourceId: parentSourceId,
+    },
+    evidence: "source" as const,
+    branchPoint: null,
+  };
 }

@@ -2,9 +2,14 @@ import { z } from "zod";
 
 import { loadConfig } from "../config/index.js";
 import {
-  listConversationView,
+  buildFullConversationGraphStatusMap,
+  buildRelatedConversationView,
+  composeConversationView,
+  findRelatedConversationView,
+  isInDefaultLiteralSearchScope,
   resolveConversationView,
   type LocalScanSnapshot,
+  type RelatedConversationView,
 } from "../conversations/view.js";
 import {
   browseValues,
@@ -12,10 +17,15 @@ import {
   updateLocalConversation,
 } from "../db/index.js";
 import {
+  conversationRelationshipSchema,
+  conversationStateSchema,
+  messageSchema,
   type ConversationMeta,
+  summaryExtractionSchema,
   summaryExtractionInputSchema,
   type SummaryExtraction,
 } from "../models/conversation.js";
+import { conversationIdentityKey } from "../relationships/graph.js";
 import {
   ANALYSIS_SUGGESTIONS,
   ANALYSIS_SUGGESTIONS_VERSION,
@@ -28,6 +38,11 @@ import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { isConversationSearchable, maybeReindexUpdatedConversation } from "../search/coherence.js";
 import { searchConversations } from "../search/indexer.js";
+import {
+  collapseRelatedConversationSearchHits,
+  selectIndexEligibleConversations,
+  type RelatedConversationSearchHit,
+} from "../search/relationships.js";
 import { nowIso } from "../utils/time.js";
 import {
   filterConversationsByGrep,
@@ -46,6 +61,153 @@ const listSortBySchema = z.enum([
   "author",
 ]);
 const listSortDirectionSchema = z.enum(["asc", "desc"]);
+const conversationIdentitySchema = z.object({
+  source: z.string(),
+  sourceId: z.string(),
+});
+const relationshipCompletenessSchema = z.enum([
+  "complete",
+  "incomplete",
+  "invalid",
+]);
+const incompleteRelationshipSchema = z.enum(["incomplete", "invalid"]);
+const listBranchViewSchema = z.enum(["collapsed", "all_branches"]);
+const searchBranchViewSchema = z.enum([
+  "collapsed",
+  "all_branches",
+  "collapsed_with_branch_fallback",
+]);
+const mcpOriginKindSchema = z.enum(["local", "git", "file"]);
+const nullableSavedAtSchema = z.string().nullable();
+const listConversationOutputSchema = z.object({
+  id: z
+    .string()
+    .describe(
+      "The representative branch ID in a collapsed view, or the returned concrete branch ID in an all-branches view.",
+    ),
+  source: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  summaryKind: z.enum(["none", "imported", "generated", "curated"]),
+  extraction: summaryExtractionSchema.nullable(),
+  tags: z.array(z.string()),
+  author: z.string(),
+  project: z.string().nullable(),
+  originKind: mcpOriginKindSchema,
+  originRef: z.string().nullable(),
+  state: conversationStateSchema,
+  createdAt: z
+    .string()
+    .describe(
+      "The displayed branch's source creation time, not the known root branch's creation time.",
+    ),
+  modifiedAt: z.string(),
+  savedAt: nullableSavedAtSchema,
+  savedMessageCount: z.number().int().nonnegative().nullable(),
+  sourceMtime: z.string().nullable(),
+  endpointCount: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe(
+      "The number of endpoints in the composed, filtered conversation view represented by this row.",
+    ),
+  branchStatus: z
+    .enum(["endpoint", "superseded", "unproven"])
+    .optional()
+    .describe("Present in all-branches views to identify each concrete branch's status."),
+  relationshipCompleteness: incompleteRelationshipSchema
+    .optional()
+    .describe(
+      "Present only when branch history is incomplete or invalid. Call get_conversation for full relationship metadata.",
+    ),
+});
+
+export const listOutputSchema = z.object({
+  conversations: z.array(listConversationOutputSchema),
+  totalCount: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  sortBy: listSortBySchema,
+  sortDirection: listSortDirectionSchema,
+  returnedCount: z.number().int().nonnegative(),
+  hasMore: z.boolean(),
+  nextOffset: z.number().int().nonnegative().optional(),
+  paginationNote: z.string().optional(),
+  branchView: listBranchViewSchema.describe(
+    "Whether pagination counts collapsed conversation rows or expanded branch rows.",
+  ),
+  warnings: z.array(z.unknown()).optional(),
+  relationshipWarnings: z.array(z.unknown()).optional(),
+});
+
+const messageRangeSchema = z.object({
+  mode: z.enum(["tail", "head", "window"]),
+  startIndex: z.number().int().nonnegative(),
+  endIndex: z.number().int().nonnegative(),
+  returnedMessages: z.number().int().nonnegative(),
+  pageSize: z.number().int().positive(),
+  hasMoreBefore: z.boolean(),
+  hasMoreAfter: z.boolean(),
+  previousOffset: z.number().int().nonnegative().optional(),
+  nextOffset: z.number().int().nonnegative().optional(),
+});
+
+export const getOutputSchema = z.object({
+  id: z
+    .string()
+    .describe(
+      "The requested branch ID. get_conversation never substitutes a representative branch.",
+    ),
+  source: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  summaryKind: z.enum(["none", "imported", "generated", "curated"]),
+  extraction: summaryExtractionSchema.nullable(),
+  tags: z.array(z.string()),
+  author: z.string(),
+  project: z.string().nullable(),
+  originKind: mcpOriginKindSchema,
+  originRef: z.string().nullable(),
+  state: z.literal("saved"),
+  createdAt: z.string(),
+  immediateParentRelationship: conversationRelationshipSchema.nullable(),
+  knownRootIdentity: conversationIdentitySchema,
+  childBranchIds: z
+    .array(z.string())
+    .describe("Saved immediate-child branch IDs that this tool can open."),
+  branchIds: z
+    .array(z.string())
+    .describe(
+      "Every saved branch ID that this tool can open in the encompassing conversation, including the requested branch.",
+    ),
+  branchCount: z
+    .number()
+    .int()
+    .positive()
+    .describe("The number of openable saved branches in branchIds."),
+  endpointCount: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe("The number of endpoints in the same saved, openable branch view."),
+  relationshipCompleteness: relationshipCompletenessSchema,
+  hasMoreBranches: z
+    .boolean()
+    .describe(
+      "True when the relationship view knows about additional branches that this saved-only tool cannot open.",
+    ),
+  inheritedMessagesMayAppear: z.boolean().describe(
+    "True when the coherent transcript includes a copied history prefix. Message content and order remain authoritative from index 0.",
+  ),
+  relationshipWarnings: z.array(z.unknown()),
+  messages: z.array(messageSchema),
+  totalMessages: z.number().int().nonnegative(),
+  range: messageRangeSchema,
+  truncated: z.boolean(),
+  truncationNote: z.string().optional(),
+  warnings: z.array(z.unknown()).optional(),
+});
 
 export const listInputSchema = z
   .object({
@@ -75,6 +237,12 @@ export const listInputSchema = z
       .enum(["local", "remote"])
       .optional()
       .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    allBranches: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Return every branch and superseded generation instead of one representative branch per conversation. When grep is present, this also searches superseded generations.",
+      ),
     limit: z
       .number()
       .int()
@@ -103,7 +271,9 @@ export const listInputSchema = z
 
 export const getInputSchema = z
   .object({
-    id: z.string(),
+    id: z
+      .string()
+      .describe("ID resolving to the exact saved clog branch to retrieve."),
     head: z.number().int().positive().max(200).optional(),
     tail: z.number().int().positive().max(200).optional(),
     offset: z.number().int().nonnegative().optional(),
@@ -135,7 +305,11 @@ type ListSortDirection = z.infer<typeof listSortDirectionSchema>;
 
 export const updateInputSchema = z
   .object({
-    id: z.string(),
+    id: z
+      .string()
+      .describe(
+        "ID resolving to one exact saved, locally writable clog branch. The update changes only the conversation record for this branch.",
+      ),
     title: z.string().optional(),
     summary: z.string().optional(),
     extraction: summaryExtractionInputSchema.nullable().optional(),
@@ -167,9 +341,71 @@ export const searchInputSchema = z
       .enum(["local", "remote"])
       .optional()
       .describe("Use local for locally writable rows, remote for imported read-only rows."),
+    allBranches: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Return every matching branch and superseded generation instead of one result from each set of branches.",
+      ),
     limit: z.number().int().positive().max(50).default(10),
   })
   .strict();
+
+export const searchOutputSchema = z.object({
+  results: z.array(z.object({
+    id: z
+      .string()
+      .describe(
+        "The highest-scoring in-scope matching branch ID for a collapsed result, or the concrete matching branch ID in an all-branches result.",
+      ),
+    source: z.string(),
+    title: z.string(),
+    summary: z.string(),
+    summaryKind: z.enum(["none", "imported", "generated", "curated"]),
+    extraction: summaryExtractionSchema.nullable(),
+    tags: z.array(z.string()),
+    author: z.string(),
+    project: z.string().nullable(),
+    originKind: mcpOriginKindSchema,
+    originRef: z.string().nullable(),
+    createdAt: z.string(),
+    knownRootIdentity: conversationIdentitySchema,
+    endpointCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "The number of endpoints in the complete saved conversation graph whose branches satisfy the current adapter search contracts.",
+      ),
+    relationshipCompleteness: relationshipCompletenessSchema,
+    snippetBranchId: z
+      .string()
+      .describe("The concrete branch whose indexed content supplied the snippet."),
+    relevanceScore: z.number(),
+    snippet: z.string(),
+  })),
+  totalCount: z.number().int().nonnegative(),
+  branchView: searchBranchViewSchema.describe(
+    "collapsed when every result was safely collapsed by conversation, all_branches when requested, or collapsed_with_branch_fallback when invalid relationships forced branch-specific results.",
+  ),
+  indexCoverage: z.object({
+    searchableBranchCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "Filtered index-eligible branches that currently satisfy the searchability invariant.",
+      ),
+    eligibleBranchCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "Filtered saved branches that the current search.indexAllBranches setting intends to index.",
+      ),
+  }),
+  warning: z.string().optional(),
+});
 
 export async function handleList(input: unknown) {
   const parsed = listInputSchema.parse(input ?? {});
@@ -201,6 +437,16 @@ export async function handleGet(input: unknown) {
   }
 
   const messages = await parseConversationMessages(config, conversation);
+  const composition = await composeConversationView(
+    { states: ["saved"] },
+    scanSnapshot,
+  );
+  const related = findRelatedConversationView(
+    composition.graphUniverse,
+    conversation,
+    composition.conversations,
+    composition.relationshipOverrides,
+  );
   const selected = selectMessageRange(parsed, messages.length);
   const { range } = selected;
   const truncated = range.hasMoreBefore || range.hasMoreAfter;
@@ -219,6 +465,23 @@ export async function handleGet(input: unknown) {
     originRef: conversation.originRef,
     state: conversation.state,
     createdAt: conversation.createdAt,
+    immediateParentRelationship:
+      related?.immediateParentRelationship ?? null,
+    knownRootIdentity: related?.knownRootIdentity ?? {
+      source: conversation.source,
+      sourceId: conversation.sourceId,
+    },
+    childBranchIds: related?.childBranchIds ?? [],
+    branchIds: related?.branchIds ?? [conversation.id],
+    branchCount: related?.branchCount ?? 1,
+    endpointCount: related?.endpointCount ?? 1,
+    relationshipCompleteness:
+      related?.relationshipCompleteness ?? "complete",
+    hasMoreBranches:
+      related?.hasMoreBranches ?? false,
+    inheritedMessagesMayAppear:
+      related?.inheritedMessagesMayAppear ?? false,
+    relationshipWarnings: related?.relationshipWarnings ?? [],
     messages: messages.slice(range.startIndex, range.endIndex),
     totalMessages: messages.length,
     range,
@@ -435,7 +698,9 @@ export async function handleBrowse(input: unknown) {
 
 export async function handleSearch(input: unknown) {
   const parsed = searchInputSchema.parse(input);
+  const config = await loadConfig();
   const { embedding, vectorStore } = await requireSearchProviders();
+  const graphUniverse = await listConversations();
   let saved = await listConversations({
     origin: parsed.origin,
   });
@@ -448,19 +713,33 @@ export async function handleSearch(input: unknown) {
     );
   }
 
-  const searchableIds = new Set(
+  const searchableCandidateIds = new Set(
     saved
       .filter((conversation) => isConversationSearchable(conversation))
       .map((conversation) => conversation.id),
   );
+  const eligibleBranchIds = new Set(
+    selectIndexEligibleConversations(
+      graphUniverse,
+      { indexAllBranches: config.search?.indexAllBranches },
+    ).map((conversation) => conversation.id),
+  );
+  const filteredEligibleBranches = saved.filter((conversation) =>
+    eligibleBranchIds.has(conversation.id),
+  );
+  const eligibleBranchCount = filteredEligibleBranches.length;
+  const searchableBranchCount = filteredEligibleBranches.filter(
+    (conversation) => isConversationSearchable(conversation),
+  ).length;
 
-  if (searchableIds.size === 0) {
+  if (searchableCandidateIds.size === 0) {
     return {
       results: [],
       totalCount: 0,
+      branchView: parsed.allBranches ? "all_branches" as const : "collapsed" as const,
       indexCoverage: {
-        indexed: 0,
-        saved: saved.length,
+        searchableBranchCount,
+        eligibleBranchCount,
       },
     };
   }
@@ -469,7 +748,14 @@ export async function handleSearch(input: unknown) {
   let hits;
   try {
     hits = await searchConversations(parsed.query, parsed.limit, embedding, vectorStore, {
-      isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      isConversationSearchable: (conversationId) =>
+        searchableCandidateIds.has(conversationId),
+      composeResults: (candidateHits) =>
+        collapseRelatedConversationSearchHits(
+          graphUniverse,
+          candidateHits,
+          { allBranches: parsed.allBranches },
+        ),
       onScanCapReached: () => {
         warning = "Search hit the maximum scan window; completeness is not guaranteed.";
       },
@@ -491,7 +777,8 @@ export async function handleSearch(input: unknown) {
   const conversationsById = new Map(
     saved.map((conversation) => [conversation.id, conversation] as const),
   );
-  const results = hits
+  const relatedHits: RelatedConversationSearchHit[] = hits;
+  const results = relatedHits
     .map((hit) => {
       const conversation = conversationsById.get(hit.conversationId);
       if (!conversation || !isConversationSearchable(conversation)) {
@@ -511,18 +798,38 @@ export async function handleSearch(input: unknown) {
         originKind: conversation.originKind,
         originRef: conversation.originRef,
         createdAt: conversation.createdAt,
+        knownRootIdentity: hit.knownRootIdentity,
+        endpointCount: hit.endpointCount,
+        relationshipCompleteness: hit.relationshipCompleteness,
+        snippetBranchId: hit.snippetBranchId,
         relevanceScore: hit.score,
         snippet: hit.text.replace(/\s+/g, " ").trim().slice(0, 200),
       };
     })
     .filter((result): result is NonNullable<typeof result> => Boolean(result));
+  const usedBranchFallback =
+    !parsed.allBranches &&
+    relatedHits.some(
+      (hit) => hit.relationshipCompleteness === "invalid",
+    );
+  if (usedBranchFallback) {
+    warning = [
+      warning,
+      "Invalid conversation relationships were returned as branch-specific results.",
+    ].filter(Boolean).join(" ");
+  }
 
   return {
     results,
     totalCount: results.length,
+    branchView: parsed.allBranches
+      ? "all_branches" as const
+      : usedBranchFallback
+        ? "collapsed_with_branch_fallback" as const
+        : "collapsed" as const,
     indexCoverage: {
-      indexed: searchableIds.size,
-      saved: saved.length,
+      searchableBranchCount,
+      eligibleBranchCount,
     },
     warning,
   };
@@ -535,11 +842,22 @@ async function listConversationsForStates(
   warnings: ReturnType<typeof getScanWarningsForCommand>,
   scanSnapshot?: LocalScanSnapshot,
 ) {
-  let conversations: ConversationMeta[] = await listConversationView({
-    states,
-    origin: input.origin,
-  }, scanSnapshot);
-  conversations = filterConversationsByMcpMetadata(conversations, input);
+  const composition = await composeConversationView({ states }, scanSnapshot);
+  const fullGraphStatuses = buildFullConversationGraphStatusMap(
+    composition.graphUniverse,
+    composition.relationshipOverrides,
+  );
+  let conversations = filterConversationsByMcpMetadata(
+    composition.conversations,
+    input,
+  );
+  if (input.origin) {
+    conversations = conversations.filter((conversation) =>
+      input.origin === "local"
+        ? conversation.originKind === "local"
+        : conversation.originKind !== "local",
+    );
+  }
 
   if (input.tags && input.tags.length > 0) {
     const tags = new Set(normalizeTags(input.tags));
@@ -549,37 +867,77 @@ async function listConversationsForStates(
   }
 
   if (input.grep) {
-    conversations = await filterConversationsByGrep(config!, input.grep, conversations);
+    if (!input.allBranches) {
+      conversations = conversations.filter((conversation) =>
+        isInDefaultLiteralSearchScope(conversation, fullGraphStatuses),
+      );
+    }
+    conversations = await filterConversationsByGrep(
+      config!,
+      input.grep,
+      conversations,
+    );
   }
 
-  conversations = sortConversationsForMcpList(
+  const relatedConversations = buildRelatedConversationView(
+    composition.graphUniverse,
     conversations,
+    {
+      allBranches: input.allBranches,
+      relationshipOverrides: composition.relationshipOverrides,
+    },
+  );
+  const sorted = sortRelatedConversationsForMcpList(
+    relatedConversations,
     input.sortBy,
     input.sortDirection,
   );
+  const relationshipWarnings = uniqueRelationshipWarnings(
+    relatedConversations.flatMap((conversation) =>
+      conversation.relationshipWarnings,
+    ),
+  );
 
-  const totalCount = conversations.length;
-  const page = conversations
+  const totalCount = sorted.length;
+  const page = sorted
     .slice(input.offset, input.offset + input.limit)
-    .map((conversation) => ({
-      id: conversation.id,
-      source: conversation.source,
-      title: conversation.title,
-      summary: conversation.summary,
-      summaryKind: conversation.summaryKind,
-      extraction: conversation.summaryExtraction,
-      tags: conversation.tags,
-      author: conversation.author,
-      project: conversation.projectName,
-      originKind: conversation.originKind,
-      originRef: conversation.originRef,
-      state: conversation.state,
-      createdAt: conversation.createdAt,
-      modifiedAt: conversation.modifiedAt,
-      savedAt: conversation.savedAt,
-      savedMessageCount: conversation.savedMessageCount,
-      sourceMtime: conversation.sourceMtime,
-    }));
+    .map((related) => {
+      const conversation = related.conversation;
+      const fullGraphStatus = fullGraphStatuses.get(
+        conversationIdentityKey(conversation),
+      );
+      return {
+        id: conversation.id,
+        source: conversation.source,
+        title: conversation.title,
+        summary: conversation.summary,
+        summaryKind: conversation.summaryKind,
+        extraction: conversation.summaryExtraction,
+        tags: conversation.tags,
+        author: conversation.author,
+        project: conversation.projectName,
+        originKind: conversation.originKind,
+        originRef: conversation.originRef,
+        state: conversation.state,
+        createdAt: conversation.createdAt,
+        modifiedAt: conversation.modifiedAt,
+        savedAt: conversation.savedAt,
+        savedMessageCount: conversation.savedMessageCount,
+        sourceMtime: conversation.sourceMtime,
+        endpointCount: related.endpointCount,
+        ...(input.allBranches
+          ? {
+              branchStatus:
+                fullGraphStatus?.branchStatus ?? related.branchStatus,
+            }
+          : {}),
+        ...(related.relationshipCompleteness === "complete"
+          ? {}
+          : {
+              relationshipCompleteness: related.relationshipCompleteness,
+            }),
+      };
+    });
   const returnedCount = page.length;
   const nextOffset = input.offset + input.limit;
   const hasMore = nextOffset < totalCount;
@@ -593,24 +951,48 @@ async function listConversationsForStates(
     sortDirection: input.sortDirection,
     returnedCount,
     hasMore,
+    branchView: input.allBranches ? "all_branches" as const : "collapsed" as const,
     nextOffset: hasMore ? nextOffset : undefined,
     paginationNote: hasMore
       ? `More conversations are available. Request offset ${nextOffset} with limit ${input.limit} for the next page.`
       : undefined,
   };
 
-  return warnings.length > 0 ? { ...result, warnings } : result;
+  return {
+    ...result,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(relationshipWarnings.length > 0
+      ? { relationshipWarnings }
+      : {}),
+  };
 }
 
-function sortConversationsForMcpList(
-  conversations: ConversationMeta[],
+function sortRelatedConversationsForMcpList(
+  conversations: RelatedConversationView<ConversationMeta>[],
   sortBy: ListSortBy,
   sortDirection: ListSortDirection,
-): ConversationMeta[] {
+): RelatedConversationView<ConversationMeta>[] {
   return [...conversations].sort((left, right) => {
-    const compared = compareConversationListField(left, right, sortBy, sortDirection);
-    return compared === 0 ? left.id.localeCompare(right.id) : compared;
+    const compared = compareConversationListField(
+      left.conversation,
+      right.conversation,
+      sortBy,
+      sortDirection,
+    );
+    return compared === 0
+      ? left.conversation.id.localeCompare(right.conversation.id)
+      : compared;
   });
+}
+
+function uniqueRelationshipWarnings(
+  warnings: RelatedConversationView["relationshipWarnings"],
+): RelatedConversationView["relationshipWarnings"] {
+  const unique = new Map<string, RelatedConversationView["relationshipWarnings"][number]>();
+  for (const warning of warnings) {
+    unique.set(JSON.stringify(warning), warning);
+  }
+  return [...unique.values()];
 }
 
 function compareConversationListField(

@@ -2,7 +2,13 @@ import { closeSync } from "node:fs";
 import { isatty } from "node:tty";
 
 import { ClogError } from "../utils/errors.js";
+import { loadConfig } from "../config/index.js";
 import { ensureClogHome } from "../config/init.js";
+import {
+  listSavedRelationshipInspectionWarnings,
+  refreshSavedRelationshipInspections,
+} from "../relationships/refresh.js";
+import { collapseAggregatableWarnings, renderWarnings } from "./common.js";
 
 const PRE_ACTION_EXCLUDED_COMMANDS = new Set(["init", "plunge"]);
 let exitingForBrokenPipe = false;
@@ -13,8 +19,35 @@ export function shouldSkipPreAction(commandName: string, parentCommandName?: str
   );
 }
 
-export async function preAction({ interactive }: { interactive: boolean }): Promise<void> {
+export async function preAction({
+  interactive,
+  refreshRelationshipInspections = true,
+  showRelationshipWarnings = false,
+  verboseWarnings = false,
+}: {
+  interactive: boolean;
+  refreshRelationshipInspections?: boolean;
+  showRelationshipWarnings?: boolean;
+  verboseWarnings?: boolean;
+}): Promise<void> {
   await ensureClogHome({ interactive });
+  if (!refreshRelationshipInspections) {
+    return;
+  }
+  const config = await loadConfig();
+  const refreshWarnings =
+    await refreshSavedRelationshipInspections(config);
+  if (!showRelationshipWarnings) {
+    return;
+  }
+  const persistedWarnings =
+    await listSavedRelationshipInspectionWarnings(config);
+  const warnings = [...refreshWarnings, ...persistedWarnings];
+  renderWarnings(
+    verboseWarnings
+      ? warnings
+      : collapseAggregatableWarnings(warnings),
+  );
 }
 
 export function installBrokenPipeHandler(): void {

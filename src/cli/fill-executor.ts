@@ -26,11 +26,7 @@ export async function applyFillWriteAction(
 
   validateFillWriteTargetInDb(db, writeKind, action.conversation);
   await ensureManagedContent(action, input);
-  const sourceMtime = (await fs.stat(action.managedPath)).mtime.toISOString();
-  const conversation = {
-    ...action.conversation,
-    sourceMtime,
-  };
+  const conversation = action.conversation;
 
   if (conversation.originKind === "file") {
     applyFileImportWriteInDb(db, writeKind, conversation);

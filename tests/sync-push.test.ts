@@ -97,6 +97,7 @@ describe("exportAuthorToCheckout", () => {
       id: "a1111111-1111-1111-1111-111111111111",
       title: "Fix auth",
       author: "alice",
+      parentId: "a1010101-1010-1010-1010-101010101010",
     });
 
     const stats = await exportAuthorToCheckout("alice", new Set());
@@ -117,6 +118,22 @@ describe("exportAuthorToCheckout", () => {
     const meta = JSON.parse(await fs.readFile(metaPath, "utf8"));
     expect(meta.title).toBe("Fix auth");
     expect(meta).not.toHaveProperty("projectPath");
+    expect(meta).toMatchObject({
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: "a1010101-1010-1010-1010-101010101010",
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
 
     await expect(fs.stat(jsonlPath)).resolves.toBeTruthy();
   });
@@ -144,6 +161,44 @@ describe("exportAuthorToCheckout", () => {
         (name) => name === `${id}.jsonl` || name === `${id}.meta.json`,
       ),
     ).toEqual([`${id}.jsonl`, `${id}.meta.json`]);
+  });
+
+  it("preserves abandoned Claude Code paths when exporting managed JSONL to sync", async () => {
+    const id = "a1252525-2525-4525-8525-252525252525";
+    const fixtureDocument = JSON.parse(
+      await fs.readFile(
+        new URL("./fixtures/claude-code-transcript-projection.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      fixtures: Array<{
+        name: string;
+        sourceRecords: unknown[];
+        expected: { messages: unknown[] };
+      }>;
+    };
+    const rewind = fixtureDocument.fixtures.find(
+      (fixture) => fixture.name === "single-rewind",
+    );
+    if (!rewind) {
+      throw new Error("Missing single-rewind fixture.");
+    }
+    const conversation = await insertLocalSaved({
+      id,
+      title: "Rewind sync export",
+      author: "alice",
+      sourceRecords: rewind.sourceRecords,
+      savedMessageCount: rewind.expected.messages.length,
+    });
+
+    await exportAuthorToCheckout("alice", new Set());
+
+    const localBytes = await fs.readFile(conversation.filePath!);
+    const remoteBytes = await fs.readFile(
+      path.join(getRemoteSourceDir("alice", "claude-code"), `${id}.jsonl`),
+    );
+    expect(remoteBytes).toEqual(localBytes);
+    expect(remoteBytes.toString("utf8")).toContain("It has been updated.");
   });
 
   it("leaves only JSONL when metadata writing fails during export", async () => {
@@ -588,17 +643,23 @@ async function insertLocalSaved(options: {
   id: string;
   title: string;
   author: string;
+  parentId?: string;
+  sourceRecords?: unknown[];
+  savedMessageCount?: number;
 }): Promise<ConversationMeta> {
   const rawPath = getRawConversationPath("claude-code", options.id);
   await fs.mkdir(getRawSourceDir("claude-code"), { recursive: true });
-  await writeJsonl(rawPath, [
-    {
-      type: "user",
-      timestamp: "2026-02-01T10:00:00.000Z",
-      cwd: "/tmp/repo",
-      message: { role: "user", content: "Hello" },
-    },
-  ]);
+  await writeJsonl(
+    rawPath,
+    options.sourceRecords ?? [
+      {
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/tmp/repo",
+        message: { role: "user", content: "Hello" },
+      },
+    ],
+  );
 
   const timestamp = "2026-02-01T10:00:00.000Z";
   const conversation: ConversationMeta = {
@@ -617,7 +678,7 @@ async function insertLocalSaved(options: {
     modifiedAt: timestamp,
     state: "saved",
     savedAt: timestamp,
-    savedMessageCount: 1,
+    savedMessageCount: options.savedMessageCount ?? 1,
     saveVersion: 1,
     sourcePath: rawPath,
     filePath: rawPath,
@@ -625,6 +686,24 @@ async function insertLocalSaved(options: {
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    ...(options.parentId == null
+      ? {}
+      : {
+          relationshipInspection: {
+            status: "linked" as const,
+            version: 2,
+            diagnostic: null,
+          },
+          relationships: [{
+            kind: "branch" as const,
+            parent: {
+              source: "claude-code",
+              sourceId: options.parentId,
+            },
+            evidence: "source" as const,
+            branchPoint: null,
+          }],
+        }),
   };
 
   await insertConversation(conversation);

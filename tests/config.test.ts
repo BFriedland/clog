@@ -71,4 +71,20 @@ describe("config", () => {
     const loaded = await loadConfig();
     expect(loaded.remote).toEqual(config.remote);
   });
+
+  it("preserves the opt-in setting that indexes superseded branches", async () => {
+    const config = getDefaultConfig("alice");
+    config.search = {
+      embedding: {
+        type: "transformers",
+        model: "Xenova/all-MiniLM-L6-v2",
+      },
+      vectorStore: { type: "vectra" },
+      indexAllBranches: true,
+    };
+    await saveConfig(config);
+
+    const loaded = await loadConfig();
+    expect(loaded.search?.indexAllBranches).toBe(true);
+  });
 });

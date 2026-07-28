@@ -51,7 +51,9 @@ export async function indexConversation(
   return chunks.length;
 }
 
-export async function searchConversations(
+export async function searchConversations<
+  T extends IndexedConversationHit = IndexedConversationHit,
+>(
   query: string,
   limit: number,
   embedding: EmbeddingProvider,
@@ -60,9 +62,12 @@ export async function searchConversations(
     filter?: Record<string, string>;
     minScore?: number;
     isConversationSearchable?: (conversationId: string) => boolean | Promise<boolean>;
+    composeResults?: (
+      hits: IndexedConversationHit[],
+    ) => T[] | Promise<T[]>;
     onScanCapReached?: () => void;
   } = {},
-): Promise<IndexedConversationHit[]> {
+): Promise<T[]> {
   const [queryEmbedding] = await embedding.embed([query]);
   const minScore = options.minScore ?? MIN_SEARCH_SCORE;
   const searchableCache = new Map<string, boolean>();
@@ -72,18 +77,21 @@ export async function searchConversations(
     const requestCount = Math.min(fetchCount, MAX_SEARCH_SCAN_WINDOW);
     const hits = await vectorStore.search(queryEmbedding ?? [], requestCount, options.filter);
     const filtered = await dedupeAndFilterHits(hits, minScore, searchableCache, options);
+    const composed: T[] = options.composeResults
+      ? await options.composeResults(filtered)
+      : filtered as T[];
 
-    if (filtered.length >= limit) {
-      return filtered.slice(0, limit);
+    if (composed.length >= limit) {
+      return composed.slice(0, limit);
     }
 
     if (hits.length < requestCount) {
-      return filtered;
+      return composed;
     }
 
     if (requestCount === MAX_SEARCH_SCAN_WINDOW) {
       options.onScanCapReached?.();
-      return filtered;
+      return composed;
     }
 
     fetchCount = Math.min(fetchCount * 2, MAX_SEARCH_SCAN_WINDOW);

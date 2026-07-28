@@ -7,13 +7,22 @@ import lockfile from "proper-lockfile";
 import initSqlJs, { type Database, type QueryExecResult, type SqlJsStatic } from "sql.js";
 
 import {
+  classifyAdapterVersion,
+} from "../adapters/adapter.js";
+import {
   type LocalConversation,
   requireLocalConversation,
   throwImportedReadOnlyError,
 } from "../conversations/write-guards.js";
+import { classifyInstalledTranscriptProjectionVersion } from "../adapters/registry.js";
 import {
   type ConversationMeta,
+  type ConversationBranchPoint,
+  conversationBranchPointSchema,
+  conversationRelationshipSchema,
   type OriginKind,
+  preserveConfirmedRelationship,
+  type RelationshipInspection,
   type SavedConversationMeta,
   savedConversationMetaSchema,
   type UnsavedConversationView,
@@ -26,6 +35,7 @@ import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { ensureCurrentSchema } from "./schema.js";
 import {
   unsafeInsertConversationInDb,
+  unsafeReplaceRelationshipInspectionInDb,
   unsafeUpdateLocalConversationInDb,
 } from "./unsafe-conversations.js";
 
@@ -121,6 +131,7 @@ export async function withDb<T>(
   try {
     const SQL = await getSqlJs();
     db = await loadDatabase(SQL, dbPath);
+    db.exec("PRAGMA foreign_keys = ON");
     const schemaChanged = shouldEnsureSchema
       ? ensureCurrentSchema(db)
       : false;
@@ -152,7 +163,7 @@ export function getConversationByIdInDb(
   id: string,
 ): SavedConversationMeta | null {
   const result = db.exec("SELECT * FROM conversations WHERE id = ?", [id]);
-  return firstConversation(result);
+  return firstConversation(db, result);
 }
 
 export async function listConversations(
@@ -161,12 +172,53 @@ export async function listConversations(
   return withDb((db) => listConversationsInDb(db, filters), { mode: "read" });
 }
 
+export async function listConversationsWithNoncurrentRelationshipInspection(
+  source: string,
+  inspectionVersion: number,
+): Promise<SavedConversationMeta[]> {
+  return withDb((db) => {
+    const result = db.exec(
+      `
+        SELECT *
+        FROM conversations
+        WHERE source = ?
+          AND (
+            relationship_inspection_version IS NULL
+            OR relationship_inspection_version <> ?
+          )
+      `,
+      [source, inspectionVersion],
+    );
+    return resultToConversations(db, result);
+  }, { mode: "read" });
+}
+
+export async function listConversationsWithUnknownRelationshipInspection(
+  source: string,
+  inspectionVersion: number,
+): Promise<SavedConversationMeta[]> {
+  return withDb((db) => {
+    const result = db.exec(
+      `
+        SELECT *
+        FROM conversations
+        WHERE source = ?
+          AND relationship_status = 'unknown'
+          AND relationship_inspection_version = ?
+      `,
+      [source, inspectionVersion],
+    );
+    return resultToConversations(db, result);
+  }, { mode: "read" });
+}
+
 export async function browseValues(
   field: "author" | "project_name" | "tags_json",
 ): Promise<Array<{ name: string; count: number }>> {
   return withDb((db) => {
     if (field === "tags_json") {
       const conversations = resultToConversations(
+        db,
         db.exec("SELECT * FROM conversations"),
       );
       const counts = new Map<string, number>();
@@ -301,6 +353,90 @@ export async function saveLocalConversation(
   options: { command: string },
 ): Promise<LocalConversation<SavedConversationMeta>> {
   return updateLocalConversation(conversation, options);
+}
+
+export async function replaceRelationshipInspection(
+  id: string,
+  inspection: RelationshipInspection,
+): Promise<SavedConversationMeta> {
+  return withDb((db) => {
+    const current = getConversationByIdInDb(db, id);
+    if (!current) {
+      throw new ClogError(`Conversation "${id}" not found.`);
+    }
+    return replaceRelationshipInspectionInDb(db, current, inspection);
+  }, { mode: "write" });
+}
+
+interface ConditionalRelationshipInspectionReplacement {
+  replaced: boolean;
+  conversation: SavedConversationMeta;
+}
+
+export async function replaceRelationshipInspectionIfVersionMatches(
+  id: string,
+  expectedVersion: number | null,
+  inspection: RelationshipInspection,
+): Promise<ConditionalRelationshipInspectionReplacement> {
+  return withDb((db) => {
+    const current = getConversationByIdInDb(db, id);
+    if (!current) {
+      throw new ClogError(`Conversation "${id}" not found.`);
+    }
+    if (current.relationshipInspection.version !== expectedVersion) {
+      return {
+        replaced: false,
+        conversation: current,
+      };
+    }
+    return {
+      replaced: true,
+      conversation: replaceRelationshipInspectionInDb(
+        db,
+        current,
+        inspection,
+      ),
+    };
+  }, { mode: "write" });
+}
+
+function replaceRelationshipInspectionInDb(
+  db: Database,
+  current: SavedConversationMeta,
+  inspection: RelationshipInspection,
+): SavedConversationMeta {
+  const id = current.id;
+  const replacement = preserveConfirmedRelationship(current, inspection);
+  const wouldRemoveStoredVersion =
+    replacement.version == null &&
+    current.relationshipInspection.version != null;
+  const wouldDowngradeStoredVersion =
+    replacement.version != null &&
+    classifyAdapterVersion(
+      current.relationshipInspection.version,
+      replacement.version,
+    ) === "version_skew";
+  if (wouldRemoveStoredVersion || wouldDowngradeStoredVersion) {
+    throw new ClogError(
+      `Conversation "${id}" uses relationship inspection version ${current.relationshipInspection.version}, but this clog build can only write version ${replacement.version}. Upgrade clog before reinspecting it.`,
+    );
+  }
+
+  const rowsModified = unsafeReplaceRelationshipInspectionInDb(
+    db,
+    id,
+    replacement,
+  );
+  if (rowsModified !== 1) {
+    throw new ClogError(`Conversation "${id}" not found.`);
+  }
+  const updated = getConversationByIdInDb(db, id);
+  if (!updated) {
+    throw new ClogError(
+      `Conversation "${id}" not found after relationship inspection update.`,
+    );
+  }
+  return updated;
 }
 
 export function updateLocalConversationInDb(
@@ -549,6 +685,9 @@ const removalTargetFields = {
   indexedAt: true,
   originKind: true,
   originRef: true,
+  relationshipInspection: true,
+  relationships: true,
+  transcriptProjectionVersion: true,
 } satisfies Record<keyof ConversationMeta, true>;
 
 export function removeGitConversationsForRemoteInDb(
@@ -610,7 +749,7 @@ export function listConversationsInDb(
     params,
   );
 
-  let conversations = resultToConversations(result);
+  let conversations = resultToConversations(db, result);
 
   if (filters.tag) {
     const normalizedTag = filters.tag.trim().toLowerCase();
@@ -631,7 +770,7 @@ export function getConversationBySourceIdentityInDb(
     "SELECT * FROM conversations WHERE source = ? AND source_id = ? LIMIT 1",
     [source, sourceId],
   );
-  return firstConversation(result);
+  return firstConversation(db, result);
 }
 
 export async function listConversationsNeedingIndex(): Promise<ConversationMeta[]> {
@@ -640,16 +779,21 @@ export async function listConversationsNeedingIndex(): Promise<ConversationMeta[
       `
         SELECT *
         FROM conversations
-        WHERE (
-            indexed_at IS NULL
-            OR saved_at IS NULL
-            OR indexed_at < saved_at
-          )
         ORDER BY datetime(created_at) DESC, id ASC
       `,
     );
 
-    return resultToConversations(result);
+    return resultToConversations(db, result).filter(
+      (conversation) =>
+        classifyInstalledTranscriptProjectionVersion(
+          conversation.source,
+          conversation.transcriptProjectionVersion,
+        ) === "current" &&
+        (
+          conversation.indexedAt == null ||
+          conversation.indexedAt < conversation.savedAt
+        ),
+    );
   }, { mode: "read" });
 }
 
@@ -718,18 +862,29 @@ function normalizeSummaryKindFromRow(
 }
 
 function firstConversation(
+  db: Database,
   result: QueryExecResult[],
 ): SavedConversationMeta | null {
-  const conversations = resultToConversations(result);
+  const conversations = resultToConversations(db, result);
   return conversations[0] ?? null;
 }
 
-function resultToConversations(result: QueryExecResult[]): SavedConversationMeta[] {
+function resultToConversations(
+  db: Database,
+  result: QueryExecResult[],
+): SavedConversationMeta[] {
   if (result.length === 0) {
     return [];
   }
 
-  return rowsFromResult(result[0]).map(rowToConversation);
+  const rows = rowsFromResult(result[0]);
+  const relationshipsByChild = loadRelationshipsByChild(
+    db,
+    rows.map((row) => String(row.id)),
+  );
+  return rows.map((row) =>
+    rowToConversation(row, relationshipsByChild.get(String(row.id)) ?? []),
+  );
 }
 
 function rowsFromResult(result?: QueryExecResult): Array<Record<string, unknown>> {
@@ -744,7 +899,10 @@ function rowsFromResult(result?: QueryExecResult): Array<Record<string, unknown>
   );
 }
 
-function rowToConversation(row: Record<string, unknown>): SavedConversationMeta {
+function rowToConversation(
+  row: Record<string, unknown>,
+  relationships: SavedConversationMeta["relationships"],
+): SavedConversationMeta {
   const summaryText = String(row.summary ?? "");
   return savedConversationMetaSchema.parse({
     id: String(row.id),
@@ -772,7 +930,77 @@ function rowToConversation(row: Record<string, unknown>): SavedConversationMeta 
     indexedAt: nullableString(row.indexed_at),
     originKind: parseOriginKind(row.origin_kind),
     originRef: nullableString(row.origin_ref),
+    relationshipInspection: {
+      status: String(row.relationship_status ?? "unexamined"),
+      version: nullableInteger(row.relationship_inspection_version),
+      diagnostic: nullableString(row.relationship_diagnostic),
+    },
+    relationships,
+    transcriptProjectionVersion: nullableInteger(
+      row.transcript_projection_version,
+    ),
   });
+}
+
+function loadRelationshipsByChild(
+  db: Database,
+  childIds: string[],
+): Map<string, SavedConversationMeta["relationships"]> {
+  const relationshipsByChild = new Map<
+    string,
+    SavedConversationMeta["relationships"]
+  >();
+  if (childIds.length === 0) {
+    return relationshipsByChild;
+  }
+
+  const batchSize = 500;
+  for (let offset = 0; offset < childIds.length; offset += batchSize) {
+    const batch = childIds.slice(offset, offset + batchSize);
+    const placeholders = batch.map(() => "?").join(", ");
+    const result = db.exec(
+      `
+        SELECT
+          child_id,
+          relationship_kind,
+          parent_source,
+          parent_source_id,
+          evidence_kind,
+          branch_point_json
+        FROM conversation_relationships
+        WHERE child_id IN (${placeholders})
+        ORDER BY child_id, relationship_kind
+      `,
+      batch,
+    );
+
+    for (const row of rowsFromResult(result[0])) {
+      const childId = String(row.child_id);
+      const branchPoint = parseBranchPoint(row.branch_point_json);
+      const relationship = conversationRelationshipSchema.parse({
+        kind: row.relationship_kind,
+        parent: {
+          source: row.parent_source,
+          sourceId: row.parent_source_id,
+        },
+        evidence: row.evidence_kind,
+        branchPoint,
+      });
+      const relationships = relationshipsByChild.get(childId) ?? [];
+      relationships.push(relationship);
+      relationshipsByChild.set(childId, relationships);
+    }
+  }
+
+  return relationshipsByChild;
+}
+
+function parseBranchPoint(value: unknown): ConversationBranchPoint | null {
+  if (value == null) {
+    return null;
+  }
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  return conversationBranchPointSchema.parse(parsed);
 }
 
 function parseOriginKind(value: unknown): OriginKind {

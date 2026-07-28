@@ -2,15 +2,44 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SCAN_METADATA_MAX_LINES } from "../src/adapters/adapter.js";
-import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
+import {
+  CLAUDE_CODE_ADAPTER_VERSIONS,
+  ClaudeCodeAdapter,
+} from "../src/adapters/claude-code.js";
 import { CodexCliAdapter } from "../src/adapters/codex-cli.js";
 import { getAdapter } from "../src/adapters/registry.js";
+import { scanLocalSources } from "../src/cli/scan.js";
 import { getDefaultConfig } from "../src/config/index.js";
 import type { ClogWarning } from "../src/models/warnings.js";
 import { writeJsonl, writeRawJsonlLines } from "./helpers/fixtures.js";
+
+interface ClaudeRelationshipFixture {
+  origin: string;
+  surface: string;
+  childSourceId: string;
+  parentSourceId?: string;
+  ancestorSourceId?: string;
+  unobservableParentSourceId?: string;
+  expectedCreatedAt?: string;
+  sourceRecords: Array<Record<string, unknown>>;
+}
+
+interface ClaudeRelationshipFixtureDocument {
+  formatVersion: number;
+  claudeCodeVersion: string;
+  observedAt: string;
+  cases: Record<string, ClaudeRelationshipFixture>;
+}
+
+const claudeRelationshipFixtures = JSON.parse(
+  await fs.readFile(
+    new URL("./fixtures/claude-code-relationships.json", import.meta.url),
+    "utf8",
+  ),
+) as ClaudeRelationshipFixtureDocument;
 
 describe("adapters", () => {
   let tempDir: string;
@@ -27,6 +56,811 @@ describe("adapters", () => {
     expect(() => getAdapter("constructor", getDefaultConfig("alice"))).toThrow(
       'Unsupported source "constructor"',
     );
+  });
+
+  it.each([
+    "claude-code",
+    "codex-cli",
+  ] as const)("%s satisfies the shared adapter contract", async (source) => {
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = source === "claude-code";
+    config.sources["codex-cli"].enabled = source === "codex-cli";
+    let filePath: string;
+
+    if (source === "claude-code") {
+      const sourceRoot = path.join(tempDir, "claude");
+      filePath = path.join(
+        sourceRoot,
+        "project",
+        "11111111-1111-1111-1111-111111111111.jsonl",
+      );
+      await writeJsonl(filePath, [{
+        type: "user",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        cwd: "/Users/alice/project",
+        message: { role: "user", content: "Hello" },
+      }]);
+      config.sources["claude-code"].paths = [sourceRoot];
+    } else {
+      const sourceRoot = path.join(tempDir, "codex");
+      filePath = path.join(
+        sourceRoot,
+        "sessions",
+        "2026",
+        "02",
+        "01",
+        "rollout-22222222-2222-2222-2222-222222222222.jsonl",
+      );
+      await writeJsonl(filePath, [{
+        type: "session_meta",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        payload: {
+          id: "22222222-2222-2222-2222-222222222222",
+          cli_version: "0.145.0",
+          cwd: "/Users/alice/project",
+          timestamp: "2026-02-01T10:00:00.000Z",
+        },
+      }]);
+      config.sources["codex-cli"].paths = [sourceRoot];
+    }
+
+    const adapter = getAdapter(source, config);
+    const inspect = vi.spyOn(adapter, "inspectRelationships");
+    const discovered = [];
+    for await (const conversation of adapter.discover()) {
+      discovered.push(conversation);
+    }
+    const transcript = await adapter.parseTranscript(filePath);
+    const expectedSourceMtime = (await fs.stat(filePath)).mtime.toISOString();
+    const scan = await scanLocalSources(config);
+
+    expect(adapter.relationshipInspectionVersion).toBeGreaterThan(0);
+    expect(adapter.transcriptProjectionVersion).toBeGreaterThan(0);
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      relationshipInspection: {
+        status: "none_found",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+      },
+      relationships: [],
+    });
+    expect(Array.isArray(transcript.messages)).toBe(true);
+    expect(transcript.warnings).toEqual([]);
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.candidates[0]?.sourceMtime).toBe(expectedSourceMtime);
+  });
+
+  describe("Codex contextual branch inspection", () => {
+    const parentId = "11111111-1111-1111-1111-111111111111";
+    const childId = "22222222-2222-2222-2222-222222222222";
+    const grandchildId = "33333333-3333-3333-3333-333333333333";
+    const siblingId = "44444444-4444-4444-4444-444444444444";
+
+    it.each(["0.144.0", "0.145.0"])(
+      "marks a standalone Codex %s rollout as inspected with no relationship",
+      async (cliVersion) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, { cliVersion }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "none_found",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: null,
+          relationships: [],
+        });
+      },
+    );
+
+    it("does not treat spawned-agent ownership as a branch relationship", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          parentThreadId: parentId,
+          threadSource: "subagent",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "none_found",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [],
+      });
+    });
+
+    it("creates a source-confirmed branch for a user-classified fork", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          cliVersion: "0.145.0",
+          parentId,
+          threadSource: "user",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "linked",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "codex-cli",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    });
+
+    it.each([
+      {
+        label: "a copied-history subagent",
+        cliVersion: "0.145.0",
+        threadSource: "subagent",
+        parentThreadId: parentId,
+      },
+      {
+        label: "a memory-consolidation thread",
+        cliVersion: "0.145.0",
+        threadSource: "memory_consolidation",
+        parentThreadId: undefined,
+      },
+      {
+        label: "a Codex 0.136.0 ownership-only subagent",
+        cliVersion: "0.136.0",
+        threadSource: "subagent",
+        parentThreadId: undefined,
+      },
+    ])(
+      "does not create a conversation branch for $label",
+      async ({ cliVersion, threadSource, parentThreadId }) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, {
+            cliVersion,
+            parentId,
+            parentThreadId,
+            threadSource,
+          }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "none_found",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: null,
+          relationships: [],
+        });
+      },
+    );
+
+    it.each([
+      {
+        label: "missing",
+        cliVersion: "0.128.0",
+        threadSource: undefined,
+      },
+      {
+        label: "null",
+        cliVersion: "0.145.0",
+        threadSource: null,
+      },
+      {
+        label: "feature-style",
+        cliVersion: "0.145.0",
+        threadSource: "experimental_feature",
+      },
+      {
+        label: "non-string",
+        cliVersion: "0.145.0",
+        threadSource: { kind: "user" },
+      },
+    ])(
+      "keeps a valid fork with $label provenance reviewable",
+      async ({ cliVersion, threadSource }) => {
+        const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(childId, {
+            cliVersion,
+            parentId,
+            threadSource,
+          }),
+        ]);
+
+        const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "unknown",
+          version: adapter.relationshipInspectionVersion,
+          diagnostic: "codex_relationship_fork_provenance_ambiguous",
+          relationships: [],
+        });
+      },
+    );
+
+    it("uses only canonical metadata when copied ancestor metadata conflicts", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId, threadSource: "user" }),
+        codexSessionMeta(parentId, {
+          parentId: grandchildId,
+          threadSource: "subagent",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "linked",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: null,
+        relationships: [{
+          kind: "branch",
+          parent: {
+            source: "codex-cli",
+            sourceId: parentId,
+          },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    });
+
+    it("preserves immediate parents for chains, siblings, and absent parents", async () => {
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const cases = [
+        { id: childId, parentId },
+        { id: grandchildId, parentId: childId },
+        { id: siblingId, parentId },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          parentId: "99999999-9999-9999-9999-999999999999",
+        },
+      ];
+
+      for (const fixture of cases) {
+        const filePath = path.join(tempDir, `rollout-${fixture.id}.jsonl`);
+        await writeJsonl(filePath, [
+          codexSessionMeta(fixture.id, {
+            parentId: fixture.parentId,
+            threadSource: "user",
+          }),
+        ]);
+        const inspection = await adapter.inspectRelationships(filePath);
+        expect(inspection).toMatchObject({
+          status: "linked",
+          relationships: [{
+            parent: {
+              source: "codex-cli",
+              sourceId: fixture.parentId,
+            },
+          }],
+        });
+      }
+    });
+
+    it("keeps malformed canonical parent evidence reviewable without an edge", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId: "not-a-thread-id" }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_parent_id_invalid",
+        relationships: [],
+      });
+    });
+
+    it("rejects parent IDs that merely end with a UUID", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          parentId: `prefix${parentId}`,
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_parent_id_invalid",
+        relationships: [],
+      });
+    });
+
+    it("keeps a canonical self-parent relationship reviewable without an edge", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, {
+          parentId: childId,
+          threadSource: "user",
+        }),
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_self_parent",
+        relationships: [],
+      });
+    });
+
+    it("returns an unknown diagnostic for a structurally invalid JSONL record", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeRawJsonlLines(filePath, ["null"]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: adapter.relationshipInspectionVersion,
+        diagnostic: "codex_relationship_malformed_jsonl",
+        relationships: [],
+      });
+    });
+
+    it("does not infer an edge for a first-prompt-style fresh thread", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId),
+        {
+          type: "response_item",
+          timestamp: "2026-02-01T10:00:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Same first prompt" }],
+          },
+        },
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.status).toBe("none_found");
+      expect(inspection.relationships).toEqual([]);
+    });
+
+    it("ignores replayed message timestamps when selecting the parent", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        codexSessionMeta(childId, { parentId, threadSource: "user" }),
+        {
+          type: "response_item",
+          timestamp: "2030-01-01T00:00:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Replayed prompt" }],
+          },
+        },
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.relationships[0]?.parent.sourceId).toBe(parentId);
+      expect(inspection.relationships[0]?.branchPoint).toBeNull();
+    });
+
+    it("keeps relationship inspection within the metadata line bound", async () => {
+      const filePath = path.join(tempDir, `rollout-${childId}.jsonl`);
+      await writeRawJsonlLines(filePath, [
+        jsonLine(codexSessionMeta(childId, {
+          parentId,
+          threadSource: "user",
+        })),
+        ...validJsonlPadding(SCAN_METADATA_MAX_LINES - 1),
+        "{not: valid json",
+      ]);
+
+      const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
+      const inspection = await adapter.inspectRelationships(filePath);
+      expect(inspection.status).toBe("linked");
+      expect(inspection.relationships[0]?.parent.sourceId).toBe(parentId);
+    });
+
+    it("continues discovery after a structurally invalid Codex file", async () => {
+      const sessionsDir = path.join(
+        tempDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "02",
+        "01",
+      );
+      const malformedPath = path.join(
+        sessionsDir,
+        `rollout-${childId}.jsonl`,
+      );
+      const validPath = path.join(
+        sessionsDir,
+        `rollout-${grandchildId}.jsonl`,
+      );
+      await writeRawJsonlLines(malformedPath, ["null"]);
+      await writeJsonl(validPath, [
+        codexSessionMeta(grandchildId),
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Valid conversation",
+          },
+        },
+      ]);
+
+      const config = getDefaultConfig("alice");
+      config.sources["codex-cli"].paths = [path.join(tempDir, ".codex")];
+      const warnings: ClogWarning[] = [];
+      const adapter = new CodexCliAdapter(config);
+      const discovered = await collect(
+        adapter.discover({
+          onWarning: (warning) => warnings.push(warning),
+        }),
+      );
+
+      expect(discovered).toHaveLength(1);
+      expect(discovered[0]?.sourceId).toBe(grandchildId);
+      expect(warnings).toEqual([expect.objectContaining({
+        code: "malformed_jsonl",
+        path: malformedPath,
+      })]);
+    });
+  });
+
+  describe("Claude Code cross-session branch inspection", () => {
+    it.each([
+      ["slashBranch", "source"],
+      ["forkSession", "inferred"],
+    ] as const)(
+      "uses the observed %s provenance and discovers the fork moment",
+      async (fixtureName, evidence) => {
+        const fixture = claudeRelationshipFixtures.cases[fixtureName]!;
+        const sourceRoot = path.join(tempDir, "claude");
+        const filePath = path.join(
+          sourceRoot,
+          "project",
+          `${fixture.childSourceId}.jsonl`,
+        );
+        await writeJsonl(filePath, fixture.sourceRecords);
+
+        const config = getDefaultConfig("alice");
+        config.sources["claude-code"].paths = [sourceRoot];
+        const adapter = new ClaudeCodeAdapter(config);
+        const inspect = vi.spyOn(adapter, "inspectRelationships");
+        const discovered = await collect(adapter.discover());
+
+        expect(inspect).toHaveBeenCalledOnce();
+        expect(discovered).toHaveLength(1);
+        expect(discovered[0]).toMatchObject({
+          sourceId: fixture.childSourceId,
+          metadata: {
+            createdAt: fixture.expectedCreatedAt,
+          },
+          relationshipInspection: {
+            status: "linked",
+            version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+            diagnostic: null,
+          },
+          relationships: [{
+            kind: "branch",
+            parent: {
+              source: "claude-code",
+              sourceId: fixture.parentSourceId,
+            },
+            evidence,
+            branchPoint: null,
+          }],
+        });
+      },
+    );
+
+    it("uses the newest copied foreign session ID in a multi-generation fallback", async () => {
+      const fixture =
+        claudeRelationshipFixtures.cases.multiGenerationChain!;
+      const filePath = path.join(
+        tempDir,
+        `${fixture.childSourceId}.jsonl`,
+      );
+      const records = fixture.sourceRecords.map((record) => {
+        const { forkedFrom: _forkedFrom, ...withoutForkedFrom } = record;
+        return withoutForkedFrom;
+      });
+      await writeJsonl(filePath, records);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toMatchObject({
+        status: "linked",
+        relationships: [{
+          parent: {
+            source: "claude-code",
+            sourceId: fixture.parentSourceId,
+          },
+          evidence: "inferred",
+        }],
+      });
+    });
+
+    it("prefers source provenance over incidental multi-generation session IDs", async () => {
+      const fixture =
+        claudeRelationshipFixtures.cases.multiGenerationChain!;
+      const filePath = path.join(
+        tempDir,
+        `${fixture.childSourceId}.jsonl`,
+      );
+      await writeJsonl(filePath, fixture.sourceRecords);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toMatchObject({
+        status: "linked",
+        relationships: [{
+          parent: {
+            source: "claude-code",
+            sourceId: fixture.parentSourceId,
+          },
+          evidence: "source",
+        }],
+      });
+    });
+
+    it("reports none_found for an observed provenance-free fork", async () => {
+      const fixture =
+        claudeRelationshipFixtures.cases.provenanceFreeFork!;
+      const filePath = path.join(
+        tempDir,
+        `${fixture.childSourceId}.jsonl`,
+      );
+      await writeJsonl(filePath, fixture.sourceRecords);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "none_found",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+        diagnostic: null,
+        relationships: [],
+      });
+    });
+
+    it("inspects consistent source provenance across a long copied prefix", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const parentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const sourceRoot = path.join(tempDir, "claude");
+      const filePath = path.join(
+        sourceRoot,
+        "project",
+        `${childId}.jsonl`,
+      );
+      const copiedRecords = Array.from({ length: 150 }, (_entry, index) => {
+        const uuid =
+          `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+        return {
+          type: "assistant",
+          uuid,
+          timestamp: `2026-07-24T08:${String(index % 60).padStart(2, "0")}:00.000Z`,
+          sessionId: childId,
+          forkedFrom: {
+            sessionId: parentId,
+            messageUuid: uuid,
+          },
+        };
+      });
+      await writeJsonl(filePath, [
+        ...copiedRecords,
+        {
+          type: "user",
+          uuid: "20000000-0000-4000-8000-000000000001",
+          timestamp: "2026-07-24T11:00:00.000Z",
+          sessionId: childId,
+          message: { role: "user", content: "Continue here" },
+        },
+      ]);
+
+      const config = getDefaultConfig("alice");
+      config.sources["claude-code"].paths = [sourceRoot];
+      const adapter = new ClaudeCodeAdapter(config);
+      await expect(adapter.inspectRelationships(filePath)).resolves.toMatchObject({
+        status: "linked",
+        relationships: [{
+          parent: { sourceId: parentId },
+          evidence: "source",
+        }],
+      });
+      const discovered = await collect(adapter.discover());
+      expect(discovered[0]?.metadata.createdAt).toBe(
+        "2026-07-24T11:00:00.000Z",
+      );
+    });
+
+    it("keeps conflicting source parents reviewable without an edge", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const filePath = path.join(tempDir, `${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        claudeForkedRecord(
+          childId,
+          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "10000000-0000-4000-8000-000000000001",
+        ),
+        claudeForkedRecord(
+          childId,
+          "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          "10000000-0000-4000-8000-000000000002",
+        ),
+        { type: "user", timestamp: "2026-07-24T11:00:00.000Z" },
+      ]);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+        diagnostic: "claude_relationship_parent_conflict",
+        relationships: [],
+      });
+    });
+
+    it("keeps malformed parent-session provenance reviewable without an edge", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const filePath = path.join(tempDir, `${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        claudeForkedRecord(
+          childId,
+          "not-a-session-id",
+          "10000000-0000-4000-8000-000000000001",
+        ),
+        { type: "user", timestamp: "2026-07-24T11:00:00.000Z" },
+      ]);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+        diagnostic: "claude_relationship_parent_id_invalid",
+        relationships: [],
+      });
+    });
+
+    it("keeps source provenance that names the child as its own parent reviewable without an edge", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const filePath = path.join(tempDir, `${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        claudeForkedRecord(
+          childId,
+          childId,
+          "10000000-0000-4000-8000-000000000001",
+        ),
+        { type: "user", timestamp: "2026-07-24T11:00:00.000Z" },
+      ]);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+        status: "unknown",
+        version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+        diagnostic: "claude_relationship_self_parent",
+        relationships: [],
+      });
+    });
+
+    it("ignores malformed unused source-message provenance", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const parentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const filePath = path.join(tempDir, `${childId}.jsonl`);
+      const record = claudeForkedRecord(
+        childId,
+        parentId,
+        "10000000-0000-4000-8000-000000000001",
+      );
+      (record.forkedFrom as { messageUuid: unknown }).messageUuid = 42;
+      await writeJsonl(filePath, [
+        record,
+        { type: "user", timestamp: "2026-07-24T11:00:00.000Z" },
+      ]);
+
+      const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+      await expect(adapter.inspectRelationships(filePath)).resolves.toMatchObject({
+        status: "linked",
+        relationships: [{
+          parent: { sourceId: parentId },
+          evidence: "source",
+          branchPoint: null,
+        }],
+      });
+    });
+
+    it.each([
+      [
+        "same-file rewind",
+        [
+          {
+            type: "user",
+            uuid: "10000000-0000-4000-8000-000000000001",
+            parentUuid: null,
+            sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          },
+          {
+            type: "user",
+            uuid: "10000000-0000-4000-8000-000000000002",
+            parentUuid: "10000000-0000-4000-8000-000000000001",
+            sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          },
+          {
+            type: "user",
+            uuid: "10000000-0000-4000-8000-000000000003",
+            parentUuid: "10000000-0000-4000-8000-000000000001",
+            sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          },
+        ],
+      ],
+      [
+        "compaction ancestry",
+        [{
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "10000000-0000-4000-8000-000000000004",
+          parentUuid: null,
+          logicalParentUuid: "10000000-0000-4000-8000-000000000001",
+          sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }],
+      ],
+      [
+        "subagent ownership",
+        [{
+          type: "assistant",
+          isSidechain: true,
+          agentId: "agent-1",
+          uuid: "10000000-0000-4000-8000-000000000005",
+          sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        }],
+      ],
+    ] as const)(
+      "does not treat %s as a conversation relationship",
+      async (_name, records) => {
+        const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const filePath = path.join(tempDir, `${childId}.jsonl`);
+        await writeJsonl(filePath, [...records]);
+
+        const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
+        await expect(adapter.inspectRelationships(filePath)).resolves.toEqual({
+          status: "none_found",
+          version: CLAUDE_CODE_ADAPTER_VERSIONS.relationshipInspection,
+          diagnostic: null,
+          relationships: [],
+        });
+      },
+    );
+
+    it("uses file time when a source-confirmed child has no self-written record", async () => {
+      const childId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const parentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const sourceRoot = path.join(tempDir, "claude");
+      const filePath = path.join(sourceRoot, "project", `${childId}.jsonl`);
+      await writeJsonl(filePath, [
+        claudeForkedRecord(
+          childId,
+          parentId,
+          "10000000-0000-4000-8000-000000000001",
+        ),
+      ]);
+      const expectedMtime = (await fs.stat(filePath)).mtime.toISOString();
+
+      const config = getDefaultConfig("alice");
+      config.sources["claude-code"].paths = [sourceRoot];
+      const adapter = new ClaudeCodeAdapter(config);
+      const discovered = await collect(adapter.discover());
+
+      expect(discovered[0]?.metadata.createdAt).toBe(expectedMtime);
+      expect(discovered[0]?.relationships[0]).toMatchObject({
+        parent: { sourceId: parentId },
+        evidence: "source",
+      });
+    });
   });
 
   it("Claude discovery extracts metadata from the first cwd and summary line", async () => {
@@ -279,7 +1113,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -324,7 +1158,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -369,7 +1203,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -781,7 +1615,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -832,7 +1666,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toEqual([
       {
@@ -993,7 +1827,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     const toolResult = messages.find((message) => message.role === "tool_result");
     expect(toolResult).toBeDefined();
@@ -1022,7 +1856,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
@@ -1049,7 +1883,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new ClaudeCodeAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
     expect(messages).toEqual([]);
   });
 
@@ -1174,7 +2008,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     const toolResult = messages.find((message) => message.role === "tool_result");
     expect(toolResult?.content).toBe("exec_command: exit 2");
@@ -1206,7 +2040,7 @@ describe("adapters", () => {
     ]);
 
     const adapter = new CodexCliAdapter(getDefaultConfig("alice"));
-    const messages = await adapter.parseMessages(filePath);
+    const messages = (await adapter.parseTranscript(filePath)).messages;
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ role: "user", content: "Please help" });
@@ -1256,6 +2090,47 @@ function validJsonlPadding(count: number): string[] {
   return Array.from({ length: count }, (_entry, index) =>
     jsonLine({ type: "progress", message: `padding ${index}` }),
   );
+}
+
+function codexSessionMeta(
+  id: string,
+  options: {
+    cliVersion?: string;
+    parentId?: string;
+    parentThreadId?: string;
+    threadSource?: unknown;
+  } = {},
+): unknown {
+  return {
+    type: "session_meta",
+    timestamp: "2026-02-01T10:00:00.000Z",
+    payload: {
+      id,
+      cli_version: options.cliVersion ?? "0.145.0",
+      forked_from_id: options.parentId,
+      parent_thread_id: options.parentThreadId,
+      thread_source: options.threadSource,
+      cwd: "/Users/alice/project",
+      timestamp: "2026-02-01T10:00:00.000Z",
+    },
+  };
+}
+
+function claudeForkedRecord(
+  childId: string,
+  parentId: string,
+  uuid: string,
+): Record<string, unknown> {
+  return {
+    type: "assistant",
+    uuid,
+    timestamp: "2026-07-24T10:00:00.000Z",
+    sessionId: childId,
+    forkedFrom: {
+      sessionId: parentId,
+      messageUuid: uuid,
+    },
+  };
 }
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {

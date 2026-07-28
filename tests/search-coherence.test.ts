@@ -4,11 +4,16 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  getDefaultConfig,
+  saveConfig,
+} from "../src/config/index.js";
 import { getConversationById } from "../src/db/index.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import {
   isConversationSearchable,
   markConversationIndexStale,
+  maybeReindexUpdatedConversation,
   tryDeleteConversationVectors,
 } from "../src/search/coherence.js";
 import { SearchNotConfiguredError, SearchDepsError } from "../src/search/errors.js";
@@ -62,6 +67,50 @@ describe("isConversationSearchable (SPEC §10.7)", () => {
     });
     expect(isConversationSearchable(conversation)).toBe(false);
   });
+
+  it.each([
+    null,
+    1,
+    3,
+  ])(
+    "returns false when transcript projection version is %s",
+    (transcriptProjectionVersion) => {
+      const conversation = makeConversation({
+        state: "saved",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+        transcriptProjectionVersion,
+      });
+      expect(isConversationSearchable(conversation)).toBe(false);
+    },
+  );
+
+  it.each([
+    null,
+    1,
+    3,
+  ])(
+    "returns false when relationship inspection version is %s",
+    (relationshipInspectionVersion) => {
+      const conversation = makeConversation({
+        state: "saved",
+        savedAt: "2026-02-01T10:00:00.000Z",
+        indexedAt: "2026-02-01T10:00:00.000Z",
+        relationshipInspection: relationshipInspectionVersion == null
+          ? {
+              status: "unexamined",
+              version: null,
+              diagnostic: null,
+            }
+          : {
+              status: "none_found",
+              version: relationshipInspectionVersion,
+              diagnostic: null,
+            },
+      });
+      expect(isConversationSearchable(conversation)).toBe(false);
+    },
+  );
 
   it("returns false when state is not saved, even with a non-null indexedAt", () => {
     const conversation = makeConversation({
@@ -126,6 +175,86 @@ describe("markConversationIndexStale (SPEC §10.8.1)", () => {
     const next = await markConversationIndexStale(conversation);
     expect(next).toBe(conversation);
     await expect(getConversationById(conversation.id)).resolves.toBeNull();
+  });
+});
+
+describe("projection-aware reindexing", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clog-coherence-reindex-"));
+    process.env.CLOG_HOME = tempDir;
+    mockedGetSearchProviders.mockReset();
+    const config = getDefaultConfig("testuser");
+    config.search = {
+      embedding: {
+        type: "transformers",
+        model: "Xenova/all-MiniLM-L6-v2",
+      },
+      vectorStore: { type: "vectra" },
+    };
+    await saveConfig(config);
+  });
+
+  afterEach(async () => {
+    delete process.env.CLOG_HOME;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("does not index a conversation stamped by a newer adapter", async () => {
+    const conversation = makeConversation({
+      state: "saved",
+      transcriptProjectionVersion: 3,
+      indexedAt: "2026-02-01T10:00:00.000Z",
+    });
+
+    await expect(
+      maybeReindexUpdatedConversation(conversation),
+    ).resolves.toMatchObject({
+      indexedAt: null,
+      transcriptProjectionVersion: 3,
+    });
+    expect(mockedGetSearchProviders).not.toHaveBeenCalled();
+  });
+
+  it("marks retained vectors stale after a superseded conversation's metadata changes", async () => {
+    const parent = makeConversation({
+      state: "saved",
+      indexedAt: "2026-02-01T10:00:00.000Z",
+    });
+    const childId = "bbbbbbbb-1111-2222-3333-444444444444";
+    const child = makeConversation({
+      id: childId,
+      sourceId: childId,
+      state: "saved",
+      createdAt: "2026-02-02T10:00:00.000Z",
+      sourceMtime: "2026-02-02T10:00:00.000Z",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: parent.source,
+          sourceId: parent.sourceId,
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
+    });
+    await insertConversation(parent);
+    await insertConversation(child);
+
+    const updated = await maybeReindexUpdatedConversation({
+      ...parent,
+      title: "Updated superseded title",
+    });
+
+    expect(updated.indexedAt).toBeNull();
+    expect(isConversationSearchable(updated)).toBe(false);
+    expect(mockedGetSearchProviders).not.toHaveBeenCalled();
   });
 });
 
@@ -227,6 +356,50 @@ describe("searchConversations expanding window (SPEC §10.9)", () => {
     expect(requestedSizes[1]).toBe(40);
   });
 
+  it("expands again when related conversations collapse below the limit", async () => {
+    const requestedSizes: number[] = [];
+    const related: SearchHit[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `related-${index}:0`,
+      score: 0.95 - index / 1_000,
+      text: `related ${index}`,
+      metadata: { conversationId: `related-${index}` },
+    }));
+    const expanded: SearchHit[] = [
+      ...related,
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id: `unrelated-${index}:0`,
+        score: 0.8 - index / 1_000,
+        text: `unrelated ${index}`,
+        metadata: { conversationId: `unrelated-${index}` },
+      })),
+    ];
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      search: vi.fn(async (_embedding, limit) => {
+        requestedSizes.push(limit);
+        return limit === 20 ? related : expanded;
+      }),
+    };
+
+    const results = await searchConversations(
+      "anything",
+      5,
+      makeEmbedding(),
+      vectorStore,
+      {
+        composeResults: (hits) => [
+          hits.find((hit) => hit.conversationId.startsWith("related-"))!,
+          ...hits.filter((hit) =>
+            hit.conversationId.startsWith("unrelated-")),
+        ],
+      },
+    );
+
+    expect(results).toHaveLength(5);
+    expect(requestedSizes).toEqual([20, 40]);
+  });
+
   it("stops at the 5,000-entry scan cap and signals incompleteness", async () => {
     const onScanCapReached = vi.fn();
     const vectorStore: VectorStore = {
@@ -316,6 +489,12 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "none_found",
+      version: 2,
+      diagnostic: null,
+    },
+    relationships: [],
   };
   return state === "saved"
     ? {
@@ -324,6 +503,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
         savedAt: now,
         savedMessageCount: 0,
         saveVersion: 1,
+        transcriptProjectionVersion: 2,
         ...overrides,
       } as ConversationMeta
     : {
@@ -332,6 +512,7 @@ function makeConversation(overrides: Partial<ConversationMeta> = {}): Conversati
         savedAt: null,
         savedMessageCount: null,
         saveVersion: 0,
+        transcriptProjectionVersion: null,
         ...overrides,
       } as ConversationMeta;
 }

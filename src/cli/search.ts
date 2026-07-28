@@ -6,6 +6,9 @@ import { getSearchProviders } from "../search/deps.js";
 import { SearchDepsError, SearchNotConfiguredError, SearchSetupIncompleteError } from "../search/errors.js";
 import { searchConversations } from "../search/indexer.js";
 import { isConversationSearchable } from "../search/coherence.js";
+import {
+  collapseRelatedConversationSearchHits,
+} from "../search/relationships.js";
 import { ClogError } from "../utils/errors.js";
 
 export async function runSearchCommand(
@@ -15,11 +18,13 @@ export async function runSearchCommand(
     author?: string;
     tag?: string;
     limit?: number;
+    allBranches?: boolean;
   },
 ): Promise<void> {
   const { embedding, vectorStore } = await requireSearchProviders();
   const limit = options.limit ?? 10;
   const matchingSaved = await listMatchingSavedConversations(options);
+  const graphUniverse = await listConversations();
 
   if (matchingSaved.length === 0) {
     process.stdout.write("No saved conversations match the specified filters.\n");
@@ -42,6 +47,12 @@ export async function runSearchCommand(
   try {
     hits = await searchConversations(query, limit, embedding, vectorStore, {
       isConversationSearchable: (conversationId) => searchableIds.has(conversationId),
+      composeResults: (candidateHits) =>
+        collapseRelatedConversationSearchHits(
+          graphUniverse,
+          candidateHits,
+          { allBranches: options.allBranches },
+        ),
       onScanCapReached: () => {
         scanCapReached = true;
       },
@@ -62,16 +73,29 @@ export async function runSearchCommand(
     );
   }
 
-  const conversationsById = await loadConversationsById(hits.map((hit) => hit.conversationId));
-  const visibleResults = hits.filter((hit) => {
+  const relatedHits = hits;
+  const conversationsById = await loadConversationsById(
+    relatedHits.map((hit) => hit.conversationId),
+  );
+  const visibleResults = relatedHits.filter((hit) => {
     const conversation = conversationsById.get(hit.conversationId);
     return isConversationSearchable(conversation);
   });
+  const invalidRelationships = visibleResults.some(
+    (hit) => hit.relationshipCompleteness === "invalid",
+  );
 
-  if (scanCapReached) {
-    process.stdout.write(
-      `${chalk.yellow("warning:")} search hit the maximum scan window; completeness is not guaranteed.\n`,
-    );
+  if (scanCapReached || invalidRelationships) {
+    if (invalidRelationships) {
+      process.stdout.write(
+        `${chalk.yellow("warning:")} invalid conversation relationships were not collapsed.\n`,
+      );
+    }
+    if (scanCapReached) {
+      process.stdout.write(
+        `${chalk.yellow("warning:")} search hit the maximum scan window; completeness is not guaranteed.\n`,
+      );
+    }
     if (visibleResults.length > 0) {
       process.stdout.write("\n");
     }

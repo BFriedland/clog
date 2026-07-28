@@ -266,6 +266,16 @@ interface SummaryExtraction {
   notableMoments?: Array<{ why: string }>;
 }
 
+interface ConversationRelationship {
+  kind: "branch";
+  parent: { source: string; sourceId: string };
+  evidence: "source" | "inferred";
+  branchPoint:
+    | { kind: "source-turn"; id: string }
+    | { kind: "source-message"; id: string }
+    | null;
+}
+
 interface ConversationMeta {
   // Identity
   id: string;                    // Same as sourceId for built-in UUID-based sources
@@ -293,6 +303,7 @@ interface ConversationMeta {
   savedAt: string | null;        // Non-null for saved rows; null for unsaved views
   savedMessageCount: number | null;  // Non-negative for saved rows; null for unsaved views
   saveVersion: number;           // >= 1 for saved rows; 0 for unsaved views
+  transcriptProjectionVersion: number | null; // Adapter contract used for a saved checkpoint
 
   // File references
   sourcePath: string;            // Local source path, git checkout path, or managed import path
@@ -304,6 +315,13 @@ interface ConversationMeta {
   originKind: "local" | "git" | "file";
   originRef: string | null;      // Configured git remote URL for git rows; null for every other kind
 
+  // Adapter-derived relationship state
+  relationshipInspection: {
+    status: "unexamined" | "none_found" | "linked" | "unknown";
+    version: number | null;
+    diagnostic: string | null;
+  };
+  relationships: ConversationRelationship[];
 }
 ```
 
@@ -315,6 +333,40 @@ For the built-in Phase 1 sources, `id = sourceId`. Claude Code and Codex CLI bot
 This is intentional. clog does not use a composite key for the built-in sources because a single physical `id` keeps identity handling, file naming, CLI resolution, MCP retrieval, and sync reconciliation simpler and less bug-prone for the current sources. At clog's expected scale and with the built-in sources' UUID-shaped IDs, a cross-source collision is not a realistic design constraint for Phase 1.
 
 **Timestamp roles:** `createdAt` is source chronology. For saved rows, `discoveredAt` is the first save or import time and `modifiedAt` is the latest successful metadata edit or save write. For an ephemeral unsaved scan view, `discoveredAt` is the invocation's scan time and `modifiedAt` is the source file's `sourceMtime`. `modifiedAt` is not a saved-conversation status marker. `savedAt` is the latest successful save time; `savedMessageCount` is the transcript and saved-status checkpoint, not a timestamp; `sourceMtime` is operational source-locator metadata; and `indexedAt` is the search cache freshness marker. MCP list responses omit `discoveredAt` for unsaved views.
+
+**Conversation, transcript, and branch relationship:** A conversation is the
+whole user activity represented by one connected set of branch relationships
+and presented once by default. A branch is one concrete source-native path with
+its own selectable clog ID and coherent transcript. The existing
+`conversations` table and `ConversationMeta` model store one conversation
+record per branch. A branch relationship identifies one branch's immediate
+parent; it does not merge the two transcripts or replace either branch's
+identity. Same-file abandoned Claude Code rewind paths remain in the managed
+raw JSONL but are not separate clog branches.
+
+Adapters own source-specific transcript reconstruction and relationship
+inspection. Core conversation views consume only the normalized transcript,
+inspection state, and generic relationship edges. A derived conversation graph
+can report an immediate parent, the furthest known root, endpoints, and
+incomplete or invalid history without persisting a graph or root ID. An
+endpoint is a branch positively identified as a divergent path: a leaf, or a
+parent with observed source activity after its newest known fork. The most
+recently updated visible endpoint is the representative branch for collapsed
+list-style presentation.
+
+Ordinary command prose calls the selected ID a conversation ID. Branch IDs are
+named when an expanded or navigation surface needs to distinguish concrete
+paths within the conversation.
+
+`relationshipInspection.status = "none_found"` means the adapter completed its
+current inspection and found no observable parent; it does not prove that no
+historical relationship ever existed. `unknown` carries a stable diagnostic
+when evidence was malformed or conflicting. `linked` has exactly one
+relationship, while `unexamined` has no version or relationships. Each adapter
+versions relationship inspection and transcript projection independently.
+Stored versions unequal to the installed adapter version are stale. An older
+adapter must preserve rows stamped by a newer version without reparsing,
+reinspecting, indexing, or downgrading them.
 
 **Summary metadata:** `summary` is the prose summary. `summaryKind` records who or what produced that prose:
 
@@ -350,7 +402,7 @@ interface Message {
 
 `Message[]` order is the canonical transcript order. Adapters must return messages in stable parser-derived order; downstream display, diff, MCP truncation, search chunking, and indexing must not re-sort messages by timestamp. `timestamp` is useful metadata only.
 
-Adapter parsing must be deterministic. For a given raw file, source adapter, adapter version, and parsing-relevant configuration, `parseMessages()` must return the same ordered `Message[]` every time. Parsing must not depend on scan state, database state, filesystem mtime, warning emission, partial-read timing, current time, locale, or which caller requested the parse (`show`, `diff`, MCP retrieval, search indexing, or save).
+Adapter parsing must be deterministic. For a given raw file, source adapter, adapter version, and parsing-relevant configuration, `parseTranscript()` must return the same ordered messages and transcript warnings every time. Parsing must not depend on scan state, database state, filesystem mtime, partial-read timing, current time, locale, or which caller requested the parse (`show`, `diff`, MCP retrieval, search indexing, or save).
 
 **Normalization from raw JSONL to Messages:** Source adapters project their native event formats into this shared shape. The projection is intentionally not lossless: raw JSONL files remain the source of truth for full detail, while `Message[]` is optimized for display, diff, MCP retrieval, and search.
 
@@ -423,12 +475,60 @@ CREATE TABLE conversations (
   origin_kind     TEXT NOT NULL DEFAULT 'local'
                   CHECK(origin_kind IN ('local','git','file')),
   origin_ref      TEXT,
+  relationship_status TEXT NOT NULL DEFAULT 'unexamined'
+                  CHECK(relationship_status IN ('unexamined','none_found','linked','unknown')),
+  relationship_inspection_version INTEGER,
+  relationship_diagnostic TEXT,
+  transcript_projection_version INTEGER,
   CHECK(
     (origin_kind = 'git' AND origin_ref IS NOT NULL)
     OR
     (origin_kind IN ('local','file') AND origin_ref IS NULL)
   ),
+  CHECK(
+    (relationship_status = 'unexamined'
+      AND relationship_inspection_version IS NULL
+      AND relationship_diagnostic IS NULL)
+    OR
+    (relationship_status IN ('none_found','linked')
+      AND typeof(relationship_inspection_version) = 'integer'
+      AND relationship_inspection_version >= 1
+      AND relationship_diagnostic IS NULL)
+    OR
+    (relationship_status = 'unknown'
+      AND typeof(relationship_inspection_version) = 'integer'
+      AND relationship_inspection_version >= 1
+      AND typeof(relationship_diagnostic) = 'text'
+      AND relationship_diagnostic != '')
+  ),
+  CHECK(
+    transcript_projection_version IS NULL
+    OR (
+      typeof(transcript_projection_version) = 'integer'
+      AND transcript_projection_version >= 1
+    )
+  ),
   UNIQUE(source, source_id)
+);
+
+CREATE TABLE conversation_relationships (
+  child_id         TEXT NOT NULL
+                   REFERENCES conversations(id) ON DELETE CASCADE,
+  relationship_kind TEXT NOT NULL CHECK(relationship_kind = 'branch'),
+  parent_source    TEXT NOT NULL CHECK(parent_source != ''),
+  parent_source_id TEXT NOT NULL CHECK(parent_source_id != ''),
+  evidence_kind    TEXT NOT NULL CHECK(evidence_kind IN ('source','inferred')),
+  branch_point_json TEXT CHECK(
+    branch_point_json IS NULL
+    OR (
+      json_valid(branch_point_json)
+      AND json_extract(branch_point_json, '$.kind')
+        IN ('source-turn','source-message')
+      AND json_type(branch_point_json, '$.id') = 'text'
+      AND json_extract(branch_point_json, '$.id') != ''
+    )
+  ),
+  PRIMARY KEY(child_id, relationship_kind)
 );
 ```
 
@@ -451,16 +551,41 @@ Fresh installs create all tables with the latest schema and set the version to t
 | 7 | Split legacy `origin` into `origin_kind` and `origin_ref` |
 | 8 | Rename the conversation lifecycle state from `discovered` to `unsaved` |
 | 9 | Drop cached unsaved rows, remove the persisted `state` column, and require valid save checkpoints on every row |
+| 10 | Add adapter-versioned relationship inspection, the immediate-parent relationship table, and saved transcript-projection versions |
 
 Phase 2 (§10) adds: `indexed_at` column (migration version 2)
 Phase 3 (§11.4) adds: `origin_kind` and `origin_ref` columns (migration version 7, after the legacy version-3 sync marker)
 The save terminology migration (version 4) rebuilds the conversations table for sql.js compatibility, renames the legacy `published_at`, `published_message_count`, and `publish_version` columns to `saved_at`, `saved_message_count`, and `save_version`, and rewrites legacy `state = 'published'` rows to `state = 'saved'`.
 The summarization migration (version 5) adds `summary_kind` with a default of `none` and a CHECK constraint over `none`, `imported`, `generated`, and `curated`; adds nullable `summary_extraction`; and back-fills `summary_kind = 'curated'` for existing rows whose `summary` is non-empty. This conservative back-fill prevents agent summarization from overwriting prose the user may already have edited.
 The provenance migration (version 7) rebuilds the conversations table for sql.js compatibility, replaces legacy `origin` with `origin_kind` and `origin_ref`, back-fills rows whose legacy `origin` value is null as `origin_kind = 'local', origin_ref = NULL`, and back-fills rows whose legacy `origin` value is non-null as `origin_kind = 'git', origin_ref = <legacy origin URL>`.
-The state terminology migration (version 8) rebuilds the conversations table for sql.js compatibility, changes the `state` column default and CHECK constraint to `unsaved`/`saved`, and rewrites legacy `state = 'discovered'` rows to `state = 'unsaved'`. Version 8 was the last schema that persisted lifecycle state; fresh installs now create version 9 directly.
-The saved-only storage migration (version 9) validates every legacy saved row's save checkpoints, then rebuilds the conversations table without the `state` column and copies only saved rows. Invalid saved checkpoints fail the migration without replacing the existing database. Legacy unsaved rows are disposable discovery cache entries and are dropped. Fresh installs create the version-9 schema directly.
+The state terminology migration (version 8) rebuilds the conversations table for sql.js compatibility, changes the `state` column default and CHECK constraint to `unsaved`/`saved`, and rewrites legacy `state = 'discovered'` rows to `state = 'unsaved'`. Version 8 was the last schema that persisted lifecycle state.
+The saved-only storage migration (version 9) validates every legacy saved row's save checkpoints, then rebuilds the conversations table without the `state` column and copies only saved rows. Invalid saved checkpoints fail the migration without replacing the existing database. Legacy unsaved rows are disposable discovery cache entries and are dropped. Version 9 was the fresh-install baseline before conversation relationships were added.
+The conversation-relationship migration (version 10) adds relationship
+inspection status, version, and diagnostic fields; adds the
+`conversation_relationships` table; and adds
+`transcript_projection_version`. Existing rows begin unexamined and are brought
+to current adapter contracts by ordinary command startup plus an explicit
+content refresh. Fresh installs create version 10 directly.
 
-Database membership means that a conversation is part of clog's durable saved collection. The database does not store lifecycle state or unsaved source conversations. It also does not store full message content, tool outputs, or raw conversation text. Saved local rows point at managed files under `~/.clog/raw/`, git rows point into `~/.clog/remote/`, and file-imported rows point into `~/.clog/imports/`. Unsaved conversations exist only as on-demand views whose `sourcePath` points at an enabled external source.
+Before the pre-publication migration history is collapsed, every live database
+must reach schema version 10, every built-in-source row must have the installed
+adapter's current relationship-inspection and transcript-projection versions,
+and no row may remain unexamined. Current `unknown` rows are allowed only after
+their diagnostics are reviewed. Refresh preserves curation, managed raw bytes,
+save checkpoints until content is explicitly reparsed, and current
+`sourceMtime`; it never downgrades a newer adapter stamp. Rows refreshed under a
+new transcript projection clear stale semantic-search state. `clog index` then
+rebuilds conversation-record-owned vectors for default-indexed endpoints and
+conservatively retained branches; vectors from older projections remain
+unsearchable.
+
+Database membership means that a branch has a conversation record in clog's
+durable saved collection. The database does not store lifecycle state or
+unsaved source branches. It also does not store full message content, tool
+outputs, or raw conversation text. Saved local rows point at managed files
+under `~/.clog/raw/`, git rows point into `~/.clog/remote/`, and file-imported
+rows point into `~/.clog/imports/`. Unsaved branches exist only as on-demand
+views whose `sourcePath` points at an enabled external source.
 
 ### 3.5 Storage Location
 
@@ -498,14 +623,26 @@ interface SourceAdapter {
   /** Unique name for this source */
   name: string;
 
-  /** Discover all conversations on this machine, extracting metadata only */
+  /** Discover source conversations and inspect their relationship evidence */
   discover(): AsyncIterable<DiscoveredConversation>;
 
-  /** Parse a raw JSONL file into structured messages (on demand) */
-  parseMessages(filePath: string): Promise<Message[]>;
+  /** Project one coherent transcript from a raw JSONL file (on demand) */
+  parseTranscript(filePath: string): Promise<Transcript>;
+
+  /** Version and inspect source-native parent evidence */
+  relationshipInspectionVersion: number;
+  inspectRelationships(filePath: string): Promise<RelationshipInspection>;
+
+  /** Version of the coherent transcript projection */
+  transcriptProjectionVersion: number;
 
   /** Return the paths this adapter watches for new conversations */
   watchPaths(): string[];
+}
+
+interface Transcript {
+  messages: Message[];
+  warnings: ClogWarning[];
 }
 
 interface DiscoveredConversation {
@@ -519,6 +656,8 @@ interface DiscoveredConversation {
     slug: string | null;       // Source-native human-readable name when available; otherwise adapter-defined default
     createdAt: string;         // Discovery timestamp chosen by the source adapter (see source-specific rules below)
   };
+  relationshipInspection: RelationshipInspectionState;
+  relationships: ConversationRelationship[];
 }
 ```
 
@@ -566,8 +705,22 @@ getEnabledAdapters(config: Config): SourceAdapter[]
 
 **Two-phase parsing design:**
 
-1. **Discovery (lightweight):** Scans JSONL files, extracts only metadata (title, summary, project name/path, dates, slug), and reads at most the shared `SCAN_METADATA_MAX_LINES` head of each local source file. It does not parse all messages or load full content into memory. This keeps discovery fast even with large files: the adapter stops when its metadata completion condition is satisfied or when the line bound is reached.
-2. **On-demand (full parse):** When `clog show`, `clog diff`, MCP `get_conversation`, save, or indexing needs full content, `parseMessages()` reads and parses the entire JSONL file. This is where source-specific deduplication, correlation, and message normalization happen.
+1. **Discovery and relationship inspection:** Scans JSONL files for metadata and
+   adapter-owned relationship evidence. Codex CLI inspection is bounded by its
+   canonical metadata limit. Claude Code inspection continues until it resolves
+   metadata, parent evidence, and fork-creation time; a provenance-free artifact
+   can require a complete read. One scan invocation reuses its inspection result
+   rather than rereading the source for grouping or save.
+2. **On-demand transcript projection:** When `clog show`, `clog diff`, MCP
+   `get_conversation`, save, or indexing needs content, `parseTranscript()`
+   returns one coherent current message sequence plus any projection warnings.
+   Raw managed copies retain the complete source artifact independently of this
+   normalized projection.
+
+Saved-row maintenance calls the same `inspectRelationships` operation against
+managed content. Raising an adapter inspection version makes older rows
+eligible for inspection again; current rows require only the targeted database
+query and no managed-content read.
 
 ### 4.2 Claude Code Adapter
 
@@ -713,19 +866,24 @@ Not all conversations have a summary line — only longer ones that Claude Code 
 
 #### 4.2.6 Adapter Discovery Behavior
 
-During discovery (lightweight metadata extraction), the adapter reads only the bounded file head defined by `SCAN_METADATA_MAX_LINES` and will:
+During discovery, the adapter collects ordinary metadata only from the bounded
+file head defined by `SCAN_METADATA_MAX_LINES`, while the same source scan can
+continue beyond that bound until relationship evidence and the fork-creation
+timestamp are resolved:
 
 1. Glob `~/.claude/projects/*/*.jsonl` for main conversations (direct children of project dirs)
 2. Ignore `~/.claude/projects/*/*/subagents/` files for discovery. They are auxiliary sidechain logs, not separate discoverable conversations.
 3. Set `projectPath` from the first `cwd` field found in the main conversation JSONL. Claude records may contain multiple `cwd` values over the life of a conversation as the agent moves into subdirectories; for project identity, the first `cwd` is authoritative because it best represents where Claude Code was started. Later `cwd` values must not overwrite `projectPath` during discovery.
-4. Scan each JSONL file's bounded head for metadata only:
+4. Scan each JSONL file's bounded head for ordinary metadata:
    a. Find the first projected canonical user message represented by a `type: "user"` line where `message.content` is a string, after skipping any string that is wrapper-only under the hidden-wrapper rule in §4.2.7 → use as title (truncated to 100 chars without adding a display ellipsis)
    b. Find the `type: "summary"` line if present → use as summary
    c. Extract the first valid `cwd` found → use as `projectPath`
    d. Set `projectName` to the basename of `projectPath` when `projectPath` is available; otherwise leave `projectName = null`
    e. Extract the first `timestamp` found → use as `createdAt`
    f. Extract the `slug` field from any line that has it
-   g. Stop scanning early once all Claude Code discovery metadata is found; otherwise stop when the discovery line bound is reached
+   g. Stop collecting ordinary metadata once all fields are found or the
+      metadata line bound is reached; continue the shared source scan when
+      relationship inspection still needs evidence
 5. Use the filename (without `.jsonl`) as both the `sourceId` and the conversation `id` — this is a UUID (e.g., `"c7044ea5-c019-44d6-a77a-500036740f9a"`)
 
 For scan-time discovery, a Claude Code `summary`, `slug`, or `cwd` that appears only after `SCAN_METADATA_MAX_LINES` is treated as absent. A missing in-bound `cwd` leaves `projectPath` unknown, and the local discovery pipeline reports the conversation as undiscoverable rather than inserting it into the database.
@@ -734,17 +892,19 @@ In Phase 1, the parent Claude conversation is the only first-class clog conversa
 
 #### 4.2.7 Adapter Full Parse Behavior
 
-When full conversation content is needed (`parseMessages()`), the adapter will:
+When full conversation content is needed (`parseTranscript()`), the adapter will:
 
 1. Read the entire parent JSONL file only
-2. Filter to `type: "user"` and `type: "assistant"` lines
-3. Skip `system`, `progress`, `file-history-snapshot`, `queue-operation` lines
-4. For assistant messages, deduplicate by `message.id` — merge content blocks from lines sharing the same API message ID
-5. Strip `thinking` content blocks
-6. For user-string records, apply a narrow hidden-wrapper filter before deciding whether to emit a canonical `Message`. In Phase 1, only confirmed hidden model scaffolding may be dropped; user-visible local-command or status entries must remain canonical even when encoded with XML-like wrapper tags.
-7. Do not parse or inline transcript content from `subagents/` sidechain files. If delegated work is visible to the user, it must already be represented by canonical transcript records in the parent file itself rather than by sidechain logs.
-8. Preserve parser-derived transcript order. When multiple raw assistant entries merge into one rendered message, the merged message appears at the position of its first raw occurrence.
-9. Normalize into the `Message[]` format (Section 3.2)
+2. Reconstruct the source application's current path from message `uuid` /
+   `parentUuid` ancestry and composition records, then project only that path
+3. Filter to `type: "user"` and `type: "assistant"` lines
+4. Skip `system`, `progress`, `file-history-snapshot`, `queue-operation` lines
+5. For assistant messages, deduplicate by `message.id` — merge content blocks from lines sharing the same API message ID
+6. Strip `thinking` content blocks
+7. For user-string records, apply a narrow hidden-wrapper filter before deciding whether to emit a canonical `Message`. In Phase 1, only confirmed hidden model scaffolding may be dropped; user-visible local-command or status entries must remain canonical even when encoded with XML-like wrapper tags.
+8. Do not parse or inline transcript content from `subagents/` sidechain files. If delegated work is visible to the user, it must already be represented by canonical transcript records in the parent file itself rather than by sidechain logs.
+9. Preserve current-path order. When multiple raw assistant entries merge into one rendered message, the merged message appears at the position of its first current-path occurrence.
+10. Normalize into the `Message[]` format (Section 3.2)
 
 For Claude canonical user-message projection, a user-string record is wrapper-only only when its trimmed text consists entirely of one or more known hidden wrapper blocks and contains no other user-visible content. This allowlist is intentionally narrow. Unknown XML-like tags are not treated as hidden automatically, and known user-visible local-command/status wrappers remain in the canonical transcript.
 
@@ -755,7 +915,18 @@ In Phase 1, the only confirmed hidden Claude wrapper block name is `local-comman
 - Files where `sessionId` is absent on some lines — use the filename UUID as canonical
 - `message.content` can be either a `string` (user text) or an `array` (content blocks) — handle both
 - Very large conversations (500+ JSONL lines, many of which are `progress` noise) — filter early
-- The `parentUuid` field forms a tree (for branching conversations / sidechains) — for MVP, flatten to parser-derived transcript order and ignore branching
+- The `parentUuid` field forms retained rewind paths. The adapter follows the
+  current leaf's ancestry and composition records; abandoned same-file paths
+  remain in raw JSONL but do not appear as consecutive current messages.
+
+Claude Code `/branch` creates a new resumable session. Durable, consistent
+`forkedFrom` evidence produces a source-confirmed immediate-parent
+relationship. `--fork-session` can retain foreign parent `sessionId` values on
+its copied prefix without explicit provenance; the adapter records that
+relationship as inferred. Malformed or conflicting provenance produces a
+versioned `unknown` diagnostic. A fork child's `createdAt` is its first
+child-written record timestamp, falling back to source file time when no such
+record exists.
 
 ### 4.3 Codex CLI Adapter
 
@@ -796,6 +967,13 @@ Important payload shapes:
 
 - `session_meta.payload.id` is the canonical Codex session ID.
 - `session_meta.payload.cwd` is the primary `projectPath`.
+- `session_meta.payload.forked_from_id` can identify an immediate copied-history
+  source, but it is a user branch only when the same canonical metadata declares
+  `thread_source: "user"`.
+- `session_meta.payload.thread_source` classifies user threads, recognized
+  subagent owners, and memory-consolidation threads. `cli_version` is retained
+  as inspection evidence and diagnostic context rather than determining branch
+  ownership by itself.
 - `response_item.payload.type == "message"` contains message records. `payload.role` identifies the message role, and `payload.content` is an ordered array of content blocks. User transcript text appears in blocks shaped like `{ "type": "input_text", "text": string }`; assistant transcript text appears in blocks shaped like `{ "type": "output_text", "text": string }`. Records with `role: "developer"` contain instruction/context material and are not part of the rendered transcript.
 - `response_item.payload.type == "function_call"` contains tool name in `payload.name`, arguments in `payload.arguments`, and the correlation key in `payload.call_id`.
 - `response_item.payload.type == "function_call_output"` contains the correlation key in `payload.call_id` and rendered tool output text in `payload.output` when `payload.output` is a string.
@@ -821,7 +999,16 @@ During discovery, the adapter will:
 11. Use `null` for `slug`
 12. Use `session_meta.payload.timestamp` as `createdAt`; otherwise, after the discovery line bound is reached without an in-bound `session_meta.payload.timestamp`, fall back to the first valid top-level timestamp encountered within the bound, then file mtime
 
-Codex discovery scans until the Codex metadata completion condition is satisfied or `SCAN_METADATA_MAX_LINES` is reached. It must not assume `session_meta` is always the first line, even if that is the common observed shape. A filename-derived source ID, top-level timestamp, or `turn_context.payload.cwd` is a fallback candidate during the bounded scan; it becomes final only after the matching primary `session_meta.payload.*` value has been found within the bound, or after the discovery line bound is reached without finding that primary value.
+Codex discovery scans until the Codex metadata completion condition is satisfied or `SCAN_METADATA_MAX_LINES` is reached. It must not assume `session_meta` is always the first line, even if that is the common observed shape. The first valid canonical `session_meta` owns identity, metadata, and relationship classification; later conflicting metadata does not replace it. A filename-derived source ID, top-level timestamp, or `turn_context.payload.cwd` is a fallback candidate during the bounded scan; it becomes final only after the matching primary `session_meta.payload.*` value has been found within the bound, or after the discovery line bound is reached without finding that primary value.
+
+Codex relationship inspection version 3 records a source-confirmed branch only
+when that first valid canonical `session_meta` contains a valid
+`forked_from_id` and declares `thread_source: "user"`. Recognized spawned-agent
+and memory-consolidation thread sources produce `none_found`; missing or
+unfamiliar classifications with parent-like evidence remain `unknown` for
+review. Compaction ancestry and subagent ownership are not public branch
+relationships. These rules are pinned to the upstream-source audit in
+`docs/INVESTIGATIONS/CODEX_CLI_CONVERSATION_RELATIONSHIP_SOURCE_INVARIANTS.md`.
 
 For Codex title extraction during discovery, a canonical user prompt remains pending until the nearby duplicate window closes. A later `event_msg.user_message` replaces the canonical title candidate only when it has the same normalized text and either the same top-level timestamp or adjacency after ignored metadata and non-transcript records. The pending title window closes when discovery sees the first later relevant transcript record that does not share the canonical prompt's top-level timestamp. If no duplicate appears before the window closes or before the discovery line bound is reached, the canonical prompt becomes the final title candidate.
 
@@ -1064,6 +1251,14 @@ Unsaved conversations:
 
 `clog status` uses its own compact row format rather than the generic `clog list` table. In the conversation-level layout, the `PROJECT` field is content-width: it is sized to the widest displayed project name in that status view, plus one trailing space of padding. It must not expand to consume additional terminal width beyond that content-based width. Any remaining horizontal space belongs to the rendered title text.
 
+Status counts remain concrete action counts. A branch graph never hides two
+conversations that both need saving behind one representative, and
+`--conversations` continues to mean one actionable row per concrete
+conversation. Ordinary command startup refreshes stale saved relationship
+inspection for registered adapters, but only `clog status` renders current
+`unknown` diagnostics, refresh failures, and adapter-version skew. Unrelated
+commands do not repeat those maintenance warnings.
+
 ### 5.3 The `list` Command
 
 `clog list` with no flags shows saved conversations. This is the knowledge-base view: conversations the user has explicitly saved locally, plus same-author imported saved conversations from git reconciliation or `clog fill` when `config.author` is set. If `config.author` is unset, the default view shows saved local conversations only. §11.10 defines the exact provenance filter.
@@ -1080,6 +1275,7 @@ Unsaved conversations:
 | `--grep <text>` | `-g` | Filter by text match on title, summary, or message content |
 | `--columns <cols>` | `-c` | Columns to show (comma-separated: `id,date,state,source,project,author,title`, or `all`) |
 | `--origin <origin>` | | Filter by provenance view: `local` for `origin_kind = 'local'`, `remote` for imported rows (`origin_kind != 'local'`) |
+| `--all-branches` | | Show and search every branch and superseded generation instead of one representative branch per conversation |
 
 ```bash
 # Filter by state
@@ -1096,11 +1292,35 @@ $ clog list -g "auth"
 
 # Combine filters
 $ clog list -s saved -p api-service -g "token"
+$ clog list --all-branches
 
 # Control which columns appear
 $ clog list --columns all
 $ clog list -c id,date,title
 ```
+
+Default list output derives branch graphs after filtering and displays the most
+recently updated visible endpoint as the representative branch. For local-source
+rows, representative ordering uses the current scan's `sourceMtime` when
+available; imported and remote rows, and local rows without a current source
+mtime, use source `createdAt`. Stable source identity breaks ties. A collapsed
+row's `createdAt` belongs to the displayed representative, not the known root.
+
+A linear chain of copied-history generations has `endpointCount = 1` and
+receives no branch chrome because its endpoint already contains the coherent
+history from the opening turn. Divergent graphs display `[N branches]`; an
+unavailable ancestor displays `incomplete branch history`. When a branch count
+is shown, list explains that the row is the most recently updated branch and
+points to `clog list --all-branches`. Expanded output returns every concrete
+branch, marks superseded generations, and shows each known immediate parent's
+short ID.
+
+Collapsing is a read-only navigation default. Direct conversation IDs remain
+resolvable, including IDs for nonrepresentative and superseded paths. `clog
+show` and `clog diff` act on the exact resolved conversation path. Metadata
+edits, tagging, save, drain, remove, sync, and indexing retain their
+command-specific conversation-record scope; no collapsed row implies
+graph-wide mutation.
 
 Columns are dynamically sized to the terminal width. For every non-terminal column, width is computed from the current result set as `max(header width, widest rendered cell width) + 1`, producing dense output without large fixed-width gaps. The final visible column absorbs the remaining terminal width. When that final column is truncated, it must still allow at least `1` visible character plus `...` (minimum width `4`). The `author` column is auto-shown when multiple distinct authors are present, even without `--columns`. The `source` column is auto-shown when the selected result set contains conversations from multiple distinct sources. `--columns` still overrides the default column set.
 
@@ -1314,7 +1534,7 @@ When called with no arguments, `clog save` performs no local-source scan. It sav
 
 When called with explicit selectors, `clog save [selectors...]` can save unsaved or already saved local conversations.
 
-Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below. For project selectors, "saveable" means conversations that `clog status` would report for that project: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs from it, and saved conversations selected by the no-argument checkpoint rule above. Metadata-only changes do not make clean saved conversations project-batch targets. A user may still explicitly pass a clean saved conversation ID to force a resave of that one row.
+Project selectors are only a batching mechanism here: `clog save myapp` must behave like applying explicit `clog save <id>` to each matching saveable local conversation in project `myapp`, using the same per-conversation save rules described below. For project selectors, "saveable" means conversations that `clog status` would report for that project: unsaved conversations, saved conversations whose managed raw copy is missing or whose source file differs from it, and saved conversations selected by the no-argument checkpoint rule above. Metadata-only changes do not make clean saved conversations project-batch targets. A user may still explicitly pass a clean saved conversation ID to force a resave of that one conversation record.
 
 Per-conversation explicit save behavior:
 
@@ -1358,6 +1578,15 @@ A conversation is counted as lacking a structured summary when `summaryKind != "
 ### 5.7.1 The `show` and `path` Commands
 
 `clog show <id>` displays conversation metadata followed by parsed messages. Saved conversations read from the clog-managed raw copy. Unsaved conversations can be shown from the source file when the source file is still available.
+
+The ID selects one exact conversation path even when default list output would
+represent the conversation with another path. Parsed formats use that adapter's
+coherent current transcript. On the representative path or another endpoint,
+message index 0 is the opening turn and a copied-history prefix appears in
+canonical order, so callers do not resolve and concatenate ancestor
+transcripts. Inherited message timestamps can reflect the child's copy time;
+message content and order, not inherited per-message timestamps, are
+authoritative.
 
 `clog show <id> --path` is path-output shorthand on the `show` command and is equivalent to `clog path <id>`.
 
@@ -1721,7 +1950,7 @@ publication, pair-directory partial success, summaries, or exit status.
 #### 5.7.3.4 Archive Safety and Resource Limits
 
 Archive creation validates prospective names before reading conversation
-content. Every stored conversation ID must contribute exactly one non-empty
+content. Every stored branch ID must contribute exactly one non-empty
 path component. The same selected-name validator used by fill rejects empty
 components, C0 controls, backslashes, Windows-forbidden characters, POSIX or
 Windows absolute paths, `.` and `..` components, trailing spaces or periods,
@@ -1960,8 +2189,8 @@ Fill runs one local-source scan before entering its database write section. A
 plain fill gives a matching unsaved scan candidate local precedence. With
 `--own`, no database row exists to restore in place: fill inserts the
 pair-derived saved row, writes the managed raw copy to
-`raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`, sets `sourceMtime` from
-the managed copy, and sets `projectPath = null`. A later `clog save` may attach
+`raw/<source>/<id>.jsonl`, sets `sourcePath = filePath`, leaves
+`sourceMtime = null`, and sets `projectPath = null`. A later `clog save` may attach
 the matching live source path to that row in memory. If saving would replace
 the restored content with the live source version, clog asks for confirmation
 before overwriting the managed copy.
@@ -1995,15 +2224,23 @@ New imported/restored rows use pair metadata plus these derived fields:
 - `projectPath = null`
 - `indexedAt = null`
 - `filePath` and `sourcePath` set to the managed copy
-- `sourceMtime` from the managed copy
+- `sourceMtime = null`; managed-copy time is not source activity
 - `discoveredAt` set to import time
+- `relationshipInspection` and `relationships` from trusted current pair
+  metadata or adapter reinspection of the paired JSONL
+- `transcriptProjectionVersion` from the receiving adapter
 
-File-row updates are triggered by a changed pair metadata field or a changed
-parsed `savedMessageCount`. Metadata-only updates do not recopy content. A
-changed `savedMessageCount` overwrites the managed copy and refreshes the
-checkpoint. File-row updates clear `indexedAt` when title, summary, or parsed
-transcript content changes; tag-only changes and path-only locator changes
-preserve `indexedAt` when title, summary, and parsed content are unchanged.
+File-row updates are triggered by changed pair metadata, parsed
+`savedMessageCount`, transcript-projection version, relationship inspection, or
+managed locator path. Metadata-only and relationship-only updates do not
+recopy content. A changed message count, transcript-projection version, or
+managed locator path overwrites the managed copy. A message-count change
+refreshes `savedMessageCount`, and a projection-version change records the
+receiving adapter's current transcript contract. File-row updates clear
+`indexedAt` when the title, summary, parsed transcript content, or
+transcript-projection version changes. Tag-only, relationship-only, and
+path-only updates preserve `indexedAt` when those indexed-content fields and
+contracts are unchanged.
 
 `--dry-run` performs scanning, validation, ignore filtering, duplicate
 detection, the `--own` author guard, collision planning, collapsed error
@@ -2264,6 +2501,11 @@ Phase 1 provides browsing, retrieval, and curation. Semantic search is added in 
 
 MCP tools that accept a conversation ID use the same resolver grammar as CLI commands (§3.3): full UUID, 4+ character prefix, or source-qualified `prefix@source` / `uuid@source`. Source-qualified IDs validate the source qualifier with the source-key syntax contract and restrict resolution to exact stored source-key matches; ambiguous unqualified prefixes return copy-pasteable `id@source` candidates.
 
+`list_conversations`, `get_conversation`, and `search_conversations` publish
+Model Context Protocol output schemas for their structured responses. Field
+descriptions distinguish a representative branch ID, an exact requested branch
+ID, and the branch that supplied a search snippet.
+
 ```typescript
 // List conversations with optional state and metadata filters
 tool: "list_conversations"
@@ -2274,6 +2516,7 @@ input: {
   author?: string;         // Case-insensitive substring match on author
   grep?: string;           // Case-insensitive substring match on title, summary, or message content
   origin?: "local" | "remote"; // local rows vs imported saved rows
+  allBranches?: boolean;   // Default false; include superseded generations
   limit?: number;          // Default 20, max 100
   offset?: number;         // For pagination
   sortBy?: "createdAt" | "savedAt" | "modifiedAt" | "title" | "project" | "author";
@@ -2298,6 +2541,9 @@ returns: {
     savedAt: string | null;
     savedMessageCount: number | null;
     sourceMtime: string | null;
+    endpointCount: number; // Endpoints in the composed, filtered view
+    branchStatus?: "endpoint" | "superseded" | "unproven"; // All-branches rows
+    relationshipCompleteness?: "incomplete" | "invalid"; // Omitted when complete
   }>;
   totalCount: number;
   limit: number;           // Effective page size
@@ -2308,11 +2554,13 @@ returns: {
   hasMore: boolean;        // True when another page is available
   nextOffset?: number;     // Offset to request next with the same limit
   paginationNote?: string; // Present when hasMore is true; tells agents how to page
+  branchView: "collapsed" | "all_branches";
   warnings?: ClogWarning[];
+  relationshipWarnings?: RelationshipGraphWarning[];
 }
 
-// Get conversation content (parses raw JSONL on demand, truncated by default)
-// Only works on saved conversations — returns an error for unsaved.
+// Get conversation content and branch navigation (parses raw JSONL on demand,
+// truncated by default). Only works on saved conversations.
 tool: "get_conversation"
 input: {
   id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
@@ -2335,6 +2583,16 @@ returns: {
   originRef: string | null;
   state: string;
   createdAt: string;
+  immediateParentRelationship: ConversationRelationship | null;
+  knownRootIdentity: { source: string; sourceId: string };
+  childBranchIds: string[]; // Saved immediate-child branches this tool can open
+  branchIds: string[];      // Saved branches this tool can open, including id
+  branchCount: number;      // branchIds.length
+  endpointCount: number;    // Endpoints in the saved, openable branch view
+  relationshipCompleteness: "complete" | "incomplete" | "invalid";
+  hasMoreBranches: boolean;
+  inheritedMessagesMayAppear: boolean;
+  relationshipWarnings: RelationshipGraphWarning[];
   messages: Message[];       // Requested message slice
   totalMessages: number;     // Total message count in the full conversation
   range: {
@@ -2382,7 +2640,7 @@ returns: {
 // Edit metadata on a saved local conversation
 tool: "update_conversation"
 input: {
-  id: string;              // UUID, 4+ char prefix, or source-qualified prefix@source
+  id: string;              // ID resolving to one exact saved local branch
   title?: string;          // New title
   summary?: string;        // New summary
   extraction?: SummaryExtraction | null; // Structured summary fields
@@ -2413,7 +2671,11 @@ returns: {
 If the requested update would not change the conversation's title, summary, summary kind, extraction, or tags, `update_conversation` is a no-op: it leaves `modifiedAt` unchanged and returns the existing conversation metadata.
 
 `update_conversation` operates only on saved local rows (`originKind = "local"`). It
-rejects both `git` and `file` rows as imported read-only conversations.
+rejects both `git` and `file` rows as imported read-only conversation records.
+The tool updates only the conversation record for the exact input branch ID.
+An ID returned by a collapsed list or search result updates the branch that
+supplied that result; metadata does not propagate to the conversation's other
+branches.
 
 `update_conversation` summary-kind rules are applied in order:
 
@@ -2476,6 +2738,26 @@ their stored curation metadata. An unsaved or all request returns collapsed
 scan diagnostics in the optional top-level `warnings` array. If one adapter
 fails, broad list requests keep its already-yielded candidates and every other
 adapter's candidates while reporting that discovery was incomplete.
+
+Related branches collapse before pagination unless `allBranches` is true.
+Each list row's `id` is the representative branch in a collapsed response or
+the concrete branch in an all-branches response; `branchView` makes that
+distinction explicit. List rows deliberately remain lean: `endpointCount`
+is the normal affordance, while incomplete or invalid history adds
+`relationshipCompleteness`. Full branch IDs, immediate-parent evidence, and
+known-root identity are returned by `get_conversation`, not repeated on every
+list row. All-branches rows add `branchStatus` so agents can identify
+endpoint, superseded, or unproven branches.
+
+`get_conversation` returns the exact requested saved branch, never a
+substituted representative branch. It returns the adapter-produced coherent
+current transcript plus navigation metadata for saved branches. Parent identity
+can refer to an unavailable branch; `branchIds` contains only IDs that this
+tool can open, and `hasMoreBranches` signals additional known branches that the
+saved-only tool cannot open. On a linear endpoint, the transcript already
+begins with the opening turn. When `endpointCount > 1`, retrieval guidance
+requires agents to inspect the relevant branch transcripts before summarizing
+divergent outcomes.
 
 `list_conversations` always returns explicit pagination metadata. Agents should treat `hasMore: true` as an instruction to request the
 next page with `offset: nextOffset` and the same `limit` when the task requires
@@ -2774,7 +3056,7 @@ Conversations are naturally chunked by **turn** (user message + assistant respon
 
 - **Short turns:** Embedded as-is. A typical turn is 100–500 tokens.
 - **Long turns:** Split at ~800 token boundaries, with ~100 token overlap for context continuity.
-- **Each chunk stores:** conversation ID, chunk index, message index range — enough to reconstruct which part of the conversation matched.
+- **Each chunk stores:** branch ID, chunk index, message index range — enough to reconstruct which branch transcript matched.
 
 ### 10.5 Embedding Providers
 
@@ -2827,7 +3109,14 @@ The `indexed_at` column tracks vector DB state:
 
 **Embedding is optional per conversation.** A conversation can be saved without being indexed. This decouples the curation workflow from search infrastructure — saving works without a vector DB.
 
-**Searchability invariant:** The vector store is a derived cache of the subset of saved database conversations that are currently searchable. Database membership already implies saved state. A conversation is searchable if and only if it exists in the local database, has a non-null `indexed_at`, and `indexed_at >= saved_at`. A saved conversation whose index timestamp is missing or older than its latest save has either never been indexed or has been marked stale after a content change; its vectors may be absent or outdated, so it must not appear in search results until re-indexed. The vector store is not an append-only record of past saves. Semantic search must not return conversations that have been deleted, have a stale index, or otherwise dropped from the local database. Unsaved scan views are never indexed.
+**Searchability invariant:** The vector store is a derived cache of the subset of saved database conversations that are currently searchable. Database membership already implies saved state. A conversation is searchable only when it exists in the local database, has a non-null `indexed_at` at or after `saved_at`, and both its relationship-inspection and transcript-projection versions equal the installed adapter versions. A missing, older, or newer adapter stamp makes existing vectors unreachable until a compatible clog build explicitly refreshes and indexes the row. Semantic search must not return conversations that have been deleted, have a stale index, or otherwise dropped from the local database. Unsaved scan views are never indexed.
+
+Vectors remain owned by concrete branch IDs. Default indexing covers endpoints,
+including a parent continued after its newest fork, plus branches retained
+conservatively because their status is unproven. It skips branches proven
+superseded. Setting `search.indexAllBranches = true` restores indexing for every
+branch. Query-time conversation-graph collapse remains the correctness layer
+even when every branch is indexed.
 
 **Index coherence rule:** Any operation that changes a conversation's search eligibility or indexed content must keep the vector store coherent with the database before the command returns. Implementations may satisfy this either by applying the vector-store mutation immediately or by making stale entries unreachable in the same logical operation, but search results must always reflect current DB state rather than historical indexing events.
 
@@ -2853,6 +3142,7 @@ Options:
 | `-p, --project <name>` | Filter by project |
 | `-a, --author <name>` | Filter by author |
 | `-t, --tag <tag>` | Filter by tag |
+| `--all-branches` | Return every matching branch and superseded generation |
 | `-l, --limit <n>` | Max results (default 10) |
 
 If search is not configured or dependencies are missing, prints a helpful message directing the user to `clog search --init`.
@@ -2865,6 +3155,13 @@ $ clog index --rebuild    # Re-index all saved conversations from scratch
 ```
 
 `--rebuild` sets `indexed_at = null` on all saved conversations before indexing, forcing a full re-index.
+
+By default, semantic search returns the highest-scoring in-scope match from
+each conversation graph, and literal `clog list --grep` searches endpoints
+plus unrelated branches. `--all-branches` restores branch-specific results and
+literal matching of superseded generations. Invalid graphs fall back to
+branch-specific results because clog cannot safely establish the conversation
+boundary.
 
 ### 10.8.1 Searchability Lifecycle
 
@@ -2899,6 +3196,7 @@ input: {
   project?: string;        // Case-insensitive substring match on project
   author?: string;         // Case-insensitive substring match on author
   origin?: "local" | "remote"; // local rows vs imported saved rows
+  allBranches?: boolean;  // Default false
   limit?: number;          // Default 10, max 50
 }
 returns: {
@@ -2915,19 +3213,54 @@ returns: {
     originKind: "local" | "git" | "file";
     originRef: string | null;
     createdAt: string;
+    knownRootIdentity: { source: string; sourceId: string };
+    endpointCount: number;
+    relationshipCompleteness: "complete" | "incomplete" | "invalid";
+    snippetBranchId: string; // Concrete branch that supplied the snippet
     relevanceScore: number;
     snippet: string;       // Matched content excerpt
   }>;
   totalCount: number;
+  branchView:
+    | "collapsed"
+    | "all_branches"
+    | "collapsed_with_branch_fallback";
   indexCoverage: {
-    indexed: number;     // How many saved conversations are indexed
-    saved: number;   // Total saved conversations
+    searchableBranchCount: number; // Eligible branches currently searchable
+    eligibleBranchCount: number;   // Branches the configured policy intends to index
   };
-  warning?: string;      // Present when search hit the scan cap and completeness is not guaranteed
+  warning?: string;      // Scan-cap or invalid-relationship fallback diagnostic
 }
 ```
 
 `search_conversations` only searches **saved** conversations, consistent with the default `list_conversations` population and with `browse_metadata`. If search is not configured, the tool returns an error explaining how to set it up.
+
+In collapsed results, `id` is the highest-scoring in-scope matching branch and
+`snippetBranchId` identifies the branch whose indexed content supplied the
+snippet. `endpointCount` describes the complete saved conversation graph whose
+branches satisfy the current adapter search contracts, not only the branches
+that matched the query or its metadata filters. An `endpointCount` greater than
+one tells the agent to call `get_conversation` and inspect relevant branch
+transcripts before summarizing divergent outcomes.
+
+`indexCoverage.eligibleBranchCount` counts filtered saved branches that the
+current `search.indexAllBranches` setting intends to index.
+`indexCoverage.searchableBranchCount` counts the subset that currently
+satisfies the searchability invariant. Eligibility is classified from the
+complete saved conversation graph before project, author, tag, or origin
+filters are applied, then intersected with the filtered rows. The request's
+`allBranches` option changes result expansion but not this denominator.
+
+The eligible branch-ID set is used only for `indexCoverage`. Semantic-search
+candidate filtering continues to admit every filtered branch that satisfies
+the searchability invariant, including a branch whose still-current vectors
+remain available after it becomes superseded. Query-time conversation-graph
+collapse handles those candidates.
+
+When invalid relationships prevent safe collapse,
+`branchView = "collapsed_with_branch_fallback"` and the affected matches remain
+branch-specific. `branchView = "all_branches"` remains reserved for an explicit
+`allBranches` request.
 
 `search_conversations` uses the same MCP metadata filter semantics as `list_conversations`:
 `project` and `author` are trimmed case-insensitive substring filters, tags are
@@ -3120,7 +3453,7 @@ The git remote path tuple is `(author, source, id)`. The source directory and fi
 
 - `<author>` is the author directory for the person who saved the conversation
 - `<source>` must be a syntactically valid source key such as `claude-code` or `codex-cli`
-- `<id>` is the source-native conversation ID and must match `meta.id`
+- `<id>` is the source-native branch ID and must match `meta.id`
 - `meta.source` must match the `<source>` directory
 - the `.jsonl` and `.meta.json` paths for a conversation must share the same `(author, source, id)` tuple
 
@@ -3158,7 +3491,21 @@ Import identity is `(source, id)`, not `id` alone.
   "modifiedAt": "2026-02-21T15:00:00Z",
   "source": "claude-code",
   "createdAt": "2026-02-19T09:15:00Z",
-  "slug": "fix-auth-bug"
+  "slug": "fix-auth-bug",
+  "relationshipInspection": {
+    "status": "linked",
+    "version": 2,
+    "diagnostic": null
+  },
+  "relationships": [{
+    "kind": "branch",
+    "parent": {
+      "source": "claude-code",
+      "sourceId": "parent-session-id"
+    },
+    "evidence": "source",
+    "branchPoint": null
+  }]
 }
 ```
 
@@ -3189,8 +3536,10 @@ according to §5.7.4.
 | `savedAt` | string | ISO timestamp of the time the conversation was saved to clog |
 | `modifiedAt` | string | ISO timestamp of the last metadata edit or content-change marker |
 | `source` | string | Source key (e.g., `"claude-code"`) |
-| `createdAt` | string | Earliest message timestamp — when the conversation started |
+| `createdAt` | string | Source-defined creation time; an explicit fork child uses its fork-creation moment rather than copied-history timestamps |
 | `slug` | string or null | Session slug from the source (if available) |
+| `relationshipInspection` | object | Adapter inspection status, version, and diagnostic. Optional only for backward-compatible legacy pairs |
+| `relationships` | array | Normalized immediate-parent relationships. Present whenever `relationshipInspection` is present |
 
 Pair metadata is valid only when:
 
@@ -3209,7 +3558,33 @@ directory in the path, and `author` must match the author directory. A valid
 metadata document in the wrong directory is a `pair_layout_mismatch`, not
 invalid metadata.
 
-Older pair metadata files without `summaryKind` or `summaryExtraction` remain valid. Import treats a non-empty legacy `summary` as `summaryKind = "curated"` and treats a blank legacy `summary` as `summaryKind = "none"`; `summaryExtraction` defaults to `null`.
+Older pair metadata files without `summaryKind`, `summaryExtraction`, or the
+two relationship fields remain valid. Import treats a non-empty legacy
+`summary` as `summaryKind = "curated"` and treats a blank legacy `summary` as
+`summaryKind = "none"`; `summaryExtraction` defaults to `null`.
+
+Relationship inspection and normalized relationships are separate pair fields
+and must be present together. Import trusts them only when their version equals
+the receiving adapter's current relationship-inspection contract. Older or
+unstamped pairs are re-examined from the paired raw JSONL, while metadata
+written by a newer adapter is rejected with upgrade guidance. A newly inferred
+parent never replaces portable source-confirmed ancestry.
+
+`transcriptProjectionVersion` and `sourceMtime` are deliberately absent from
+pair metadata. Import parses the paired raw JSONL with the receiving adapter and
+records that adapter's current transcript-projection version locally. A
+projection-version change refreshes the managed raw copy and clears semantic
+search freshness even when message count is unchanged. `sourceMtime` describes
+the local source filesystem, so imported and git rows store it as null and use
+portable `createdAt` for representative ordering.
+
+Archive drain, pair-directory drain, fill, and Git synchronization preserve a
+child's immediate-parent relationship even when the parent pair is absent.
+They copy the exact managed raw bytes, including abandoned same-file Claude
+Code paths that are excluded from the normalized current transcript. Sync
+retraction remains branch-specific: removing or retracting one child
+does not delete its parent or sibling branches, and a missing parent does not
+invalidate the child's portable relationship.
 
 **Fields derived when git reconciliation inserts a row** (not in meta.json):
 
@@ -3223,12 +3598,18 @@ Older pair metadata files without `summaryKind` or `summaryExtraction` remain va
 | `projectPath` | `null` |
 | `sourcePath` | Path in checkout (`~/.clog/remote/<author>/<source>/<id>.jsonl`) |
 | `filePath` | Same as `sourcePath` |
-| `sourceMtime` | File mtime from filesystem |
+| `sourceMtime` | `null`; imported checkout mtime is not source activity |
 | `indexedAt` | `null` (not yet indexed) |
 | `originKind` | `"git"` |
 | `originRef` | Configured git remote URL |
+| `relationshipInspection` / `relationships` | Trusted current pair metadata or adapter inspection of the paired JSONL |
+| `transcriptProjectionVersion` | Receiving adapter's current version |
 
-For existing git rows, reconciliation updates fields according to §11.8. `indexedAt` is cleared only when title, summary, or parsed transcript content changes; tag-only updates and path-only locator updates preserve it (§10.8.1).
+For existing Git rows, reconciliation updates fields according to §11.8.
+`indexedAt` is cleared when the title, summary, parsed transcript content, or
+transcript-projection version changes. Tag-only, relationship-only, and
+path-only locator updates preserve it when those indexed-content fields and
+contracts are unchanged (§10.8.1).
 
 ### 11.3 File Layout
 
@@ -3587,7 +3968,7 @@ If vector cleanup fails after the database transaction commits, reconciliation
 remains successful and prints a warning naming the affected short ID.
 
 The scanner walks the checkout by author directory, source directory, and
-conversation ID in code-point lexicographic order. Parse-supported source
+branch ID in code-point lexicographic order. Parse-supported source
 directories are reconciled. Syntactically valid source directories whose source
 keys are not parse-supported emit one `unsupported_source` warning per
 `<author>/<source>` directory; any conversation pairs found there are skipped,

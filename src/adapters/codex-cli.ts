@@ -4,7 +4,10 @@ import path from "node:path";
 import readline from "node:readline";
 
 import type { Config } from "../config/schema.js";
-import type { Message } from "../models/conversation.js";
+import type {
+  Message,
+  RelationshipInspection,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
@@ -12,6 +15,7 @@ import {
   type DiscoverOptions,
   type DiscoveredConversation,
   type SourceAdapter,
+  type Transcript,
   globSourceFiles,
 } from "./adapter.js";
 
@@ -42,6 +46,8 @@ interface ExecCommandEndInfo {
 }
 
 interface CodexDiscoveryState {
+  canonicalSessionMeta: Record<string, unknown> | null;
+  canonicalSessionMetaSeen: boolean;
   embeddedSourceId: string | null;
   firstTopLevelTimestamp: string | null;
   finalTitle: string | null;
@@ -58,15 +64,38 @@ interface PendingCodexTitle {
   adjacent: boolean;
 }
 
+interface CodexMetadataInspection {
+  discoveryState: CodexDiscoveryState;
+  discoveryFailed: boolean;
+  relationshipInspection: RelationshipInspection;
+}
+
 const UUID_SUFFIX_REGEX =
   /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
+const UUID_REGEX =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 const KNOWN_WRAPPER_BLOCKS = ["environment_context", "user_shell_command"];
 const AGENTS_INSTRUCTIONS_PREFIX_REGEX =
   /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/;
 
+export const CODEX_CLI_ADAPTER_VERSIONS = {
+  relationshipInspection: 3,
+  transcriptProjection: 1,
+} as const;
+
 export class CodexCliAdapter implements SourceAdapter {
   readonly name = "codex-cli";
+  readonly relationshipInspectionVersion =
+    CODEX_CLI_ADAPTER_VERSIONS.relationshipInspection;
+  readonly transcriptProjectionVersion =
+    CODEX_CLI_ADAPTER_VERSIONS.transcriptProjection;
+  // Discovery must call the public relationship-inspection operation while
+  // reusing the same bounded metadata read for identity, title, and path.
+  private readonly metadataInspectionCache = new Map<
+    string,
+    Promise<CodexMetadataInspection>
+  >();
 
   constructor(private readonly config: Config) {}
 
@@ -91,7 +120,17 @@ export class CodexCliAdapter implements SourceAdapter {
     }
   }
 
-  async parseMessages(filePath: string): Promise<Message[]> {
+  async inspectRelationships(
+    filePath: string,
+    options: DiscoverOptions = {},
+  ): Promise<RelationshipInspection> {
+    const result = await this.inspectMetadataOnce(filePath, options.onWarning);
+    return result.relationshipInspection;
+  }
+
+  async parseTranscript(
+    filePath: string,
+  ): Promise<Transcript> {
     const lines = await readCodexLines(filePath);
     const functionCalls = new Map<string, FunctionCallInfo>();
     const functionOutputs = new Map<string, FunctionCallOutputInfo>();
@@ -264,7 +303,7 @@ export class CodexCliAdapter implements SourceAdapter {
       }
     }
 
-    return messages;
+    return { messages, warnings: [] };
   }
 
   watchPaths(): string[] {
@@ -310,90 +349,304 @@ export class CodexCliAdapter implements SourceAdapter {
       return null;
     }
 
-    const filenameSourceId = extractCodexSourceIdFromFilename(filePath);
-    const state = createCodexDiscoveryState();
-    const input = createReadStream(filePath, { encoding: "utf8" });
-    const rl = readline.createInterface({
-      input,
-      crlfDelay: Infinity,
-    });
-    let lineNumber = 0;
-
     try {
-      for await (const rawLine of rl) {
-        lineNumber += 1;
-        const trimmed = rawLine.trim();
-
-        if (trimmed) {
-          let line: CodexLine;
-
-          try {
-            line = JSON.parse(trimmed) as CodexLine;
-          } catch {
-            emitMalformedCodexWarning(this.name, filePath, onWarning);
-            return null;
-          }
-
-          collectCodexDiscoveryMetadata(state, line, {
-            filePath,
-            onWarning,
-            source: this.name,
-          });
-
-          if (isCodexDiscoveryMetadataComplete(state)) {
-            break;
-          }
-        }
-
-        if (lineNumber >= SCAN_METADATA_MAX_LINES) {
-          break;
-        }
+      this.metadataInspectionCache.set(
+        filePath,
+        inspectCodexMetadata({
+          filePath,
+          onWarning,
+          relationshipInspectionVersion: this.relationshipInspectionVersion,
+          source: this.name,
+        }),
+      );
+      const inspection = await this.inspectRelationships(filePath, { onWarning });
+      const metadata = await this.inspectMetadataOnce(filePath, onWarning);
+      if (metadata.discoveryFailed) {
+        return null;
       }
+
+      const state = metadata.discoveryState;
+      const sourceId = resolveCodexSourceId({
+        embeddedSourceId: state.embeddedSourceId,
+        filenameSourceId: extractCodexSourceIdFromFilename(filePath),
+        onWarning,
+        filePath,
+        source: this.name,
+      });
+
+      if (!sourceId) {
+        return null;
+      }
+
+      const projectPath = state.sessionMetaCwd ?? state.turnContextCwd;
+      const title = truncateTitle(
+        state.finalTitle ?? state.pendingTitle?.text ?? "(untitled)",
+      );
+
+      return {
+        sourceId,
+        sourcePath: filePath,
+        metadata: {
+          title,
+          summary: "",
+          projectName: projectPath ? path.basename(projectPath) : null,
+          projectPath,
+          slug: null,
+          createdAt:
+            state.sessionMetaTimestamp ??
+            state.firstTopLevelTimestamp ??
+            fileStat.mtime.toISOString(),
+        },
+        relationshipInspection: {
+          status: inspection.status,
+          version: inspection.version,
+          diagnostic: inspection.diagnostic,
+        },
+        relationships: inspection.relationships,
+      };
     } catch {
       emitMalformedCodexWarning(this.name, filePath, onWarning);
       return null;
     } finally {
-      rl.close();
-      input.destroy();
+      this.metadataInspectionCache.delete(filePath);
+    }
+  }
+
+  private inspectMetadataOnce(
+    filePath: string,
+    onWarning?: (warning: ClogWarning) => void,
+  ): Promise<CodexMetadataInspection> {
+    const cached = this.metadataInspectionCache.get(filePath);
+    if (cached) {
+      return cached;
     }
 
-    const sourceId = resolveCodexSourceId({
-      embeddedSourceId: state.embeddedSourceId,
-      filenameSourceId,
-      onWarning,
+    return inspectCodexMetadata({
       filePath,
+      onWarning,
+      relationshipInspectionVersion: this.relationshipInspectionVersion,
       source: this.name,
     });
+  }
+}
 
-    if (!sourceId) {
-      return null;
+async function inspectCodexMetadata(args: {
+  filePath: string;
+  onWarning?: (warning: ClogWarning) => void;
+  relationshipInspectionVersion: number;
+  source: string;
+}): Promise<CodexMetadataInspection> {
+  const state = createCodexDiscoveryState();
+  const input = createReadStream(args.filePath, { encoding: "utf8" });
+  const rl = readline.createInterface({
+    input,
+    crlfDelay: Infinity,
+  });
+  let lineNumber = 0;
+
+  try {
+    for await (const rawLine of rl) {
+      lineNumber += 1;
+      const trimmed = rawLine.trim();
+
+      if (trimmed) {
+        let parsed: unknown;
+
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          emitMalformedCodexWarning(
+            args.source,
+            args.filePath,
+            args.onWarning,
+          );
+          return malformedCodexMetadataInspection(
+            state,
+            args.relationshipInspectionVersion,
+          );
+        }
+
+        const line = recordValue(parsed) as CodexLine | null;
+        if (!line) {
+          emitMalformedCodexWarning(
+            args.source,
+            args.filePath,
+            args.onWarning,
+          );
+          return malformedCodexMetadataInspection(
+            state,
+            args.relationshipInspectionVersion,
+          );
+        }
+
+        collectCodexDiscoveryMetadata(state, line, {
+          filePath: args.filePath,
+          onWarning: args.onWarning,
+          source: args.source,
+        });
+
+        if (isCodexDiscoveryMetadataComplete(state)) {
+          break;
+        }
+      }
+
+      if (lineNumber >= SCAN_METADATA_MAX_LINES) {
+        break;
+      }
     }
+  } finally {
+    rl.close();
+    input.destroy();
+  }
 
-    const projectPath = state.sessionMetaCwd ?? state.turnContextCwd;
-    const title = truncateTitle(
-      state.finalTitle ?? state.pendingTitle?.text ?? "(untitled)",
+  return {
+    discoveryState: state,
+    discoveryFailed: false,
+    relationshipInspection: inspectCanonicalCodexRelationship({
+      canonicalSessionMeta: state.canonicalSessionMeta,
+      canonicalSessionMetaSeen: state.canonicalSessionMetaSeen,
+      filenameSourceId: extractCodexSourceIdFromFilename(args.filePath),
+      relationshipInspectionVersion: args.relationshipInspectionVersion,
+      source: args.source,
+    }),
+  };
+}
+
+function malformedCodexMetadataInspection(
+  discoveryState: CodexDiscoveryState,
+  relationshipInspectionVersion: number,
+): CodexMetadataInspection {
+  return {
+    discoveryState,
+    discoveryFailed: true,
+    relationshipInspection: unknownCodexRelationshipInspection(
+      relationshipInspectionVersion,
+      "codex_relationship_malformed_jsonl",
+    ),
+  };
+}
+
+function inspectCanonicalCodexRelationship(args: {
+  canonicalSessionMeta: Record<string, unknown> | null;
+  canonicalSessionMetaSeen: boolean;
+  filenameSourceId: string | null;
+  relationshipInspectionVersion: number;
+  source: string;
+}): RelationshipInspection {
+  if (!args.canonicalSessionMetaSeen) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_session_meta_missing",
     );
+  }
+  if (!args.canonicalSessionMeta) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_session_meta_malformed",
+    );
+  }
 
+  const sourceId = stringValue(args.canonicalSessionMeta.id);
+  if (!sourceId || !isUuidLike(sourceId)) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_source_id_invalid",
+    );
+  }
+  if (args.filenameSourceId && args.filenameSourceId !== sourceId) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_source_id_mismatch",
+    );
+  }
+
+  const cliVersion = stringValue(args.canonicalSessionMeta.cli_version);
+  if (!cliVersion || !isSemverLikeCodexCliVersion(cliVersion)) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_cli_version_invalid",
+    );
+  }
+
+  const parentValue = args.canonicalSessionMeta.forked_from_id;
+  if (parentValue == null) {
     return {
-      sourceId,
-      sourcePath: filePath,
-      metadata: {
-        title,
-        summary: "",
-        projectName: projectPath ? path.basename(projectPath) : null,
-        projectPath,
-        slug: null,
-        createdAt:
-          state.sessionMetaTimestamp ??
-          state.firstTopLevelTimestamp ??
-          fileStat.mtime.toISOString(),
-      },
+      status: "none_found",
+      version: args.relationshipInspectionVersion,
+      diagnostic: null,
+      relationships: [],
     };
   }
+
+  const parentSourceId = stringValue(parentValue);
+  if (!parentSourceId || !isUuidLike(parentSourceId)) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_parent_id_invalid",
+    );
+  }
+  if (parentSourceId === sourceId) {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_self_parent",
+    );
+  }
+
+  const threadSource = args.canonicalSessionMeta.thread_source;
+  if (
+    threadSource === "subagent" ||
+    threadSource === "memory_consolidation"
+  ) {
+    return {
+      status: "none_found",
+      version: args.relationshipInspectionVersion,
+      diagnostic: null,
+      relationships: [],
+    };
+  }
+  if (threadSource !== "user") {
+    return unknownCodexRelationshipInspection(
+      args.relationshipInspectionVersion,
+      "codex_relationship_fork_provenance_ambiguous",
+    );
+  }
+
+  return {
+    status: "linked",
+    version: args.relationshipInspectionVersion,
+    diagnostic: null,
+    relationships: [{
+      kind: "branch",
+      parent: {
+        source: args.source,
+        sourceId: parentSourceId,
+      },
+      evidence: "source",
+      branchPoint: null,
+    }],
+  };
+}
+
+function unknownCodexRelationshipInspection(
+  version: number,
+  diagnostic: string,
+): RelationshipInspection {
+  return {
+    status: "unknown",
+    version,
+    diagnostic,
+    relationships: [],
+  };
+}
+
+function isSemverLikeCodexCliVersion(value: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value);
 }
 
 function createCodexDiscoveryState(): CodexDiscoveryState {
   return {
+    canonicalSessionMeta: null,
+    canonicalSessionMetaSeen: false,
     embeddedSourceId: null,
     firstTopLevelTimestamp: null,
     finalTitle: null,
@@ -402,6 +655,13 @@ function createCodexDiscoveryState(): CodexDiscoveryState {
     sessionMetaTimestamp: null,
     turnContextCwd: null,
   };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
 }
 
 function collectCodexDiscoveryMetadata(
@@ -415,11 +675,13 @@ function collectCodexDiscoveryMetadata(
 ): void {
   state.firstTopLevelTimestamp ??= normalizeTimestamp(line.timestamp);
 
-  if (line.type === "session_meta") {
-    const id = stringValue(line.payload?.id);
+  if (line.type === "session_meta" && !state.canonicalSessionMetaSeen) {
+    state.canonicalSessionMetaSeen = true;
+    state.canonicalSessionMeta = recordValue(line.payload);
+    const id = stringValue(state.canonicalSessionMeta?.id);
     if (id) {
       if (isUuidLike(id)) {
-        state.embeddedSourceId ??= id;
+        state.embeddedSourceId = id;
       } else {
         args.onWarning?.({
           code: "missing_source_id",
@@ -430,8 +692,10 @@ function collectCodexDiscoveryMetadata(
       }
     }
 
-    state.sessionMetaCwd ??= stringValue(line.payload?.cwd);
-    state.sessionMetaTimestamp ??= stringValue(line.payload?.timestamp);
+    state.sessionMetaCwd = stringValue(state.canonicalSessionMeta?.cwd);
+    state.sessionMetaTimestamp = stringValue(
+      state.canonicalSessionMeta?.timestamp,
+    );
   }
 
   if (line.type === "turn_context") {
@@ -582,7 +846,7 @@ function extractCodexSourceIdFromFilename(filePath: string): string | null {
 }
 
 function isUuidLike(value: string): boolean {
-  return UUID_SUFFIX_REGEX.test(`${value}.jsonl`);
+  return UUID_REGEX.test(value);
 }
 
 function extractCodexMessageText(
@@ -880,5 +1144,11 @@ async function readCodexLines(filePath: string): Promise<CodexLine[]> {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as CodexLine);
+    .map((line) => {
+      const parsed = recordValue(JSON.parse(line));
+      if (!parsed) {
+        throw new SyntaxError("Codex JSONL records must be objects.");
+      }
+      return parsed as CodexLine;
+    });
 }

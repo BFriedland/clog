@@ -1,4 +1,9 @@
-import type { OriginKind, SavedConversationMeta } from "../models/conversation.js";
+import { classifyAdapterVersion } from "../adapters/adapter.js";
+import {
+  preserveConfirmedRelationship,
+  type OriginKind,
+  type SavedConversationMeta,
+} from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
 import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import type { ScannedPair, ValidatedPair } from "./pairs.js";
@@ -23,7 +28,8 @@ export type FillSkipReason =
   | "local_saved_precedence"
   | "git_collision"
   | "unsupported_promotion"
-  | "source_discovery_incomplete";
+  | "source_discovery_incomplete"
+  | "adapter_version_skew";
 
 export type FillWriteAction =
   | {
@@ -274,6 +280,9 @@ export function planFill(args: PlanFillArgs): FillPlan {
       managedPath,
     });
     actions.push(planned);
+    if (planned.kind === "skip" && planned.warning) {
+      warnings.push(planned.warning);
+    }
     if (planned.kind === "skip" && planned.failure) {
       hasFailures = true;
     }
@@ -344,6 +353,38 @@ function planFillCollision(args: {
     };
   }
 
+  if (
+    classifyAdapterVersion(
+      owner.transcriptProjectionVersion,
+      pair.transcriptProjectionVersion,
+    ) === "version_skew" ||
+    classifyAdapterVersion(
+      owner.relationshipInspection.version,
+      pair.relationshipInspection.version,
+    ) === "version_skew"
+  ) {
+    const warning: ClogWarning = {
+      code: "adapter_version_skew",
+      message:
+        "Skipping a conversation that was saved by a newer clog version.",
+      source: owner.source,
+      conversation: {
+        id: owner.id,
+        source: owner.source,
+      },
+      guidance: "Upgrade clog before importing this conversation again.",
+    };
+    return {
+      kind: "skip",
+      reason: "adapter_version_skew",
+      message: warning.message,
+      failure: true,
+      pair,
+      owner,
+      warning,
+    };
+  }
+
   const merged = mergeFilePairIntoConversation(owner, pair, managedPath);
   if (!merged) {
     return {
@@ -392,12 +433,19 @@ function buildConversationFromFillPair(args: {
     savedAt: pair.meta.savedAt,
     savedMessageCount: pair.messageCount,
     saveVersion: 1,
+    transcriptProjectionVersion: pair.transcriptProjectionVersion,
     sourcePath: managedPath,
     filePath: managedPath,
     sourceMtime: null,
     indexedAt: null,
     originKind,
     originRef: null,
+    relationshipInspection: {
+      status: pair.relationshipInspection.status,
+      version: pair.relationshipInspection.version,
+      diagnostic: pair.relationshipInspection.diagnostic,
+    },
+    relationships: pair.relationshipInspection.relationships,
   };
 }
 
@@ -409,6 +457,17 @@ function mergeFilePairIntoConversation(
   const titleChanged = existing.title !== pair.meta.title;
   const summaryChanged = existing.summary !== pair.meta.summary;
   const contentChanged = existing.savedMessageCount !== pair.messageCount;
+  const projectionChanged =
+    existing.transcriptProjectionVersion !== pair.transcriptProjectionVersion;
+  const refreshedRelationshipInspection = preserveConfirmedRelationship(
+    existing,
+    pair.relationshipInspection,
+  );
+  const relationshipChanged =
+    JSON.stringify({
+      ...existing.relationshipInspection,
+      relationships: existing.relationships,
+    }) !== JSON.stringify(refreshedRelationshipInspection);
   const pathChanged =
     existing.sourcePath !== managedPath || existing.filePath !== managedPath;
   const extractionChanged =
@@ -428,12 +487,18 @@ function mergeFilePairIntoConversation(
     extractionChanged ||
     !tagsEqual(existing.tags, pair.meta.tags);
 
-  if (!metadataChanged && !contentChanged && !pathChanged) {
+  if (
+    !metadataChanged &&
+    !contentChanged &&
+    !projectionChanged &&
+    !relationshipChanged &&
+    !pathChanged
+  ) {
     return null;
   }
 
   return {
-    copyContent: contentChanged || pathChanged,
+    copyContent: contentChanged || projectionChanged || pathChanged,
     conversation: {
       ...existing,
       sourceId: pair.meta.id,
@@ -452,10 +517,19 @@ function mergeFilePairIntoConversation(
       state: "saved",
       savedAt: pair.meta.savedAt,
       savedMessageCount: pair.messageCount,
+      transcriptProjectionVersion: pair.transcriptProjectionVersion,
+      relationshipInspection: {
+        status: refreshedRelationshipInspection.status,
+        version: refreshedRelationshipInspection.version,
+        diagnostic: refreshedRelationshipInspection.diagnostic,
+      },
+      relationships: refreshedRelationshipInspection.relationships,
       sourcePath: managedPath,
       filePath: managedPath,
       indexedAt:
-        titleChanged || summaryChanged || contentChanged ? null : existing.indexedAt,
+        titleChanged || summaryChanged || contentChanged || projectionChanged
+          ? null
+          : existing.indexedAt,
       originKind: "file",
       originRef: null,
     },

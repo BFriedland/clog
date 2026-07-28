@@ -1,0 +1,1929 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "linear-session",
+      "covers": ["linear ancestry", "system connector"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "61c3bd28-4f36-496f-af46-f2e443a0d6c8",
+          "surface": "interactive Claude Code CLI session",
+          "sourceRecordUuids": [
+            "740719bf-cf7e-4fd9-9839-3ae88136e3c0",
+            "6c3bb044-b295-4f70-9c52-1c5330d39776"
+          ],
+          "notes": "Trimmed and anonymized from an ordinary linear turn."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "linear-user",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T10:00:00.000Z",
+          "message": { "role": "user", "content": "Check the configuration." }
+        },
+        {
+          "type": "system",
+          "subtype": "status",
+          "uuid": "linear-status",
+          "parentUuid": "linear-user",
+          "timestamp": "2026-07-24T10:00:00.500Z"
+        },
+        {
+          "type": "assistant",
+          "uuid": "linear-assistant",
+          "parentUuid": "linear-status",
+          "timestamp": "2026-07-24T10:00:01.000Z",
+          "message": {
+            "id": "linear-api-message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The configuration is valid." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "linear-assistant",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-projection-record" },
+          { "index": 2, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Check the configuration.",
+            "timestamp": "2026-07-24T10:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The configuration is valid.",
+            "timestamp": "2026-07-24T10:00:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "ordinary-resume",
+      "covers": ["same-session resume", "metadata exclusion"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "343e6a9e-93a6-48a6-86c8-7ac5f35f874e",
+          "surface": "ordinary linear continuation in an existing Claude Code session",
+          "sourceRecordUuids": [
+            "b49a1e31-891e-4652-93f3-5be922ee69d9",
+            "bd2dbad1-0edb-4df7-875c-d457ba0f0de5"
+          ],
+          "notes": "An ordinary same-session resume has the same append-only shape; the metadata record between turns does not break graph ancestry."
+        },
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code same-session resume loader",
+          "sourceRecordUuids": [],
+          "notes": "Ordinary resume reopens the existing session file and reconstructs its current parent chain before appending."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "resume-user-1",
+          "parentUuid": null,
+          "timestamp": "2026-07-23T10:00:00.000Z",
+          "message": { "role": "user", "content": "Inspect the plan." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "resume-assistant-1",
+          "parentUuid": "resume-user-1",
+          "timestamp": "2026-07-23T10:00:01.000Z",
+          "message": {
+            "id": "resume-api-1",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The plan is consistent." }]
+          }
+        },
+        {
+          "type": "last-prompt",
+          "leafUuid": "resume-assistant-1",
+          "sessionId": "resume-session"
+        },
+        {
+          "type": "user",
+          "uuid": "resume-user-2",
+          "parentUuid": "resume-assistant-1",
+          "timestamp": "2026-07-24T10:00:00.000Z",
+          "message": { "role": "user", "content": "Now inspect the ticket." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "resume-assistant-2",
+          "parentUuid": "resume-user-2",
+          "timestamp": "2026-07-24T10:00:01.000Z",
+          "message": {
+            "id": "resume-api-2",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The ticket matches the plan." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "resume-assistant-2",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-ancestry" },
+          { "index": 3, "reason": "active-ancestry" },
+          { "index": 4, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "metadata-only" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Inspect the plan.",
+            "timestamp": "2026-07-23T10:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The plan is consistent.",
+            "timestamp": "2026-07-23T10:00:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "Now inspect the ticket.",
+            "timestamp": "2026-07-24T10:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The ticket matches the plan.",
+            "timestamp": "2026-07-24T10:00:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "single-rewind",
+      "covers": ["one rewind", "abandoned prompt exclusion", "abandoned assistant exclusion"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "343e6a9e-93a6-48a6-86c8-7ac5f35f874e",
+          "surface": "Claude Code rewind and replacement prompt",
+          "sourceRecordUuids": [
+            "c7c92b17-b59e-414d-b6ec-83c2099117e8",
+            "b49a1e31-891e-4652-93f3-5be922ee69d9",
+            "bd2dbad1-0edb-4df7-875c-d457ba0f0de5",
+            "916902ce-7b22-4af7-85db-f46052e89e07",
+            "b851eb56-3844-4cf3-b41f-03e213b1a58f"
+          ],
+          "notes": "The original and replacement prompts share one parent."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "rewind-root-user",
+          "parentUuid": null,
+          "timestamp": "2026-07-23T10:00:00.000Z",
+          "message": { "role": "user", "content": "Review the change." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "rewind-root-assistant",
+          "parentUuid": "rewind-root-user",
+          "timestamp": "2026-07-23T10:00:01.000Z",
+          "message": {
+            "id": "rewind-root-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "I found one issue." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "rewind-original-user",
+          "parentUuid": "rewind-root-assistant",
+          "timestamp": "2026-07-23T10:01:00.000Z",
+          "message": { "role": "user", "content": "It has been updated." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "rewind-original-assistant",
+          "parentUuid": "rewind-original-user",
+          "timestamp": "2026-07-23T10:01:01.000Z",
+          "message": {
+            "id": "rewind-original-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Then the issue is resolved." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "rewind-replacement-user",
+          "parentUuid": "rewind-root-assistant",
+          "timestamp": "2026-07-23T10:02:00.000Z",
+          "message": { "role": "user", "content": "The requirement changed." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "rewind-replacement-assistant",
+          "parentUuid": "rewind-replacement-user",
+          "timestamp": "2026-07-23T10:02:01.000Z",
+          "message": {
+            "id": "rewind-replacement-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The new requirement is satisfied." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "rewind-replacement-assistant",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-ancestry" },
+          { "index": 4, "reason": "active-ancestry" },
+          { "index": 5, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "abandoned-path" },
+          { "index": 3, "reason": "abandoned-path" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Review the change.",
+            "timestamp": "2026-07-23T10:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "I found one issue.",
+            "timestamp": "2026-07-23T10:00:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "The requirement changed.",
+            "timestamp": "2026-07-23T10:02:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The new requirement is satisfied.",
+            "timestamp": "2026-07-23T10:02:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "two-rewind-alternatives",
+      "covers": ["three sibling continuations", "newest current path"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "343e6a9e-93a6-48a6-86c8-7ac5f35f874e",
+          "surface": "repeated Claude Code rewinds in one session",
+          "sourceRecordUuids": [
+            "857ddd12-45a0-415b-bcb3-9e63f20c4609",
+            "d16a032d-b5cd-4909-90af-9acfb0a9c8b8",
+            "9d6a9682-8e6d-4718-a3ab-1e8e62e6a0c2",
+            "34417a05-ea38-43b8-95a3-d9206b88096c",
+            "de85c222-736c-4625-b253-a40ca8bb9531"
+          ],
+          "notes": "The listed parent has four visible user continuations; this fixture trims that observed shape to three complete alternatives."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "multi-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-23T11:00:00.000Z",
+          "message": { "role": "user", "content": "Choose an approach." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "multi-root-assistant",
+          "parentUuid": "multi-root",
+          "timestamp": "2026-07-23T11:00:01.000Z",
+          "message": {
+            "id": "multi-root-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "I need one constraint." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "multi-option-a",
+          "parentUuid": "multi-root-assistant",
+          "timestamp": "2026-07-23T11:01:00.000Z",
+          "message": { "role": "user", "content": "Optimize for speed." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "multi-answer-a",
+          "parentUuid": "multi-option-a",
+          "timestamp": "2026-07-23T11:01:01.000Z",
+          "message": {
+            "id": "multi-api-a",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Use approach A." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "multi-option-b",
+          "parentUuid": "multi-root-assistant",
+          "timestamp": "2026-07-23T11:02:00.000Z",
+          "message": { "role": "user", "content": "Optimize for simplicity." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "multi-answer-b",
+          "parentUuid": "multi-option-b",
+          "timestamp": "2026-07-23T11:02:01.000Z",
+          "message": {
+            "id": "multi-api-b",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Use approach B." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "multi-option-c",
+          "parentUuid": "multi-root-assistant",
+          "timestamp": "2026-07-23T11:03:00.000Z",
+          "message": { "role": "user", "content": "Optimize for safety." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "multi-answer-c",
+          "parentUuid": "multi-option-c",
+          "timestamp": "2026-07-23T11:03:01.000Z",
+          "message": {
+            "id": "multi-api-c",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Use approach C." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "multi-answer-c",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-ancestry" },
+          { "index": 6, "reason": "active-ancestry" },
+          { "index": 7, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "abandoned-path" },
+          { "index": 3, "reason": "abandoned-path" },
+          { "index": 4, "reason": "abandoned-path" },
+          { "index": 5, "reason": "abandoned-path" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Choose an approach.",
+            "timestamp": "2026-07-23T11:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "I need one constraint.",
+            "timestamp": "2026-07-23T11:00:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "Optimize for safety.",
+            "timestamp": "2026-07-23T11:03:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Use approach C.",
+            "timestamp": "2026-07-23T11:03:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "concurrent-tool-results",
+      "covers": ["split assistant response", "concurrent tools", "sibling tool-result recovery"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.177",
+          "sourceVersionRange": "2.1.177",
+          "sourceSession": "0393b97d-d42b-41da-940b-3a3391184baa",
+          "surface": "interactive Claude Code CLI with two tool calls in one assistant response",
+          "sourceRecordUuids": [
+            "472566e1-ccfa-4a10-8669-d0451666a37d",
+            "a8077f61-98aa-4154-be4d-b5289fbd2621",
+            "860eaed6-b8ab-4b58-a132-efabaf259220",
+            "8bed47b1-eec8-45a3-b5a5-69e033fae792",
+            "f870c359-c760-4773-9e0f-ea3ab1f55afe",
+            "4cad2266-1da1-44d8-bf81-09c02e9c1714"
+          ],
+          "notes": "The first result is a sibling of the continued assistant chain and is recovered through sourceToolAssistantUUID."
+        },
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code transcript reconstruction",
+          "sourceRecordUuids": [],
+          "notes": "The implementation groups assistant fragments by message.id and recovers sibling tool results before presenting the active transcript."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "tools-user",
+          "parentUuid": null,
+          "timestamp": "2026-06-23T06:08:50.000Z",
+          "message": { "role": "user", "content": "Inspect both files." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tools-thinking",
+          "parentUuid": "tools-user",
+          "timestamp": "2026-06-23T06:08:55.126Z",
+          "message": {
+            "id": "tools-api-message",
+            "role": "assistant",
+            "content": [{ "type": "thinking", "thinking": "Inspect both in parallel." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tools-text",
+          "parentUuid": "tools-thinking",
+          "timestamp": "2026-06-23T06:08:55.127Z",
+          "message": {
+            "id": "tools-api-message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "I will inspect both files." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tools-call-a",
+          "parentUuid": "tools-text",
+          "timestamp": "2026-06-23T06:08:56.307Z",
+          "message": {
+            "id": "tools-api-message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "tool-a",
+                "name": "Read",
+                "input": { "path": "PLAN.md" }
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tools-call-b",
+          "parentUuid": "tools-call-a",
+          "timestamp": "2026-06-23T06:08:56.991Z",
+          "message": {
+            "id": "tools-api-message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "tool-b",
+                "name": "Read",
+                "input": { "path": "TICKET.md" }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "tools-result-a",
+          "parentUuid": "tools-call-a",
+          "sourceToolAssistantUUID": "tools-call-a",
+          "timestamp": "2026-06-23T06:08:57.788Z",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "tool-a",
+                "content": "plan contents",
+                "is_error": false
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "tools-result-b",
+          "parentUuid": "tools-call-b",
+          "sourceToolAssistantUUID": "tools-call-b",
+          "timestamp": "2026-06-23T06:08:57.794Z",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "tool-b",
+                "content": "ticket contents",
+                "is_error": false
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "tools-result-b",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-assistant-fragment" },
+          { "index": 2, "reason": "active-assistant-fragment" },
+          { "index": 3, "reason": "active-assistant-fragment" },
+          { "index": 4, "reason": "active-assistant-fragment" },
+          { "index": 5, "reason": "recovered-tool-result" },
+          { "index": 6, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Inspect both files.",
+            "timestamp": "2026-06-23T06:08:50.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "I will inspect both files.",
+            "timestamp": "2026-06-23T06:08:55.126Z"
+          },
+          {
+            "role": "tool_use",
+            "content": "Read: {\"path\":\"PLAN.md\"}",
+            "timestamp": "2026-06-23T06:08:55.126Z",
+            "toolName": "Read",
+            "toolInput": { "path": "PLAN.md" }
+          },
+          {
+            "role": "tool_use",
+            "content": "Read: {\"path\":\"TICKET.md\"}",
+            "timestamp": "2026-06-23T06:08:55.126Z",
+            "toolName": "Read",
+            "toolInput": { "path": "TICKET.md" }
+          },
+          {
+            "role": "tool_result",
+            "content": "Read: ok",
+            "timestamp": "2026-06-23T06:08:57.788Z",
+            "toolName": "Read"
+          },
+          {
+            "role": "tool_result",
+            "content": "Read: ok",
+            "timestamp": "2026-06-23T06:08:57.794Z",
+            "toolName": "Read"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "split-assistant-response",
+      "covers": ["shared assistant message.id", "thinking omission", "composed timestamp"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "61c3bd28-4f36-496f-af46-f2e443a0d6c8",
+          "surface": "interactive Claude Code assistant response",
+          "sourceRecordUuids": [
+            "cb793036-db51-4e12-a78a-be039217dae9",
+            "ed0e86d5-a4a0-4669-8aaa-65663402e317",
+            "4b86bfbc-93a5-4a2b-be0e-d0a5aa4e37b3"
+          ],
+          "notes": "Distinct transcript UUIDs share one API message.id."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "split-user",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T08:04:08.155Z",
+          "message": { "role": "user", "content": "Give me two observations." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "split-thinking",
+          "parentUuid": "split-user",
+          "timestamp": "2026-07-24T08:04:17.193Z",
+          "message": {
+            "id": "split-api",
+            "role": "assistant",
+            "content": [{ "type": "thinking", "thinking": "Form two observations." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "split-text-a",
+          "parentUuid": "split-thinking",
+          "timestamp": "2026-07-24T08:04:17.344Z",
+          "message": {
+            "id": "split-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "First observation." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "split-text-b",
+          "parentUuid": "split-text-a",
+          "timestamp": "2026-07-24T08:04:17.942Z",
+          "message": {
+            "id": "split-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Second observation." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "split-text-b",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-assistant-fragment" },
+          { "index": 2, "reason": "active-assistant-fragment" },
+          { "index": 3, "reason": "active-assistant-fragment" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Give me two observations.",
+            "timestamp": "2026-07-24T08:04:08.155Z"
+          },
+          {
+            "role": "assistant",
+            "content": "First observation.",
+            "timestamp": "2026-07-24T08:04:17.193Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Second observation.",
+            "timestamp": "2026-07-24T08:04:17.193Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "compacted-session",
+      "covers": ["compact_boundary", "logicalParentUuid", "isCompactSummary", "local command wrappers"],
+      "evidence": [
+        {
+          "kind": "controlled-reproduction",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "61c3bd28-4f36-496f-af46-f2e443a0d6c8",
+          "surface": "manual /compact followed by continued interaction",
+          "sourceRecordUuids": [
+            "b110fc80-afaf-412f-a6a0-ac992d4551fc",
+            "e03ae939-abf4-4071-a4e3-b931d928133f",
+            "fcb441e8-2449-4c23-95c4-845cdb16d472",
+            "4f9a3f92-14a8-48ed-874e-8bda029c7d62",
+            "f687beb2-833f-4514-95ef-ba4a1f786776",
+            "29986c8e-1b0d-4592-b8e7-a8a5b2cbddd5"
+          ],
+          "notes": "The logical parent names the final pre-compaction record; the compact summary substitutes for that history in model context."
+        },
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code compaction relinking",
+          "sourceRecordUuids": [],
+          "notes": "The implementation recognizes preservedMessages and preservedSegment and relinks the compacted path."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "compact-before-user",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T07:58:00.000Z",
+          "message": { "role": "user", "content": "Remember the original requirement." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "compact-before-assistant",
+          "parentUuid": "compact-before-user",
+          "timestamp": "2026-07-24T07:58:01.000Z",
+          "message": {
+            "id": "compact-before-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The original requirement is recorded." }]
+          }
+        },
+        {
+          "type": "system",
+          "subtype": "compact_boundary",
+          "uuid": "compact-boundary",
+          "parentUuid": null,
+          "logicalParentUuid": "compact-before-assistant",
+          "timestamp": "2026-07-24T08:01:32.937Z",
+          "compactMetadata": {
+            "trigger": "manual",
+            "preservedSegment": {
+              "headUuid": "compact-before-assistant",
+              "anchorUuid": "compact-summary",
+              "tailUuid": "compact-before-assistant"
+            }
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "compact-summary",
+          "parentUuid": "compact-boundary",
+          "isCompactSummary": true,
+          "isVisibleInTranscriptOnly": true,
+          "timestamp": "2026-07-24T08:01:32.574Z",
+          "message": {
+            "role": "user",
+            "content": "This session is being continued from a summary of the original requirement."
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "compact-caveat",
+          "parentUuid": "compact-summary",
+          "isMeta": true,
+          "timestamp": "2026-07-24T08:01:32.731Z",
+          "message": {
+            "role": "user",
+            "content": "<local-command-caveat>Local command records follow.</local-command-caveat>"
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "compact-command",
+          "parentUuid": "compact-caveat",
+          "timestamp": "2026-07-24T08:01:32.731Z",
+          "message": {
+            "role": "user",
+            "content": "<command-name>/compact</command-name><command-message>compact</command-message><command-args></command-args>"
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "compact-output",
+          "parentUuid": "compact-command",
+          "timestamp": "2026-07-24T08:01:33.036Z",
+          "message": {
+            "role": "user",
+            "content": "<local-command-stdout>Compacted</local-command-stdout>"
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "compact-after-user",
+          "parentUuid": "compact-output",
+          "timestamp": "2026-07-24T08:02:45.324Z",
+          "message": { "role": "user", "content": "Apply it to the new ticket." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "compact-after-assistant",
+          "parentUuid": "compact-after-user",
+          "timestamp": "2026-07-24T08:02:46.000Z",
+          "message": {
+            "id": "compact-after-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The new ticket preserves that requirement." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "compact-after-assistant",
+        "includedRecords": [
+          { "index": 0, "reason": "logical-ancestry" },
+          { "index": 1, "reason": "logical-ancestry" },
+          { "index": 2, "reason": "compaction-boundary" },
+          { "index": 4, "reason": "active-projection-record" },
+          { "index": 5, "reason": "active-projection-record" },
+          { "index": 6, "reason": "active-projection-record" },
+          { "index": 7, "reason": "active-ancestry" },
+          { "index": 8, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 3, "reason": "compact-summary-replaced-by-logical-history" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Remember the original requirement.",
+            "timestamp": "2026-07-24T07:58:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The original requirement is recorded.",
+            "timestamp": "2026-07-24T07:58:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "/compact",
+            "timestamp": "2026-07-24T08:01:32.731Z"
+          },
+          {
+            "role": "user",
+            "content": "Compacted",
+            "timestamp": "2026-07-24T08:01:33.036Z"
+          },
+          {
+            "role": "user",
+            "content": "Apply it to the new ticket.",
+            "timestamp": "2026-07-24T08:02:45.324Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The new ticket preserves that requirement.",
+            "timestamp": "2026-07-24T08:02:46.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "top-level-and-sidechain-records",
+      "covers": ["sidechain exclusion", "progress transparency", "attachment omission", "local command presentation"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.187",
+          "sourceVersionRange": "2.1.187",
+          "sourceSession": "dc74fb42-bdab-4ca4-8e3b-164679dd564c",
+          "surface": "main Claude Code session",
+          "sourceRecordUuids": [
+            "6aab13b7-7c82-4732-a1bd-4e49649e5af4",
+            "e3c78472-8458-4e91-902b-00df52402845"
+          ],
+          "notes": "The main-session records use isSidechain: false and retain the agent launch and returned result."
+        },
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.187",
+          "sourceVersionRange": "2.1.187",
+          "sourceSession": "dc74fb42-bdab-4ca4-8e3b-164679dd564c",
+          "sourceArtifact": "dc74fb42-bdab-4ca4-8e3b-164679dd564c/subagents/agent-a095457020de032ae.jsonl",
+          "surface": "nested Claude Code subagent transcript",
+          "sourceRecordUuids": [
+            "d7b82f11-c2f2-4289-8226-4b50a9e9bfca",
+            "2815ab3d-9a75-4a40-aa71-c69403fc44a2"
+          ],
+          "notes": "The nested records use isSidechain: true. The golden sourceRecords deliberately combine verified top-level and nested shapes to lock sidechain exclusion even though the local files store them separately."
+        },
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code transcript parser",
+          "sourceRecordUuids": [],
+          "notes": "Progress UUIDs are made transparent and sidechain leaves are excluded."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "main-user",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T12:00:00.000Z",
+          "message": { "role": "user", "content": "Run the status check." }
+        },
+        {
+          "type": "progress",
+          "uuid": "main-progress",
+          "parentUuid": "main-user",
+          "timestamp": "2026-07-24T12:00:00.100Z"
+        },
+        {
+          "type": "system",
+          "subtype": "status",
+          "uuid": "main-system",
+          "parentUuid": "main-progress",
+          "timestamp": "2026-07-24T12:00:00.200Z"
+        },
+        {
+          "type": "user",
+          "uuid": "main-command",
+          "parentUuid": "main-system",
+          "timestamp": "2026-07-24T12:00:00.300Z",
+          "message": {
+            "role": "user",
+            "content": "<command-name>/status</command-name><command-message>status</command-message><command-args></command-args>"
+          }
+        },
+        {
+          "type": "attachment",
+          "uuid": "main-attachment",
+          "parentUuid": "main-command",
+          "timestamp": "2026-07-24T12:00:00.400Z",
+          "attachment": { "type": "skill_listing", "content": "source-only metadata" }
+        },
+        {
+          "type": "assistant",
+          "uuid": "main-assistant",
+          "parentUuid": "main-attachment",
+          "timestamp": "2026-07-24T12:00:01.000Z",
+          "message": {
+            "id": "main-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The status check passed." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "sidechain-user",
+          "parentUuid": null,
+          "isSidechain": true,
+          "agentId": "agent-1",
+          "timestamp": "2026-07-24T12:01:00.000Z",
+          "message": { "role": "user", "content": "Internal subagent task." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "sidechain-assistant",
+          "parentUuid": "sidechain-user",
+          "isSidechain": true,
+          "agentId": "agent-1",
+          "timestamp": "2026-07-24T12:01:01.000Z",
+          "message": {
+            "id": "sidechain-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Internal subagent reasoning." }]
+          }
+        },
+        {
+          "type": "last-prompt",
+          "leafUuid": "sidechain-assistant",
+          "sessionId": "main-session"
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "main-assistant",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 2, "reason": "active-projection-record" },
+          { "index": 3, "reason": "active-projection-record" },
+          { "index": 4, "reason": "active-projection-record" },
+          { "index": 5, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 1, "reason": "transparent-progress" },
+          { "index": 6, "reason": "sidechain" },
+          { "index": 7, "reason": "sidechain" },
+          { "index": 8, "reason": "metadata-only" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Run the status check.",
+            "timestamp": "2026-07-24T12:00:00.000Z"
+          },
+          {
+            "role": "user",
+            "content": "/status",
+            "timestamp": "2026-07-24T12:00:00.300Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The status check passed.",
+            "timestamp": "2026-07-24T12:00:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "user-content-block-composition",
+      "covers": [
+        "tool result followed by user text",
+        "user content-block order",
+        "image omission",
+        "document omission",
+        "text joining across omitted media"
+      ],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.197",
+          "sourceVersionRange": "2.1.197",
+          "sourceSession": "0aa58c0a-91bd-4057-9dce-f6f5903473ff",
+          "surface": "interactive Claude Code tool result with a concurrent user instruction",
+          "sourceRecordUuids": [
+            "3d935711-4978-4b3f-9627-5778ab84a030",
+            "551c0e37-b99e-407e-8fda-9a477696d0ae"
+          ],
+          "notes": "The observed user record stores a tool_result block followed by a text block, so the text remains a user message after the tool result."
+        },
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code user content-block schemas",
+          "sourceRecordUuids": [],
+          "notes": "The fixture adds supported image and document block shapes to the observed mixed-content pattern. Their omission is a clog normalization decision because clog Message values have no binary-content shape."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "content-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-11T05:05:00.000Z",
+          "message": {
+            "role": "user",
+            "content": "Inspect the available context."
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "content-tool-call",
+          "parentUuid": "content-root",
+          "timestamp": "2026-07-11T05:05:29.359Z",
+          "message": {
+            "id": "content-api",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "content-tool-id",
+                "name": "Read",
+                "input": { "path": "context.txt" }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "content-result-and-text",
+          "parentUuid": "content-tool-call",
+          "sourceToolAssistantUUID": "content-tool-call",
+          "timestamp": "2026-07-11T05:06:00.702Z",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "content-tool-id",
+                "content": "context contents",
+                "is_error": false
+              },
+              {
+                "type": "text",
+                "text": "Use the attached context."
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "omitted"
+                }
+              },
+              {
+                "type": "document",
+                "source": {
+                  "type": "base64",
+                  "media_type": "application/pdf",
+                  "data": "omitted"
+                }
+              },
+              {
+                "type": "text",
+                "text": "Then summarize it."
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "content-result-and-text",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-assistant-fragment" },
+          { "index": 2, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Inspect the available context.",
+            "timestamp": "2026-07-11T05:05:00.000Z"
+          },
+          {
+            "role": "tool_use",
+            "content": "Read: {\"path\":\"context.txt\"}",
+            "timestamp": "2026-07-11T05:05:29.359Z",
+            "toolName": "Read",
+            "toolInput": { "path": "context.txt" }
+          },
+          {
+            "role": "tool_result",
+            "content": "Read: ok",
+            "timestamp": "2026-07-11T05:06:00.702Z",
+            "toolName": "Read"
+          },
+          {
+            "role": "user",
+            "content": "Use the attached context.\nThen summarize it.",
+            "timestamp": "2026-07-11T05:06:00.702Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "legacy-file-order",
+      "covers": ["legacy records", "missing graph fields", "adjacent assistant composition"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code compatibility parser",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation that mixes UUID-bearing and UUID-less records while removing every usable parent edge; the expected warning and bounded file-order behavior are clog's conservative fallback."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "timestamp": "2025-01-01T10:00:00.000Z",
+          "message": { "role": "user", "content": "Open the legacy session." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "legacy-assistant-1",
+          "timestamp": "2025-01-01T10:00:01.000Z",
+          "message": {
+            "id": "legacy-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The legacy session is readable." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "legacy-assistant-2",
+          "timestamp": "2025-01-01T10:00:01.100Z",
+          "message": {
+            "id": "legacy-api",
+            "role": "assistant",
+            "content": [{ "type": "thinking", "thinking": "No visible block." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "legacy-user-2",
+          "timestamp": "2025-01-01T10:00:02.000Z",
+          "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": "[Request interrupted by user]" }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": null,
+        "includedRecords": [
+          { "index": 0, "reason": "legacy-source-order" },
+          { "index": 1, "reason": "legacy-source-order" },
+          { "index": 2, "reason": "legacy-adjacent-assistant-fragment" },
+          { "index": 3, "reason": "legacy-source-order" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Open the legacy session.",
+            "timestamp": "2025-01-01T10:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The legacy session is readable.",
+            "timestamp": "2025-01-01T10:00:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "[Request interrupted by user]",
+            "timestamp": "2025-01-01T10:00:02.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_legacy_file_order"]
+      }
+    },
+    {
+      "name": "stale-last-prompt",
+      "covers": ["advisory last-prompt", "newer appended branch"],
+      "evidence": [
+        {
+          "kind": "observed-source-file",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "61c3bd28-4f36-496f-af46-f2e443a0d6c8",
+          "surface": "continued Claude Code session with repeated last-prompt records",
+          "sourceRecordUuids": [
+            "fa983efb-59e2-4c80-b769-f3bbfdee474f",
+            "d130dd32-35ea-4422-b3ae-645b5f2569f9"
+          ],
+          "notes": "A persisted last-prompt value can predate later appended conversation records."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "stale-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T13:00:00.000Z",
+          "message": { "role": "user", "content": "Draft an answer." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "stale-answer-a",
+          "parentUuid": "stale-root",
+          "timestamp": "2026-07-24T13:00:01.000Z",
+          "message": {
+            "id": "stale-api-a",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Old answer." }]
+          }
+        },
+        {
+          "type": "last-prompt",
+          "lastPrompt": "Draft an answer.",
+          "leafUuid": "stale-answer-a",
+          "sessionId": "stale-session"
+        },
+        {
+          "type": "user",
+          "uuid": "stale-replacement",
+          "parentUuid": "stale-root",
+          "timestamp": "2026-07-24T13:01:00.000Z",
+          "message": { "role": "user", "content": "Draft a shorter answer." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "stale-answer-b",
+          "parentUuid": "stale-replacement",
+          "timestamp": "2026-07-24T13:01:01.000Z",
+          "message": {
+            "id": "stale-api-b",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Short answer." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "stale-answer-b",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 3, "reason": "active-ancestry" },
+          { "index": 4, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 1, "reason": "abandoned-path" },
+          { "index": 2, "reason": "metadata-only" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Draft an answer.",
+            "timestamp": "2026-07-24T13:00:00.000Z"
+          },
+          {
+            "role": "user",
+            "content": "Draft a shorter answer.",
+            "timestamp": "2026-07-24T13:01:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Short answer.",
+            "timestamp": "2026-07-24T13:01:01.000Z"
+          }
+        ],
+        "warningCodes": []
+      }
+    },
+    {
+      "name": "equal-and-missing-leaf-timestamps",
+      "covers": ["equal leaf timestamps", "missing leaf timestamps", "source-order tie-break"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code newest-leaf selector",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation that makes the implementation's otherwise partial timestamp comparison explicit and total for clog."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "tie-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T14:00:00.000Z",
+          "message": { "role": "user", "content": "Choose the current revision." }
+        },
+        {
+          "type": "user",
+          "uuid": "tie-user-a",
+          "parentUuid": "tie-root",
+          "timestamp": "2026-07-24T14:01:00.000Z",
+          "message": { "role": "user", "content": "Revision A." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tie-leaf-a",
+          "parentUuid": "tie-user-a",
+          "timestamp": "2026-07-24T14:02:00.000Z",
+          "message": {
+            "id": "tie-api-a",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Answer A." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "tie-user-b",
+          "parentUuid": "tie-root",
+          "timestamp": "2026-07-24T14:01:30.000Z",
+          "message": { "role": "user", "content": "Revision B." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tie-leaf-b",
+          "parentUuid": "tie-user-b",
+          "timestamp": "2026-07-24T14:02:00.000Z",
+          "message": {
+            "id": "tie-api-b",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Answer B." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "tie-user-missing",
+          "parentUuid": "tie-root",
+          "message": { "role": "user", "content": "Revision without timestamps." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "tie-leaf-missing",
+          "parentUuid": "tie-user-missing",
+          "message": {
+            "id": "tie-api-missing",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Untimestamped answer." }]
+          }
+        },
+        {
+          "type": "last-prompt",
+          "leafUuid": "tie-leaf-a",
+          "sessionId": "tie-session"
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "tie-leaf-b",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 3, "reason": "active-ancestry" },
+          { "index": 4, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 1, "reason": "abandoned-path" },
+          { "index": 2, "reason": "equal-timestamp-older-source-index" },
+          { "index": 5, "reason": "untimestamped-candidate" },
+          { "index": 6, "reason": "untimestamped-candidate" },
+          { "index": 7, "reason": "metadata-only" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Choose the current revision.",
+            "timestamp": "2026-07-24T14:00:00.000Z"
+          },
+          {
+            "role": "user",
+            "content": "Revision B.",
+            "timestamp": "2026-07-24T14:01:30.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Answer B.",
+            "timestamp": "2026-07-24T14:02:00.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_leaf_order_fallback"]
+      }
+    },
+    {
+      "name": "missing-parent",
+      "covers": ["missing parent", "coherent suffix fallback"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code parent-chain reconstruction",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation. Clog deliberately omits Claude Code's timestamp-proximity parent guess."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "missing-independent-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T15:00:00.000Z",
+          "message": { "role": "user", "content": "Unrelated older component." }
+        },
+        {
+          "type": "user",
+          "uuid": "missing-suffix-user",
+          "parentUuid": "absent-parent",
+          "timestamp": "2026-07-24T15:01:00.000Z",
+          "message": { "role": "user", "content": "Visible suffix." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "missing-suffix-leaf",
+          "parentUuid": "missing-suffix-user",
+          "timestamp": "2026-07-24T15:01:01.000Z",
+          "message": {
+            "id": "missing-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Suffix response." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "missing-suffix-leaf",
+        "includedRecords": [
+          { "index": 1, "reason": "coherent-suffix-after-gap" },
+          { "index": 2, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 0, "reason": "unselected-component" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Visible suffix.",
+            "timestamp": "2026-07-24T15:01:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Suffix response.",
+            "timestamp": "2026-07-24T15:01:01.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_missing_parent"]
+      }
+    },
+    {
+      "name": "duplicate-uuid",
+      "covers": ["duplicate UUID", "first occurrence wins"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code UUID map construction",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation. Clog uses the first record instead of the implementation's silent map overwrite."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "duplicate-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T16:00:00.000Z",
+          "message": { "role": "user", "content": "Keep a stable identity." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "duplicate-id",
+          "parentUuid": "duplicate-root",
+          "timestamp": "2026-07-24T16:00:01.000Z",
+          "message": {
+            "id": "duplicate-api-original",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "First occurrence." }]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "duplicate-id",
+          "parentUuid": "duplicate-root",
+          "timestamp": "2026-07-24T16:00:02.000Z",
+          "message": {
+            "id": "duplicate-api-later",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Later duplicate." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "duplicate-child",
+          "parentUuid": "duplicate-id",
+          "timestamp": "2026-07-24T16:00:03.000Z",
+          "message": { "role": "user", "content": "Continue from the stable record." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "duplicate-leaf",
+          "parentUuid": "duplicate-child",
+          "timestamp": "2026-07-24T16:00:04.000Z",
+          "message": {
+            "id": "duplicate-api-leaf",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Continued safely." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "duplicate-leaf",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "first-uuid-occurrence" },
+          { "index": 3, "reason": "active-ancestry" },
+          { "index": 4, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "duplicate-uuid" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Keep a stable identity.",
+            "timestamp": "2026-07-24T16:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "First occurrence.",
+            "timestamp": "2026-07-24T16:00:01.000Z"
+          },
+          {
+            "role": "user",
+            "content": "Continue from the stable record.",
+            "timestamp": "2026-07-24T16:00:03.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Continued safely.",
+            "timestamp": "2026-07-24T16:00:04.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_duplicate_uuid"]
+      }
+    },
+    {
+      "name": "cyclic-parent-graph",
+      "covers": ["parent cycle", "cyclic component exclusion"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code cycle detection",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation. The implementation detects parent cycles; clog excludes the entire cyclic component."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "cycle-safe-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T17:00:00.000Z",
+          "message": { "role": "user", "content": "Use the safe component." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "cycle-safe-leaf",
+          "parentUuid": "cycle-safe-root",
+          "timestamp": "2026-07-24T17:00:01.000Z",
+          "message": {
+            "id": "cycle-safe-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Safe component selected." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "cycle-a",
+          "parentUuid": "cycle-b",
+          "timestamp": "2026-07-24T17:01:00.000Z",
+          "message": { "role": "user", "content": "Cyclic prompt." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "cycle-b",
+          "parentUuid": "cycle-a",
+          "timestamp": "2026-07-24T17:01:01.000Z",
+          "message": {
+            "id": "cycle-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "Cyclic response." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "cycle-safe-leaf",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "cyclic-component" },
+          { "index": 3, "reason": "cyclic-component" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use the safe component.",
+            "timestamp": "2026-07-24T17:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "Safe component selected.",
+            "timestamp": "2026-07-24T17:00:01.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_parent_cycle"]
+      }
+    },
+    {
+      "name": "compaction-history-missing",
+      "covers": ["post-compaction fork", "missing logical parent", "compact summary fallback"],
+      "evidence": [
+        {
+          "kind": "controlled-reproduction",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": "46828e6c-1259-482d-8fc9-38b3f69e61f6",
+          "surface": "Claude Code /branch after manual compaction",
+          "sourceRecordUuids": [
+            "e03ae939-abf4-4071-a4e3-b931d928133f",
+            "fcb441e8-2449-4c23-95c4-845cdb16d472"
+          ],
+          "notes": "The branch copy begins at the compact boundary, so its logical parent UUID is not present in the child file."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "system",
+          "subtype": "compact_boundary",
+          "uuid": "fork-compact-boundary",
+          "parentUuid": null,
+          "logicalParentUuid": "parent-session-tail",
+          "timestamp": "2026-07-24T18:00:00.000Z",
+          "compactMetadata": { "trigger": "manual" }
+        },
+        {
+          "type": "user",
+          "uuid": "fork-compact-summary",
+          "parentUuid": "fork-compact-boundary",
+          "isCompactSummary": true,
+          "isVisibleInTranscriptOnly": true,
+          "timestamp": "2026-07-24T18:00:00.100Z",
+          "message": {
+            "role": "user",
+            "content": "This session continues from a compact summary of the parent."
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "fork-current-user",
+          "parentUuid": "fork-compact-summary",
+          "timestamp": "2026-07-24T18:01:00.000Z",
+          "message": { "role": "user", "content": "Continue in this branch." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "fork-current-leaf",
+          "parentUuid": "fork-current-user",
+          "timestamp": "2026-07-24T18:01:01.000Z",
+          "message": {
+            "id": "fork-current-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The branch continues coherently." }]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "fork-current-leaf",
+        "includedRecords": [
+          { "index": 0, "reason": "compaction-boundary" },
+          { "index": 1, "reason": "compact-summary-fallback" },
+          { "index": 2, "reason": "active-ancestry" },
+          { "index": 3, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [],
+        "messages": [
+          {
+            "role": "user",
+            "content": "This session continues from a compact summary of the parent.",
+            "timestamp": "2026-07-24T18:00:00.100Z"
+          },
+          {
+            "role": "user",
+            "content": "Continue in this branch.",
+            "timestamp": "2026-07-24T18:01:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The branch continues coherently.",
+            "timestamp": "2026-07-24T18:01:01.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_compaction_history_missing"]
+      }
+    },
+    {
+      "name": "malformed-modern-record",
+      "covers": ["mixed modern file", "unusable UUID", "malformed record exclusion"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code graph-record classifier",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation of a modern record. Clog excludes the unkeyed record instead of flattening it into the valid graph."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "malformed-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T19:00:00.000Z",
+          "message": { "role": "user", "content": "Keep the valid graph." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "malformed-leaf",
+          "parentUuid": "malformed-root",
+          "timestamp": "2026-07-24T19:00:01.000Z",
+          "message": {
+            "id": "malformed-api",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "The valid graph remains coherent." }]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "",
+          "parentUuid": "malformed-root",
+          "timestamp": "2026-07-24T19:01:00.000Z",
+          "message": { "role": "user", "content": "Malformed unkeyed continuation." }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "malformed-leaf",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-ancestry" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "malformed-graph-record" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Keep the valid graph.",
+            "timestamp": "2026-07-24T19:00:00.000Z"
+          },
+          {
+            "role": "assistant",
+            "content": "The valid graph remains coherent.",
+            "timestamp": "2026-07-24T19:00:01.000Z"
+          }
+        ],
+        "warningCodes": ["claude_transcript_malformed_graph_record"]
+      }
+    },
+    {
+      "name": "tool-result-provenance-mismatch",
+      "covers": ["tool-result association", "conflicting sourceToolAssistantUUID"],
+      "evidence": [
+        {
+          "kind": "implementation-inspection",
+          "claudeCodeVersion": "2.1.206",
+          "sourceVersionRange": "2.1.206",
+          "sourceSession": null,
+          "surface": "installed Claude Code tool-result persistence and transcript reconstruction",
+          "sourceRecordUuids": [],
+          "notes": "The fixture is a controlled mutation. Verified records normally make sourceToolAssistantUUID name the assistant record that contains the matching tool_use block."
+        }
+      ],
+      "sourceRecords": [
+        {
+          "type": "user",
+          "uuid": "mismatch-root",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T20:00:00.000Z",
+          "message": { "role": "user", "content": "Read the file." }
+        },
+        {
+          "type": "assistant",
+          "uuid": "mismatch-tool-call",
+          "parentUuid": "mismatch-root",
+          "timestamp": "2026-07-24T20:00:01.000Z",
+          "message": {
+            "id": "mismatch-api",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "mismatch-tool-id",
+                "name": "Read",
+                "input": { "path": "file.txt" }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "mismatch-result",
+          "parentUuid": "mismatch-tool-call",
+          "sourceToolAssistantUUID": "different-assistant",
+          "timestamp": "2026-07-24T20:00:02.000Z",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "mismatch-tool-id",
+                "content": "untrusted result",
+                "is_error": false
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "selectedLeaf": "mismatch-result",
+        "includedRecords": [
+          { "index": 0, "reason": "active-ancestry" },
+          { "index": 1, "reason": "active-assistant-fragment" }
+        ],
+        "excludedRecords": [
+          { "index": 2, "reason": "tool-result-provenance-mismatch" }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "Read the file.",
+            "timestamp": "2026-07-24T20:00:00.000Z"
+          },
+          {
+            "role": "tool_use",
+            "content": "Read: {\"path\":\"file.txt\"}",
+            "timestamp": "2026-07-24T20:00:01.000Z",
+            "toolName": "Read",
+            "toolInput": { "path": "file.txt" }
+          }
+        ],
+        "warningCodes": ["claude_transcript_tool_result_mismatch"]
+      }
+    }
+  ]
+}

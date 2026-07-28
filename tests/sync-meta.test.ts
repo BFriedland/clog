@@ -41,6 +41,20 @@ describe("sync meta", () => {
       source: "claude-code",
       createdAt: "2026-02-19T09:15:00.000Z",
       slug: "fix-auth",
+      relationshipInspection: {
+        status: "linked",
+        version: 2,
+        diagnostic: null,
+      },
+      relationships: [{
+        kind: "branch",
+        parent: {
+          source: "claude-code",
+          sourceId: "parent-session",
+        },
+        evidence: "source",
+        branchPoint: null,
+      }],
     });
 
     const serialized = serializeRemoteMeta(meta);
@@ -56,6 +70,8 @@ describe("sync meta", () => {
     expect(parsed).not.toHaveProperty("filePath");
     expect(parsed).not.toHaveProperty("sourcePath");
     expect(parsed).not.toHaveProperty("indexedAt");
+    expect(parsed).not.toHaveProperty("sourceMtime");
+    expect(parsed).not.toHaveProperty("transcriptProjectionVersion");
   });
 
   it("round-trips a written meta file", async () => {
@@ -186,5 +202,19 @@ function makeConversation(): ConversationMeta {
     indexedAt: "2026-02-20T10:00:05.000Z",
     originKind: "local",
     originRef: null,
+    relationshipInspection: {
+      status: "linked",
+      version: 2,
+      diagnostic: null,
+    },
+    relationships: [{
+      kind: "branch",
+      parent: {
+        source: "claude-code",
+        sourceId: "parent-session",
+      },
+      evidence: "source",
+      branchPoint: null,
+    }],
   };
 }

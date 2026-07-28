@@ -1,21 +1,25 @@
 import chalk from "chalk";
 
 import { loadConfig } from "../config/index.js";
-import { clearSavedIndexedAt, listConversationsNeedingIndex, setConversationIndexedAt } from "../db/index.js";
+import { clearSavedIndexedAt, setConversationIndexedAt } from "../db/index.js";
 import { parseConversationMessages } from "./common.js";
 import { getSearchProviders } from "../search/deps.js";
+import { listIndexEligibleConversationsNeedingIndex } from "../search/coherence.js";
 import { indexConversation } from "../search/indexer.js";
 import { nowIso } from "../utils/time.js";
 
 export async function runIndexCommand(options: { rebuild?: boolean }): Promise<void> {
   const { embedding, vectorStore } = await getSearchProviders();
+  const config = await loadConfig();
 
   if (options.rebuild) {
     await clearSavedIndexedAt();
     await vectorStore.reset?.();
   }
 
-  const conversations = await listConversationsNeedingIndex();
+  const conversations = await listIndexEligibleConversationsNeedingIndex({
+    indexAllBranches: config.search?.indexAllBranches,
+  });
   if (conversations.length === 0) {
     process.stdout.write(
       'All saved conversations are indexed. To rebuild, run "clog index --rebuild".\n',
@@ -23,7 +27,6 @@ export async function runIndexCommand(options: { rebuild?: boolean }): Promise<v
     return;
   }
 
-  const config = await loadConfig();
   let indexed = 0;
   let errors = 0;
 

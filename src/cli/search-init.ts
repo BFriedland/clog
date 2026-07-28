@@ -2,7 +2,7 @@ import chalk from "chalk";
 
 import { runIndexCommand } from "./index-cmd.js";
 import { loadConfig, saveConfig } from "../config/index.js";
-import { listConversationsNeedingIndex } from "../db/index.js";
+import { listIndexEligibleConversationsNeedingIndex } from "../search/coherence.js";
 import { resetSearchProviders } from "../search/deps.js";
 import { SearchSetupIncompleteError } from "../search/errors.js";
 import {
@@ -45,6 +45,7 @@ export async function runSearchInitCommand(): Promise<void> {
     vectorStore: {
       type: vectorStoreType,
     },
+    indexAllBranches: existingSearch?.indexAllBranches ?? false,
   };
 
   renderSetupSummary({
@@ -234,7 +235,10 @@ function getRequiredSearchPackages(searchConfig: NonNullable<SearchConfig>): str
 }
 
 async function getConversationNeedingIndexCount(): Promise<number> {
-  const conversations = await listConversationsNeedingIndex();
+  const config = await loadConfig();
+  const conversations = await listIndexEligibleConversationsNeedingIndex({
+    indexAllBranches: config.search?.indexAllBranches,
+  });
   return conversations.length;
 }
 

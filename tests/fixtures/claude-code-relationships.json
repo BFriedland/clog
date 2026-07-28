@@ -1,0 +1,199 @@
+{
+  "formatVersion": 1,
+  "claudeCodeVersion": "2.1.206",
+  "observedAt": "2026-07-24",
+  "cases": {
+    "slashBranch": {
+      "origin": "Directly observed /branch session, trimmed and anonymized",
+      "surface": "/branch",
+      "childSourceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "parentSourceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "expectedCreatedAt": "2026-07-24T08:32:47.584Z",
+      "sourceRecords": [
+        {
+          "type": "system",
+          "subtype": "compact_boundary",
+          "uuid": "10000000-0000-4000-8000-000000000001",
+          "parentUuid": null,
+          "timestamp": "2026-07-24T08:01:32.937Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "forkedFrom": {
+            "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "messageUuid": "10000000-0000-4000-8000-000000000001"
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "10000000-0000-4000-8000-000000000002",
+          "parentUuid": "10000000-0000-4000-8000-000000000001",
+          "timestamp": "2026-07-24T08:01:33.036Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "forkedFrom": {
+            "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "messageUuid": "10000000-0000-4000-8000-000000000002"
+          },
+          "cwd": "/Users/example/project",
+          "message": {
+            "role": "user",
+            "content": "Anonymized copied prompt"
+          }
+        },
+        {
+          "type": "system",
+          "subtype": "turn_duration",
+          "uuid": "10000000-0000-4000-8000-000000000003",
+          "parentUuid": "10000000-0000-4000-8000-000000000002",
+          "timestamp": "2026-07-24T08:05:59.399Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "forkedFrom": {
+            "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "messageUuid": "10000000-0000-4000-8000-000000000003"
+          }
+        },
+        {
+          "type": "custom-title",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        {
+          "type": "system",
+          "subtype": "local_command",
+          "uuid": "10000000-0000-4000-8000-000000000004",
+          "parentUuid": "10000000-0000-4000-8000-000000000003",
+          "timestamp": "2026-07-24T08:32:47.584Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      ]
+    },
+    "forkSession": {
+      "origin": "Directly observed --resume --fork-session session, trimmed and anonymized",
+      "surface": "--resume 43ca38e8 --fork-session",
+      "childSourceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "parentSourceId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "expectedCreatedAt": "2026-07-24T07:58:26.724Z",
+      "sourceRecords": [
+        {
+          "type": "assistant",
+          "uuid": "20000000-0000-4000-8000-000000000001",
+          "parentUuid": null,
+          "timestamp": "2026-07-23T08:53:09.062Z",
+          "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "session_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "uuid": "20000000-0000-4000-8000-000000000002",
+          "parentUuid": "20000000-0000-4000-8000-000000000001",
+          "timestamp": "2026-07-23T08:53:09.156Z",
+          "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "session_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        },
+        {
+          "type": "system",
+          "subtype": "turn_duration",
+          "uuid": "20000000-0000-4000-8000-000000000003",
+          "parentUuid": "20000000-0000-4000-8000-000000000002",
+          "timestamp": "2026-07-23T08:53:09.158Z",
+          "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        },
+        {
+          "type": "user",
+          "uuid": "20000000-0000-4000-8000-000000000004",
+          "parentUuid": "20000000-0000-4000-8000-000000000003",
+          "timestamp": "2026-07-24T07:58:26.724Z",
+          "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "cwd": "/Users/example/project",
+          "message": {
+            "role": "user",
+            "content": "Anonymized fork prompt"
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "20000000-0000-4000-8000-000000000005",
+          "parentUuid": "20000000-0000-4000-8000-000000000004",
+          "timestamp": "2026-07-24T08:01:32.574Z",
+          "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        }
+      ]
+    },
+    "multiGenerationChain": {
+      "origin": "Directly observed 43ca38e8 to 61c3bd28 to 46828e6c chain, trimmed and anonymized; tests remove forkedFrom to exercise the documented fallback",
+      "surface": "/branch after an earlier --fork-session",
+      "childSourceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "parentSourceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "ancestorSourceId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "sourceRecords": [
+        {
+          "type": "assistant",
+          "uuid": "30000000-0000-4000-8000-000000000001",
+          "timestamp": "2026-07-23T08:48:13.479Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "session_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          "forkedFrom": {
+            "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "messageUuid": "30000000-0000-4000-8000-000000000001"
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "30000000-0000-4000-8000-000000000002",
+          "timestamp": "2026-07-24T08:05:59.330Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "forkedFrom": {
+            "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "messageUuid": "30000000-0000-4000-8000-000000000002"
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "30000000-0000-4000-8000-000000000003",
+          "timestamp": "2026-07-24T09:13:57.436Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "message": {
+            "role": "user",
+            "content": "Anonymized child prompt"
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "30000000-0000-4000-8000-000000000004",
+          "timestamp": "2026-07-24T09:14:01.361Z",
+          "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      ]
+    },
+    "provenanceFreeFork": {
+      "origin": "Directly observed headless --fork-session session, trimmed and anonymized",
+      "surface": "--resume fc79b435 --fork-session",
+      "childSourceId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "unobservableParentSourceId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "sourceRecords": [
+        {
+          "type": "system",
+          "subtype": "local_command",
+          "uuid": "40000000-0000-4000-8000-000000000001",
+          "parentUuid": null,
+          "timestamp": "2026-07-19T23:39:53.403Z",
+          "sessionId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        },
+        {
+          "type": "user",
+          "uuid": "40000000-0000-4000-8000-000000000002",
+          "parentUuid": "40000000-0000-4000-8000-000000000001",
+          "timestamp": "2026-07-24T08:30:27.389Z",
+          "sessionId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          "message": {
+            "role": "user",
+            "content": "Anonymized headless prompt"
+          }
+        }
+      ]
+    }
+  }
+}

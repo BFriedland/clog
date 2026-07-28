@@ -6,6 +6,14 @@ import { loadConfig } from "../config/index.js";
 import type { Config } from "../config/schema.js";
 import type { LocalDiscoveryCandidate } from "../conversations/view.js";
 import {
+  classifyAdapterVersion,
+  type Transcript,
+} from "../adapters/adapter.js";
+import {
+  classifyInstalledRelationshipInspectionVersion,
+  classifyInstalledTranscriptProjectionVersion,
+} from "../adapters/registry.js";
+import {
   type LocalConversation,
   requireLocalConversation,
 } from "../conversations/write-guards.js";
@@ -38,6 +46,13 @@ class SourceFileMissingError extends ClogError {
   }
 }
 
+class ConversationContentUnavailableError extends ClogError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationContentUnavailableError";
+  }
+}
+
 export interface DisplayRow {
   id: string;
   createdAt: string;
@@ -46,6 +61,7 @@ export interface DisplayRow {
   projectName: string | null;
   author?: string | null;
   title: string;
+  titleSuffix?: string;
   dim?: boolean;
 }
 
@@ -115,13 +131,32 @@ export async function parseConversationMessages(
   config: Config,
   conversation: ConversationMeta,
 ): Promise<Message[]> {
+  return (await parseConversationTranscript(config, conversation)).messages;
+}
+
+async function parseConversationTranscript(
+  config: Config,
+  conversation: ConversationMeta,
+): Promise<Transcript> {
   const adapter = getAdapter(conversation.source, config);
   const contentPath = resolveContentPath(conversation);
 
+  if (
+    conversation.state === "saved" &&
+    classifyAdapterVersion(
+      conversation.transcriptProjectionVersion,
+      adapter.transcriptProjectionVersion,
+    ) === "version_skew"
+  ) {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} was saved with transcript projection version ${conversation.transcriptProjectionVersion}, but this clog build supports version ${adapter.transcriptProjectionVersion}. Use a newer clog version to read or refresh it.`,
+    );
+  }
+
   try {
-    return await adapter.parseMessages(contentPath);
+    return await adapter.parseTranscript(contentPath);
   } catch (error) {
-    throw wrapMissingContentError(error, conversation, contentPath);
+    throw wrapTranscriptContentError(error, conversation, contentPath);
   }
 }
 
@@ -167,9 +202,22 @@ export async function parseConversationMessagesFromPath(
   source: string,
   filePath: string,
 ): Promise<Message[]> {
+  return (
+    await parseConversationTranscriptFromPath(config, source, filePath)
+  ).messages;
+}
+
+export async function parseConversationTranscriptFromPath(
+  config: Config,
+  source: string,
+  filePath: string,
+): Promise<Transcript & { transcriptProjectionVersion: number }> {
   const adapter = getAdapter(source, config);
   try {
-    return await adapter.parseMessages(filePath);
+    return {
+      ...(await adapter.parseTranscript(filePath)),
+      transcriptProjectionVersion: adapter.transcriptProjectionVersion,
+    };
   } catch (error) {
     throw wrapMissingPathError(error, filePath);
   }
@@ -212,6 +260,10 @@ export function renderWarnings(warnings: ClogWarning[]): void {
   for (const warning of warnings) {
     const details = [
       warning.source ? `source=${warning.source}` : null,
+      warning.conversation
+        ? `conversation=${formatWarningConversation(warning.conversation)}`
+        : null,
+      warning.diagnostic ? `diagnostic=${warning.diagnostic}` : null,
       warning.path ? `path=${warning.path}` : null,
       warning.paths ? `paths=${warning.paths.join(", ")}` : null,
       warning.guidance ? `hint: ${warning.guidance}` : null,
@@ -220,6 +272,12 @@ export function renderWarnings(warnings: ClogWarning[]): void {
     const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
     process.stderr.write(`warning: ${warning.message}${suffix}\n`);
   }
+}
+
+function formatWarningConversation(
+  conversation: NonNullable<ClogWarning["conversation"]>,
+): string {
+  return `${conversation.id.slice(0, 8)}@${conversation.source}`;
 }
 
 export function getScanWarningsForCommand(
@@ -250,7 +308,9 @@ type WarningOutputItem =
   | { kind: "warning"; warning: ClogWarning }
   | { kind: "group"; group: AggregatableWarningGroup };
 
-function collapseAggregatableWarnings(warnings: ClogWarning[]): ClogWarning[] {
+export function collapseAggregatableWarnings(
+  warnings: ClogWarning[],
+): ClogWarning[] {
   const groups = new Map<string, AggregatableWarningGroup>();
   const output: WarningOutputItem[] = [];
 
@@ -284,6 +344,7 @@ function collapseAggregatableWarnings(warnings: ClogWarning[]): ClogWarning[] {
     return {
       code: first.code,
       message: `${first.message} (${count} occurrences)`,
+      ...(first.diagnostic ? { diagnostic: first.diagnostic } : {}),
       guidance: addVerboseWarningsGuidance(first.guidance),
     };
   });
@@ -297,6 +358,7 @@ function getAggregatableWarningKey(warning: ClogWarning): string {
   return JSON.stringify([
     warning.code,
     warning.source ?? null,
+    warning.diagnostic ?? null,
     warning.message,
     warning.guidance ?? null,
   ]);
@@ -343,7 +405,7 @@ export function formatForSingleLine(value: string): string {
 }
 
 export function renderConversationTable(
-  conversations: ConversationMeta[],
+  conversations: Array<ConversationMeta & { titleSuffix?: string }>,
   options: {
     emptyMessage?: string;
     includeState?: boolean;
@@ -366,6 +428,7 @@ export function renderConversationTable(
       projectName: conversation.projectName,
       author: conversation.author,
       title: conversation.title,
+      titleSuffix: conversation.titleSuffix,
     })),
     options,
   );
@@ -469,7 +532,10 @@ export function renderDisplayTable(
   for (const row of rows) {
     const line = computedColumns
       .map((column) => {
-        const value = padCell(column.value(row), column.width);
+        const value =
+          column.key === "title"
+            ? formatTitleCell(row.title, row.titleSuffix, column.width)
+            : padCell(column.value(row), column.width);
         if (options.stateLabelMode && column.key === "state") {
           return colorizeStateLabel(value, {
             state: row.state as ConversationMeta["state"],
@@ -506,6 +572,38 @@ function padCell(value: string, width: number): string {
   }
 
   return `${singleLine.slice(0, width - 3)}...`;
+}
+
+// Spaces between a truncated title's "..." and its right-anchored note, so the
+// note does not read as part of the cut-off title.
+const TITLE_SUFFIX_TRUNCATED_GAP = 2;
+
+// Render the title cell, keeping a short right-anchored note (e.g. a branch
+// count) visible by reserving its width before the title is truncated. Without
+// the reservation the note is appended to the title and is the first thing lost
+// to "..." on a long title.
+function formatTitleCell(
+  title: string,
+  titleSuffix: string | undefined,
+  width: number,
+): string {
+  if (!titleSuffix) {
+    return padCell(title, width);
+  }
+
+  const combined = `${title} ${titleSuffix}`;
+  if (formatForSingleLine(combined).length <= width) {
+    return padCell(combined, width);
+  }
+
+  const available = width - 3 - TITLE_SUFFIX_TRUNCATED_GAP - titleSuffix.length;
+  if (available < 1) {
+    // Column too narrow to reserve the note; fall back to plain truncation.
+    return padCell(combined, width);
+  }
+
+  const truncatedTitle = formatForSingleLine(title).slice(0, available);
+  return `${truncatedTitle}...${" ".repeat(TITLE_SUFFIX_TRUNCATED_GAP)}${titleSuffix}`;
 }
 
 function formatDate(value: string): string {
@@ -631,7 +729,12 @@ export function getTerminalWidth(): number {
   return 100;
 }
 
-export type SavedDelta = "clean" | "ready" | "source_ahead";
+export type SavedDelta =
+  | "clean"
+  | "content_unavailable"
+  | "ready"
+  | "source_ahead"
+  | "version_skew";
 
 export async function classifySavedDelta(
   conversation: ConversationMeta,
@@ -639,6 +742,21 @@ export async function classifySavedDelta(
 ): Promise<SavedDelta> {
   if (conversation.state !== "saved") {
     return "clean";
+  }
+
+  const projectionVersion = classifyInstalledTranscriptProjectionVersion(
+    conversation.source,
+    conversation.transcriptProjectionVersion,
+  );
+  const relationshipVersion = classifyInstalledRelationshipInspectionVersion(
+    conversation.source,
+    conversation.relationshipInspection.version,
+  );
+  if (
+    projectionVersion === "version_skew" ||
+    relationshipVersion === "version_skew"
+  ) {
+    return "version_skew";
   }
 
   if (!conversation.filePath) {
@@ -662,6 +780,13 @@ export async function classifySavedDelta(
     }
   }
 
+  if (
+    projectionVersion === "refreshable" ||
+    relationshipVersion === "refreshable"
+  ) {
+    return "ready";
+  }
+
   if (!conversation.savedAt) {
     return "ready";
   }
@@ -671,7 +796,15 @@ export async function classifySavedDelta(
   }
 
   const config = await loadConfig();
-  const messages = await parseConversationMessages(config, conversation);
+  let messages: Message[];
+  try {
+    messages = await parseConversationMessages(config, conversation);
+  } catch (error) {
+    if (error instanceof ConversationContentUnavailableError) {
+      return "content_unavailable";
+    }
+    throw error;
+  }
   return messages.length > conversation.savedMessageCount ? "ready" : "clean";
 }
 
@@ -753,6 +886,11 @@ function wrapMissingContentError(
   attemptedPath: string,
 ): Error {
   if (!isMissingFileError(error)) {
+    if (isContentFileAccessError(error)) {
+      return new ConversationContentUnavailableError(
+        `Conversation content file cannot be read at ${attemptedPath}.`,
+      );
+    }
     return error instanceof Error ? error : new Error(String(error));
   }
 
@@ -761,12 +899,27 @@ function wrapMissingContentError(
   }
 
   if (conversation.filePath && attemptedPath === conversation.filePath) {
-    return new ClogError(
+    return new ConversationContentUnavailableError(
       `Curated raw file is missing for ${conversation.id}. Run "clog save ${conversation.id.slice(0, 8)}" to recreate it from source if the source file is still available.`,
     );
   }
 
-  return new ClogError(`Conversation content file is missing at ${attemptedPath}.`);
+  return new ConversationContentUnavailableError(
+    `Conversation content file is missing at ${attemptedPath}.`,
+  );
+}
+
+function wrapTranscriptContentError(
+  error: unknown,
+  conversation: ConversationMeta,
+  attemptedPath: string,
+): Error {
+  if (error instanceof SyntaxError) {
+    return new ConversationContentUnavailableError(
+      `Conversation content file cannot be parsed at ${attemptedPath}.`,
+    );
+  }
+  return wrapMissingContentError(error, conversation, attemptedPath);
 }
 
 function wrapMissingPathError(
@@ -786,5 +939,18 @@ function isMissingFileError(error: unknown): boolean {
     typeof error === "object" &&
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function isContentFileAccessError(error: unknown): boolean {
+  if (
+    error == null ||
+    typeof error !== "object" ||
+    !("code" in error)
+  ) {
+    return false;
+  }
+  return ["ENOENT", "EACCES", "EPERM", "EISDIR"].includes(
+    String((error as NodeJS.ErrnoException).code),
   );
 }

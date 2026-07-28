@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { DiscoveredConversation } from "../adapters/adapter.js";
+import { classifyAdapterVersion } from "../adapters/adapter.js";
 import type { Config } from "../config/schema.js";
 import {
   listConversations,
@@ -6,9 +9,25 @@ import {
 } from "../db/index.js";
 import type {
   ConversationMeta,
+  ConversationRelationship,
   ConversationState,
+  RelationshipInspectionState,
 } from "../models/conversation.js";
-import { summaryKindForDiscoveredSummary } from "../models/conversation.js";
+import {
+  preserveConfirmedRelationship,
+  summaryKindForDiscoveredSummary,
+} from "../models/conversation.js";
+import {
+  buildRelatedConversationGraphs,
+  conversationIdentityKey,
+  projectRelatedConversationGraphs,
+  type BranchStatus,
+  type ConversationIdentity,
+  type RelatedConversationInput,
+  type RelatedConversationRelationshipOverride,
+  type RelationshipCompleteness,
+  type RelationshipGraphWarning,
+} from "../relationships/graph.js";
 import { ClogError, UsageError } from "../utils/errors.js";
 import { parseSourceQualifiedId } from "../utils/source-keys.js";
 import { pathMatchesBoundary } from "../cli/clogignore.js";
@@ -19,13 +38,18 @@ export interface LocalDiscoveryCandidate {
   sourcePath: string;
   sourceMtime: string;
   metadata: DiscoveredConversation["metadata"];
+  relationshipInspection: DiscoveredConversation["relationshipInspection"];
+  relationships: DiscoveredConversation["relationships"];
 }
 
 interface IgnoredLocalDiscoveryCandidate {
   source: string;
   sourceId: string;
   sourcePath: string;
+  sourceMtime: string;
   metadata: DiscoveredConversation["metadata"];
+  relationshipInspection: DiscoveredConversation["relationshipInspection"];
+  relationships: DiscoveredConversation["relationships"];
 }
 
 interface SourceDiscoveryStatus {
@@ -49,6 +73,37 @@ export interface ResolveConversationViewOptions {
   states?: ConversationState[];
   scanSnapshot?: LocalScanSnapshot;
   filters?: Omit<ConversationViewFilters, "states">;
+}
+
+export interface ConversationViewComposition {
+  conversations: ConversationMeta[];
+  graphUniverse: ConversationMeta[];
+  relationshipOverrides: RelatedConversationRelationshipOverride[];
+}
+
+export interface RelatedConversationView<
+  T extends RelatedConversationInput = ConversationMeta,
+> {
+  conversation: T;
+  knownRootIdentity: ConversationIdentity;
+  immediateParentRelationship: ConversationRelationship | null;
+  immediateParentIdentity: ConversationIdentity | null;
+  immediateParentId: string | null;
+  childBranchIds: string[];
+  branchIds: string[];
+  branchCount: number;
+  endpointCount: number;
+  relationshipCompleteness: RelationshipCompleteness;
+  hasMoreBranches: boolean;
+  branchStatus: BranchStatus;
+  isRepresentative: boolean;
+  inheritedMessagesMayAppear: boolean;
+  relationshipWarnings: RelationshipGraphWarning[];
+}
+
+export interface FullConversationGraphStatus {
+  branchStatus: BranchStatus;
+  relationshipCompleteness: RelationshipCompleteness;
 }
 
 export function passesConfigPathFilters(
@@ -101,12 +156,15 @@ export function buildDiscoveredConversation(
     savedAt: null,
     savedMessageCount: null,
     saveVersion: 0,
+    transcriptProjectionVersion: null,
     sourcePath: candidate.sourcePath,
     filePath: null,
     sourceMtime: candidate.sourceMtime,
     indexedAt: null,
     originKind: "local",
     originRef: null,
+    relationshipInspection: candidate.relationshipInspection,
+    relationships: candidate.relationships,
   };
 }
 
@@ -114,8 +172,14 @@ export async function listConversationView(
   filters: ConversationViewFilters = {},
   scanSnapshot?: LocalScanSnapshot,
 ): Promise<ConversationMeta[]> {
+  return (await composeConversationView(filters, scanSnapshot)).conversations;
+}
+
+export async function composeConversationView(
+  filters: ConversationViewFilters = {},
+  scanSnapshot?: LocalScanSnapshot,
+): Promise<ConversationViewComposition> {
   const requestedStates = filters.states ?? ["saved", "unsaved"];
-  const includesSaved = requestedStates.includes("saved");
   const includesUnsaved = requestedStates.includes("unsaved");
 
   if (includesUnsaved && !scanSnapshot) {
@@ -143,14 +207,222 @@ export async function listConversationView(
     }
   }
 
-  const composed = [
-    ...(includesSaved ? allSaved : []),
-    ...(includesUnsaved ? unsavedByIdentity.values() : []),
-  ];
+  const scanCandidatesByIdentity = new Map(
+    (scanSnapshot?.candidates ?? []).map((candidate) => [
+      identityKey(candidate.source, candidate.sourceId),
+      candidate,
+    ] as const),
+  );
+  const relationshipOverrides: RelatedConversationRelationshipOverride[] = [];
+  const currentSaved = scanSnapshot
+    ? allSaved.map((conversation) => {
+        if (conversation.originKind !== "local") {
+          return conversation;
+        }
+        const candidate = scanCandidatesByIdentity.get(
+          identityKey(conversation.source, conversation.sourceId),
+        );
+        if (!candidate) {
+          return conversation;
+        }
+        const relationshipOverride = buildCurrentGraphRelationshipOverride(
+          conversation,
+          candidate,
+        );
+        if (relationshipOverride) {
+          relationshipOverrides.push(relationshipOverride);
+        }
+        return attachCurrentSourceCandidate(conversation, scanSnapshot);
+      })
+    : allSaved;
 
-  return composed
+  const graphUniverse = [
+    ...currentSaved,
+    ...(scanSnapshot ? unsavedByIdentity.values() : []),
+  ]
     .filter((conversation) => conversationPassesViewFilters(conversation, filters))
     .sort(compareConversationViewRows);
+  const conversations = graphUniverse.filter((conversation) =>
+    requestedStates.includes(conversation.state),
+  );
+
+  return { conversations, graphUniverse, relationshipOverrides };
+}
+
+export function buildRelatedConversationView<
+  T extends RelatedConversationInput,
+>(
+  graphUniverse: readonly T[],
+  visibleConversations: readonly T[] = graphUniverse,
+  options: {
+    allBranches?: boolean;
+    relationshipOverrides?: readonly RelatedConversationRelationshipOverride[];
+  } = {},
+): RelatedConversationView<T>[] {
+  const projections = projectRelatedConversationGraphs(
+    buildRelatedConversationGraphs(
+      graphUniverse,
+      options.relationshipOverrides,
+    ),
+    visibleConversations,
+  );
+  const rows: RelatedConversationView<T>[] = [];
+
+  for (const projection of projections) {
+    const projectedByKey = new Map(
+      projection.visibleBranches.map((branch) => [
+        conversationIdentityKey(branch.identity),
+        branch,
+      ] as const),
+    );
+    const branches = options.allBranches
+      ? projection.visibleBranches
+      : [projection.representativeBranch];
+
+    for (const branch of branches) {
+      const branchKey = conversationIdentityKey(branch.identity);
+      const presentParent = branch.parent
+        ? projectedByKey.get(conversationIdentityKey(branch.parent))
+        : undefined;
+      const childBranchIds = branch.children
+        .map((child) => projectedByKey.get(conversationIdentityKey(child)))
+        .filter((child) => child != null)
+        .map((child) => child.conversation.id)
+        .sort();
+
+      rows.push({
+        conversation: branch.conversation,
+        knownRootIdentity: projection.graph.root,
+        immediateParentRelationship: branch.parentRelationship,
+        immediateParentIdentity: branch.parent,
+        immediateParentId: presentParent?.conversation.id ?? null,
+        childBranchIds,
+        branchIds: projection.visibleBranches
+          .map((candidate) => candidate.conversation.id)
+          .sort(),
+        branchCount: projection.visibleBranches.length,
+        endpointCount: projection.endpointCount,
+        relationshipCompleteness: projection.graph.completeness,
+        hasMoreBranches: projection.hasHiddenBranches,
+        branchStatus: projection.branchStatuses.get(branchKey) ?? "unproven",
+        isRepresentative:
+          branchKey ===
+          conversationIdentityKey(projection.representativeBranch.identity),
+        inheritedMessagesMayAppear:
+          projection.graph.branches.length > 1 ||
+          projection.graph.externalParents.length > 0,
+        relationshipWarnings: projection.graph.warnings,
+      });
+    }
+  }
+
+  return rows;
+}
+
+export function buildFullConversationGraphStatusMap<
+  T extends RelatedConversationInput,
+>(
+  graphUniverse: readonly T[],
+  relationshipOverrides: readonly RelatedConversationRelationshipOverride[] = [],
+): Map<string, FullConversationGraphStatus> {
+  return new Map(
+    buildRelatedConversationView(graphUniverse, graphUniverse, {
+      allBranches: true,
+      relationshipOverrides,
+    }).map((related) => [
+      conversationIdentityKey(related.conversation),
+      {
+        branchStatus:
+          related.relationshipCompleteness === "invalid"
+            ? "unproven"
+            : related.branchStatus,
+        relationshipCompleteness: related.relationshipCompleteness,
+      },
+    ]),
+  );
+}
+
+export function isInDefaultLiteralSearchScope(
+  conversation: Pick<RelatedConversationInput, "source" | "sourceId">,
+  statuses: ReadonlyMap<string, FullConversationGraphStatus>,
+): boolean {
+  const status = statuses.get(conversationIdentityKey(conversation));
+  return (
+    status == null ||
+    status.relationshipCompleteness === "invalid" ||
+    status.branchStatus === "endpoint"
+  );
+}
+
+export function findRelatedConversationView<
+  T extends RelatedConversationInput,
+>(
+  graphUniverse: readonly T[],
+  conversation: Pick<T, "source" | "sourceId">,
+  visibleConversations: readonly T[] = graphUniverse,
+  relationshipOverrides: readonly RelatedConversationRelationshipOverride[] = [],
+): RelatedConversationView<T> | null {
+  return (
+    buildRelatedConversationView(graphUniverse, visibleConversations, {
+      allBranches: true,
+      relationshipOverrides,
+    }).find(
+      (candidate) =>
+        candidate.conversation.source === conversation.source &&
+        candidate.conversation.sourceId === conversation.sourceId,
+    ) ?? null
+  );
+}
+
+export function buildCurrentGraphRelationshipOverride(
+  conversation: {
+    state: string;
+    source: string;
+    sourceId: string;
+    relationshipInspection: RelationshipInspectionState;
+    relationships: ConversationRelationship[];
+  },
+  candidate: Pick<
+    LocalDiscoveryCandidate,
+    "relationshipInspection" | "relationships"
+  > | null | undefined,
+): RelatedConversationRelationshipOverride | null {
+  if (
+    conversation.state !== "saved" ||
+    !candidate ||
+    candidate.relationshipInspection.version == null
+  ) {
+    return null;
+  }
+
+  const versionClassification = classifyAdapterVersion(
+    conversation.relationshipInspection.version,
+    candidate.relationshipInspection.version,
+  );
+  if (versionClassification === "version_skew") {
+    return null;
+  }
+
+  const refreshedInspection = preserveConfirmedRelationship(conversation, {
+    ...candidate.relationshipInspection,
+    relationships: candidate.relationships,
+  });
+  const currentInspection = {
+    ...conversation.relationshipInspection,
+    relationships: conversation.relationships,
+  };
+  const observationConflict =
+    versionClassification === "current" &&
+    !isDeepStrictEqual(currentInspection, refreshedInspection);
+
+  return {
+    source: conversation.source,
+    sourceId: conversation.sourceId,
+    relationships: observationConflict
+      ? [...conversation.relationships, ...refreshedInspection.relationships]
+      : refreshedInspection.relationships,
+    observationConflict,
+  };
 }
 
 export async function resolveConversationView(
@@ -236,6 +508,56 @@ export function attachCurrentSourceCandidate(
     ...conversation,
     sourcePath: candidate.sourcePath,
     sourceMtime: candidate.sourceMtime,
+  };
+}
+
+export function attachCurrentRelationshipInspection(
+  conversation: ConversationMeta,
+  candidate: LocalDiscoveryCandidate | null | undefined,
+): ConversationMeta {
+  if (
+    conversation.state !== "saved" ||
+    !candidate ||
+    candidate.relationshipInspection.version == null
+  ) {
+    return conversation;
+  }
+
+  const versionClassification = classifyAdapterVersion(
+    conversation.relationshipInspection.version,
+    candidate.relationshipInspection.version,
+  );
+  if (versionClassification === "version_skew") {
+    return conversation;
+  }
+
+  const refreshedInspection = preserveConfirmedRelationship(conversation, {
+    ...candidate.relationshipInspection,
+    relationships: candidate.relationships,
+  });
+  if (
+    versionClassification === "current" &&
+    !isDeepStrictEqual(
+      {
+        ...conversation.relationshipInspection,
+        relationships: conversation.relationships,
+      },
+      refreshedInspection,
+    )
+  ) {
+    throw new ClogError(
+      `Conversation ${conversation.id.slice(0, 8)} has conflicting saved and live relationship metadata for inspection version ${candidate.relationshipInspection.version}. The saved copy was left unchanged.`,
+    );
+  }
+
+  return {
+    ...conversation,
+    relationshipInspection: {
+      status: refreshedInspection.status,
+      version: refreshedInspection.version,
+      diagnostic: refreshedInspection.diagnostic,
+    },
+    relationships: refreshedInspection.relationships,
   };
 }
 

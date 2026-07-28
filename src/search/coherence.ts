@@ -1,11 +1,18 @@
 import type { ConversationMeta } from "../models/conversation.js";
-import { setConversationIndexedAt } from "../db/index.js";
+import {
+  listConversations,
+  setConversationIndexedAt,
+} from "../db/index.js";
 import { parseConversationMessages } from "../cli/common.js";
 import { loadConfig } from "../config/index.js";
 import { nowIso } from "../utils/time.js";
 import { getSearchProviders, searchAvailable } from "./deps.js";
 import { SearchNotConfiguredError } from "./errors.js";
 import { indexConversation } from "./indexer.js";
+import {
+  hasCurrentSearchContracts,
+  selectIndexEligibleConversations,
+} from "./relationships.js";
 
 export function isConversationSearchable(
   conversation: ConversationMeta | null | undefined,
@@ -15,7 +22,26 @@ export function isConversationSearchable(
       conversation.state === "saved" &&
       conversation.indexedAt &&
       conversation.savedAt &&
-      conversation.indexedAt >= conversation.savedAt,
+      conversation.indexedAt >= conversation.savedAt &&
+      hasCurrentSearchContracts(conversation),
+  );
+}
+
+export async function listIndexEligibleConversationsNeedingIndex(
+  options: {
+    indexAllBranches?: boolean;
+  } = {},
+): Promise<ConversationMeta[]> {
+  return selectIndexEligibleConversations(
+    await listConversations(),
+    options,
+  ).filter(
+    (conversation) =>
+      conversation.savedAt != null &&
+      (
+        conversation.indexedAt == null ||
+        conversation.indexedAt < conversation.savedAt
+      ),
   );
 }
 
@@ -42,7 +68,30 @@ export async function maybeReindexUpdatedConversation<T extends ConversationMeta
 
   const config = await loadConfig();
   if (!config.search) {
-    return conversation;
+    return {
+      ...conversation,
+      indexedAt: null,
+    } as T;
+  }
+
+  if (!hasCurrentSearchContracts(conversation)) {
+    return {
+      ...conversation,
+      indexedAt: null,
+    } as T;
+  }
+
+  const eligibleIds = new Set(
+    selectIndexEligibleConversations(
+      replaceConversationsById(await listConversations(), [conversation]),
+      { indexAllBranches: config.search.indexAllBranches },
+    ).map((candidate) => candidate.id),
+  );
+  if (!eligibleIds.has(conversation.id)) {
+    return {
+      ...conversation,
+      indexedAt: null,
+    } as T;
   }
 
   try {
@@ -64,37 +113,70 @@ export async function maybeReindexUpdatedConversation<T extends ConversationMeta
 export async function maybeAutoIndexConversations(
   conversations: ConversationMeta[],
   onProgress?: (completed: number, total: number) => void,
-): Promise<string[]> {
+): Promise<{
+  failedIds: string[];
+  indexedIds: string[];
+  skippedIds: string[];
+}> {
   if (conversations.length === 0 || !(await searchAvailable())) {
-    return [];
+    return {
+      failedIds: [],
+      indexedIds: [],
+      skippedIds: conversations.map((conversation) => conversation.id),
+    };
   }
 
   try {
     const config = await loadConfig();
     const { embedding, vectorStore } = await getSearchProviders();
-    const failures: string[] = [];
-    const indexable = conversations.filter((c) => c.state === "saved");
+    const eligibleIds = new Set(
+      selectIndexEligibleConversations(
+        replaceConversationsById(await listConversations(), conversations),
+        { indexAllBranches: config.search?.indexAllBranches },
+      ).map((conversation) => conversation.id),
+    );
+    const candidates = conversations.filter(
+      (conversation) =>
+        conversation.state === "saved" &&
+        eligibleIds.has(conversation.id),
+    );
+    const failedIds = conversations
+      .filter(
+        (conversation) =>
+          conversation.state === "saved" &&
+          !hasCurrentSearchContracts(conversation),
+      )
+      .map((conversation) => conversation.id);
+    const indexedIds: string[] = [];
+    const skippedIds = conversations
+      .filter(
+        (conversation) =>
+          hasCurrentSearchContracts(conversation) &&
+          !eligibleIds.has(conversation.id),
+      )
+      .map((conversation) => conversation.id);
     let completed = 0;
 
-    for (const conversation of conversations) {
-      if (conversation.state !== "saved") {
-        continue;
-      }
-
+    for (const conversation of candidates) {
       try {
         const messages = await parseConversationMessages(config, conversation);
         await indexConversation(conversation, messages, embedding, vectorStore);
         await setConversationIndexedAt(conversation.id, nowIso());
+        indexedIds.push(conversation.id);
       } catch {
-        failures.push(conversation.id);
+        failedIds.push(conversation.id);
       }
       completed += 1;
-      onProgress?.(completed, indexable.length);
+      onProgress?.(completed, candidates.length);
     }
 
-    return failures;
+    return { failedIds, indexedIds, skippedIds };
   } catch {
-    return conversations.map((conversation) => conversation.id);
+    return {
+      failedIds: conversations.map((conversation) => conversation.id),
+      indexedIds: [],
+      skippedIds: [],
+    };
   }
 }
 
@@ -127,4 +209,22 @@ export async function tryDeleteConversationVectors(
 
     return conversationIds;
   }
+}
+
+function replaceConversationsById(
+  existing: readonly ConversationMeta[],
+  replacements: readonly ConversationMeta[],
+): ConversationMeta[] {
+  const replacementsById = new Map(
+    replacements.map((conversation) => [conversation.id, conversation] as const),
+  );
+  return [
+    ...existing.map(
+      (conversation) => replacementsById.get(conversation.id) ?? conversation,
+    ),
+    ...replacements.filter(
+      (conversation) =>
+        !existing.some((candidate) => candidate.id === conversation.id),
+    ),
+  ];
 }
