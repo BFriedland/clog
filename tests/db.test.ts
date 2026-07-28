@@ -6,8 +6,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Database } from "sql.js";
-
 import {
   browseValues,
   clearSavedIndexedAt,
@@ -24,6 +22,7 @@ import {
   setConversationIndexedAt,
   withDb,
 } from "../src/db/index.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { nowIso } from "../src/utils/time.js";
 import { deleteConversation, insertConversation, updateConversation } from "./helpers/db.js";
@@ -403,7 +402,7 @@ describe("db", () => {
   });
 
   // ============================================================
-  // Schema migration and constraint enforcement
+  // Schema baseline and constraint enforcement
   // ============================================================
 
   it("schema checks are idempotent across successive withDb calls (SPEC §3.4.1)", async () => {
@@ -436,44 +435,54 @@ describe("db", () => {
     expect(schema.hasRelationshipsTable).toBe(true);
   });
 
-  it("migrates schema version 9 rows as unexamined with a stale projection", async () => {
-    const original = makeConversation({
-      title: "Preserved curation",
-      tags: ["preserved"],
-      sourceMtime: "2026-02-01T09:00:00.000Z",
-    });
-    await insertConversation(original);
-
+  it.each([
+    CURRENT_SCHEMA_VERSION - 1,
+    CURRENT_SCHEMA_VERSION + 1,
+  ])("rejects incompatible schema version %i without rewriting the database", async (version) => {
     await withDb((db) => {
-      db.exec(`
-        DROP TABLE conversation_relationships;
-        CREATE TABLE conversations_v9 AS
-        SELECT
-          id, source_id, source, title, summary, summary_kind,
-          summary_extraction, author, project_name, project_path, tags_json,
-          slug, created_at, discovered_at, modified_at, saved_at,
-          saved_message_count, save_version, source_path, file_path,
-          source_mtime, indexed_at, origin_kind, origin_ref
-        FROM conversations;
-        DROP TABLE conversations;
-        ALTER TABLE conversations_v9 RENAME TO conversations;
-        UPDATE schema_version SET version = 9;
-      `);
+      db.run("UPDATE schema_version SET version = ?", [version]);
     }, { mode: "write" });
+    const dbPath = path.join(tempDir, "clog.db");
+    const before = await fs.readFile(dbPath);
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
 
-    const migrated = await getConversationById(original.id);
-    expect(migrated).toMatchObject({
-      title: "Preserved curation",
-      tags: ["preserved"],
-      sourceMtime: "2026-02-01T09:00:00.000Z",
-      relationshipInspection: {
-        status: "unexamined",
-        version: null,
-        diagnostic: null,
-      },
-      relationships: [],
-      transcriptProjectionVersion: null,
-    });
+    await expect(
+      withDb(() => undefined, { mode: "read" }),
+    ).rejects.toThrow(
+      new RegExp(
+        `schema version ${version} is incompatible.*expects version ${CURRENT_SCHEMA_VERSION}.*Archive the complete CLOG_HOME`,
+        "s",
+      ),
+    );
+
+    expect(writeSpy).not.toHaveBeenCalled();
+    await expect(fs.readFile(dbPath)).resolves.toEqual(before);
+  });
+
+  it.each([
+    "conversations",
+    "conversation_relationships",
+  ])("rejects an unversioned database containing %s without rewriting it", async (remainingTable) => {
+    await withDb((db) => {
+      db.exec("DROP TABLE schema_version");
+      db.exec(
+        remainingTable === "conversations"
+          ? "DROP TABLE conversation_relationships"
+          : "DROP TABLE conversations",
+      );
+    }, { mode: "write" });
+    const dbPath = path.join(tempDir, "clog.db");
+    const before = await fs.readFile(dbPath);
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    await expect(
+      withDb(() => undefined, { mode: "read" }),
+    ).rejects.toThrow(
+      /schema_version is missing while clog application tables already exist.*Archive the complete CLOG_HOME/s,
+    );
+
+    expect(writeSpy).not.toHaveBeenCalled();
+    await expect(fs.readFile(dbPath)).resolves.toEqual(before);
   });
 
   it("enforces inspection and transcript-version column constraints", async () => {
@@ -735,215 +744,6 @@ describe("db", () => {
     expect(currentUnknown.map((conversation) => conversation.id)).toEqual([
       conversations[0]!.id,
     ]);
-  });
-
-  it("migrates legacy origin into origin_kind and origin_ref", async () => {
-    await withDb((db) => {
-      db.exec(`
-        DROP TABLE conversations;
-        DROP TABLE schema_version;
-        CREATE TABLE schema_version (version INTEGER NOT NULL);
-        INSERT INTO schema_version (version) VALUES (6);
-        CREATE TABLE conversations (
-          id TEXT PRIMARY KEY,
-          source_id TEXT NOT NULL,
-          source TEXT NOT NULL,
-          title TEXT NOT NULL,
-          summary TEXT DEFAULT '',
-          summary_kind TEXT NOT NULL DEFAULT 'none'
-            CHECK(summary_kind IN ('none','imported','generated','curated')),
-          summary_extraction TEXT,
-          author TEXT NOT NULL,
-          project_name TEXT,
-          project_path TEXT,
-          tags_json TEXT DEFAULT '[]',
-          slug TEXT,
-          created_at TEXT NOT NULL,
-          discovered_at TEXT NOT NULL,
-          modified_at TEXT NOT NULL,
-          state TEXT NOT NULL DEFAULT 'discovered'
-            CHECK(state IN ('discovered','saved')),
-          saved_at TEXT,
-          saved_message_count INTEGER,
-          save_version INTEGER DEFAULT 0,
-          source_path TEXT NOT NULL,
-          file_path TEXT,
-          source_mtime TEXT,
-          indexed_at TEXT,
-          origin TEXT DEFAULT NULL,
-          UNIQUE(source, source_id)
-        );
-      `);
-      db.run(
-        `
-          INSERT INTO conversations (
-            id, source_id, source, title, summary, summary_kind, summary_extraction,
-            author, project_name, project_path, tags_json, slug, created_at,
-            discovered_at, modified_at, state, saved_at, saved_message_count,
-            save_version, source_path, file_path, source_mtime, indexed_at, origin
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          "e2222222-1234-1234-1234-123456789012",
-          "e2222222-1234-1234-1234-123456789012",
-          "claude-code",
-          "Remote legacy row",
-          "",
-          "none",
-          null,
-          "bob",
-          null,
-          null,
-          "[]",
-          null,
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "saved",
-          "2026-02-01T10:00:00.000Z",
-          1,
-          1,
-          "/tmp/remote.jsonl",
-          "/tmp/remote.jsonl",
-          null,
-          null,
-          "git@example.com:repo.git",
-        ],
-      );
-    }, { mode: "write" });
-
-    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
-    await withDb(() => undefined, { mode: "read" });
-    expect(writeSpy).toHaveBeenCalledOnce();
-
-    const loaded = await getConversationById("e2222222-1234-1234-1234-123456789012");
-    expect(loaded?.originKind).toBe("git");
-    expect(loaded?.originRef).toBe("git@example.com:repo.git");
-  });
-
-  it("drops legacy discovered rows, preserves valid saved rows, and removes state", async () => {
-    await withDb((db) => {
-      installLegacyV7Schema(db);
-      db.run(
-        `INSERT INTO conversations (id, source_id, source, title, author,
-          created_at, discovered_at, modified_at, state, save_version, source_path,
-          origin_kind, origin_ref)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          "f4444444-1234-1234-1234-123456789012",
-          "f4444444-1234-1234-1234-123456789012",
-          "claude-code",
-          "Legacy discovered row",
-          "alice",
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "discovered",
-          0,
-          "/tmp/legacy.jsonl",
-          "local",
-          null,
-        ],
-      );
-      db.run(
-        `INSERT INTO conversations (
-          id, source_id, source, title, summary, summary_kind, author,
-          project_name, project_path, tags_json, created_at, discovered_at,
-          modified_at, state, saved_at, saved_message_count, save_version,
-          source_path, file_path, source_mtime, origin_kind, origin_ref
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          "f5555555-1234-1234-1234-123456789012",
-          "f5555555-1234-1234-1234-123456789012",
-          "claude-code",
-          "Legacy saved row",
-          "Preserve me",
-          "curated",
-          "alice",
-          "api-service",
-          "/tmp/api-service",
-          '["important"]',
-          "2026-02-01T09:00:00.000Z",
-          "2026-02-01T09:30:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "saved",
-          "2026-02-01T10:00:00.000Z",
-          7,
-          3,
-          "/tmp/source.jsonl",
-          "/tmp/raw.jsonl",
-          "2026-02-01T09:59:00.000Z",
-          "local",
-          null,
-        ],
-      );
-    }, { mode: "write" });
-
-    await withDb(() => undefined, { mode: "read" });
-
-    const loaded = await getConversationById("f4444444-1234-1234-1234-123456789012");
-    expect(loaded).toBeNull();
-    await expect(getConversationById("f5555555-1234-1234-1234-123456789012")).resolves.toMatchObject({
-      state: "saved",
-      title: "Legacy saved row",
-      summary: "Preserve me",
-      tags: ["important"],
-      savedAt: "2026-02-01T10:00:00.000Z",
-      savedMessageCount: 7,
-      saveVersion: 3,
-    });
-    const columnNames = await withDb((db) => {
-      const result = db.exec("PRAGMA table_info(conversations)");
-      return result[0]?.values.map((row) => String(row[1])) ?? [];
-    }, { mode: "read" });
-    expect(columnNames).not.toContain("state");
-
-    for (const sql of [
-      "UPDATE conversations SET saved_at = NULL",
-      "UPDATE conversations SET saved_message_count = NULL",
-      "UPDATE conversations SET saved_message_count = -1",
-      "UPDATE conversations SET save_version = NULL",
-      "UPDATE conversations SET save_version = 0",
-    ]) {
-      await expect(withDb((db) => db.exec(sql), { mode: "write" })).rejects.toThrow();
-    }
-  });
-
-  it("rejects corrupt saved checkpoints without replacing the legacy database", async () => {
-    await withDb((db) => {
-      installLegacyV7Schema(db);
-      db.run(
-        `INSERT INTO conversations (
-          id, source_id, source, title, author, created_at, discovered_at,
-          modified_at, state, saved_at, saved_message_count, save_version,
-          source_path, origin_kind, origin_ref
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          "f6666666-1234-1234-1234-123456789012",
-          "f6666666-1234-1234-1234-123456789012",
-          "claude-code",
-          "Corrupt saved row",
-          "alice",
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "2026-02-01T10:00:00.000Z",
-          "saved",
-          null,
-          null,
-          0,
-          "/tmp/source.jsonl",
-          "local",
-          null,
-        ],
-      );
-    }, { mode: "write" });
-    const dbPath = path.join(tempDir, "clog.db");
-    const before = await fs.readFile(dbPath);
-
-    await expect(withDb(() => undefined, { mode: "read" })).rejects.toThrow(
-      /invalid save checkpoints/i,
-    );
-    await expect(fs.readFile(dbPath)).resolves.toEqual(before);
   });
 
   it("reports first-save identity collisions before preparing managed content", async () => {
@@ -1286,44 +1086,4 @@ function baseConversation() {
     relationships: [],
     transcriptProjectionVersion: 2,
   };
-}
-
-function installLegacyV7Schema(db: Database): void {
-  db.exec(`
-    DROP TABLE conversations;
-    DROP TABLE schema_version;
-    CREATE TABLE schema_version (version INTEGER NOT NULL);
-    INSERT INTO schema_version (version) VALUES (7);
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      source_id TEXT NOT NULL,
-      source TEXT NOT NULL,
-      title TEXT NOT NULL,
-      summary TEXT DEFAULT '',
-      summary_kind TEXT NOT NULL DEFAULT 'none'
-        CHECK(summary_kind IN ('none','imported','generated','curated')),
-      summary_extraction TEXT,
-      author TEXT NOT NULL,
-      project_name TEXT,
-      project_path TEXT,
-      tags_json TEXT DEFAULT '[]',
-      slug TEXT,
-      created_at TEXT NOT NULL,
-      discovered_at TEXT NOT NULL,
-      modified_at TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'discovered'
-        CHECK(state IN ('discovered','saved')),
-      saved_at TEXT,
-      saved_message_count INTEGER,
-      save_version INTEGER DEFAULT 0,
-      source_path TEXT NOT NULL,
-      file_path TEXT,
-      source_mtime TEXT,
-      indexed_at TEXT,
-      origin_kind TEXT NOT NULL DEFAULT 'local'
-        CHECK(origin_kind IN ('local','git','file')),
-      origin_ref TEXT,
-      UNIQUE(source, source_id)
-    );
-  `);
 }

@@ -9,7 +9,10 @@ import { buildPlungeCommand, generatePlungeReport } from "../src/cli/plunge.js";
 import { ensureClogHome } from "../src/config/init.js";
 import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import * as dbModule from "../src/db/index.js";
-import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  SCHEMA_RESET_RECOVERY,
+} from "../src/db/schema.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { getClogDbPath, getClogIgnorePath, getConfigPath, getRawConversationPath } from "../src/utils/paths.js";
@@ -44,7 +47,58 @@ describe("plunge", () => {
     await expect(fs.stat(path.join(tempDir, "clog.db.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("reports an incompatible schema without migrating or rewriting the database", async () => {
+  it("accepts an existing empty database as fresh-compatible without rewriting it", async () => {
+    await ensureClogHome({ interactive: false });
+    await dbModule.withDb((db) => {
+      db.exec(`
+        DROP TABLE conversation_relationships;
+        DROP TABLE conversations;
+        DROP TABLE schema_version;
+      `);
+    }, { mode: "write" });
+    const before = await fs.readFile(getClogDbPath());
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    const report = await generatePlungeReport();
+
+    expect(report.exitCode).toBe(0);
+    expect(report.findings).toEqual([]);
+    expect(writeSpy).not.toHaveBeenCalled();
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
+  });
+
+  it.each([
+    "conversations",
+    "conversation_relationships",
+  ])("rejects an unversioned database containing %s without rewriting it", async (remainingTable) => {
+    await ensureClogHome({ interactive: false });
+    await dbModule.withDb((db) => {
+      db.exec("DROP TABLE schema_version");
+      db.exec(
+        remainingTable === "conversations"
+          ? "DROP TABLE conversation_relationships"
+          : "DROP TABLE conversations",
+      );
+    }, { mode: "write" });
+    const before = await fs.readFile(getClogDbPath());
+    const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+    const report = await generatePlungeReport();
+
+    expect(report.exitCode).toBe(1);
+    expect(findCheck(report, 2)).toMatchObject({
+      severity: "fatal",
+      message: "schema_version is missing from the database.",
+      recovery: SCHEMA_RESET_RECOVERY,
+    });
+    expect(writeSpy).not.toHaveBeenCalled();
+    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
+  });
+
+  it.each([
+    CURRENT_SCHEMA_VERSION - 1,
+    CURRENT_SCHEMA_VERSION + 1,
+  ])("reports incompatible schema version %i without migrating or rewriting the database", async (version) => {
     await ensureClogHome({ interactive: false });
     await dbModule.withDb(
       (db) => {
@@ -52,7 +106,7 @@ describe("plunge", () => {
           DROP TABLE conversations;
           DROP TABLE schema_version;
           CREATE TABLE schema_version (version INTEGER NOT NULL);
-          INSERT INTO schema_version (version) VALUES (${CURRENT_SCHEMA_VERSION - 1});
+          INSERT INTO schema_version (version) VALUES (${version});
         `);
       },
       { mode: "write" },
@@ -65,47 +119,10 @@ describe("plunge", () => {
     expect(report.exitCode).toBe(1);
     expect(findCheck(report, 2)).toMatchObject({
       severity: "fatal",
-      message: `schema_version is ${CURRENT_SCHEMA_VERSION - 1} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
+      message: `schema_version is ${version} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
+      recovery: SCHEMA_RESET_RECOVERY,
     });
     expect(writeSpy).not.toHaveBeenCalled();
-    await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
-  });
-
-  it("identifies the saved checkpoint that blocks migration from schema version 8", async () => {
-    await seedConfig();
-    const id = "5aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    const rawPath = getRawConversationPath("claude-code", id);
-    await writeMinimalClaudeJsonl(rawPath, "Migration blocker");
-    await insertConversation(makeConversation({
-      id,
-      sourceId: id,
-      filePath: rawPath,
-      sourcePath: rawPath,
-    }));
-    await dbModule.withDb((db) => {
-      db.exec(`
-        CREATE TABLE conversations_v8_corrupt AS
-          SELECT *, 'saved' AS state FROM conversations;
-        DROP TABLE conversations;
-        ALTER TABLE conversations_v8_corrupt RENAME TO conversations;
-        UPDATE conversations
-        SET saved_at = NULL, saved_message_count = NULL, save_version = 0
-        WHERE id = '${id}';
-        UPDATE schema_version SET version = 8;
-      `);
-    }, { mode: "write" });
-    const before = await fs.readFile(getClogDbPath());
-
-    const report = await generatePlungeReport();
-
-    expect(findCheck(report, 2)?.recovery).toContain("checkpoint corruption reported below");
-    expect(findCheck(report, 11)).toMatchObject({
-      severity: "corruption",
-      conversation: { id, source: "claude-code" },
-    });
-    expect(findCheck(report, 11)?.message).toContain("saved_at is null");
-    expect(findCheck(report, 11)?.message).toContain("saved_message_count is null");
-    expect(findCheck(report, 11)?.message).toContain("save_version is 0");
     await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
   });
 

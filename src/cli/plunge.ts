@@ -8,7 +8,10 @@ import { classifyAdapterVersion } from "../adapters/adapter.js";
 import { getAdapter } from "../adapters/registry.js";
 import { parseConfig } from "../config/schema.js";
 import { getDefaultConfig } from "../config/index.js";
-import { CURRENT_SCHEMA_VERSION } from "../db/schema.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  SCHEMA_RESET_RECOVERY,
+} from "../db/schema.js";
 import { isGitConversation, isLocalConversation, withDb } from "../db/index.js";
 import type { OriginKind } from "../models/conversation.js";
 import {
@@ -118,7 +121,6 @@ const SUBSYSTEM_ORDER: PlungeSubsystem[] = [
 ];
 
 const BUILTIN_SOURCE_SET = new Set<string>(BUILTIN_SOURCES);
-const LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION = 8;
 
 export function buildPlungeCommand(): Command {
   return new Command("plunge")
@@ -348,13 +350,19 @@ async function inspectDatabase(
   }
 
   const schemaTableExists = tableExists(db, "schema_version");
-  if (options.dbExists && !schemaTableExists) {
+  // An existing DB with app tables but no schema_version is malformed and must
+  // be flagged. An existing-but-empty file is just an uninitialized DB the next
+  // command will populate at the current version, so it's not a finding.
+  const applicationTableExists =
+    tableExists(db, "conversations") ||
+    tableExists(db, "conversation_relationships");
+  if (options.dbExists && !schemaTableExists && applicationTableExists) {
     findings.push({
       check: 2,
       subsystem: "database",
       severity: "fatal",
       message: "schema_version is missing from the database.",
-      recovery: 'Run "clog init" and restore from backup if you have one.',
+      recovery: SCHEMA_RESET_RECOVERY,
       paths: [path.join(getClogHome(), "clog.db")],
       sortKey: "schema-version-missing",
     });
@@ -366,20 +374,10 @@ async function inspectDatabase(
         subsystem: "database",
         severity: "fatal",
         message: `schema_version is ${String(version)} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
-        recovery:
-          version === LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION
-            ? "Repair any saved-row checkpoint corruption reported below, then retry the command that attempted migration."
-            : 'Run "clog init" and restore from backup if you have one.',
+        recovery: SCHEMA_RESET_RECOVERY,
         paths: [path.join(getClogHome(), "clog.db")],
         sortKey: "schema-version-mismatch",
       });
-
-      if (
-        version === LEGACY_CHECKPOINT_DIAGNOSTIC_SCHEMA_VERSION &&
-        tableExists(db, "conversations")
-      ) {
-        findings.push(...inspectSchema8Checkpoints(db));
-      }
     }
   }
 
@@ -588,34 +586,6 @@ async function inspectDatabase(
     }
   }
 
-  return findings;
-}
-
-function inspectSchema8Checkpoints(db: Database): PlungeFindingInternal[] {
-  const findings: PlungeFindingInternal[] = [];
-  for (const row of getConversationRows(db, { legacySavedOnly: true })) {
-    const problems: string[] = [];
-    if (row.saved_at == null) {
-      problems.push("saved_at is null");
-    }
-    if (!isSqliteInteger(row.saved_message_count) || row.saved_message_count < 0) {
-      problems.push(`saved_message_count is ${String(row.saved_message_count)}`);
-    }
-    if (!isSqliteInteger(row.save_version) || row.save_version < 1) {
-      problems.push(`save_version is ${String(row.save_version)}`);
-    }
-
-    if (problems.length > 0) {
-      findings.push(conversationFinding(row, {
-        check: 11,
-        subsystem: "checkpoints",
-        severity: "corruption",
-        message: problems.join("; "),
-        recovery: "Repair this saved row's checkpoint metadata before retrying the database migration.",
-        sortKey: row.id,
-      }));
-    }
-  }
   return findings;
 }
 
@@ -861,14 +831,7 @@ function readPragmaSingleString(db: Database, sql: string): string | null {
   return value == null ? null : String(value);
 }
 
-function getConversationRows(
-  db: Database,
-  options: { legacySavedOnly?: boolean } = {},
-): RawConversationRow[] {
-  const whereClause = options.legacySavedOnly ? "WHERE state = 'saved'" : "";
-  const transcriptProjectionVersionColumn = options.legacySavedOnly
-    ? "NULL AS transcript_projection_version"
-    : "transcript_projection_version";
+function getConversationRows(db: Database): RawConversationRow[] {
   const result = db.exec(
     `
       SELECT
@@ -883,13 +846,12 @@ function getConversationRows(
         saved_at,
         saved_message_count,
         save_version,
-        ${transcriptProjectionVersionColumn},
+        transcript_projection_version,
         file_path,
         source_path,
         origin_kind AS originKind,
         origin_ref AS originRef
       FROM conversations
-      ${whereClause}
       ORDER BY id ASC
     `,
   );
