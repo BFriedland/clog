@@ -4,14 +4,31 @@ import { SearchConfigSchema } from "../search/providers.js";
 import { BUILTIN_SOURCES } from "../utils/paths.js";
 
 const sourceConfigSchema = z.object({
+  // `enabled` defaults to true so a source block written by an older clog that
+  // predates this field keeps discovering conversations after upgrade. Fresh
+  // configs are disabled instead: getDefaultConfig and the block-level
+  // disabledSourceConfig default (below) opt sources out until setup enables
+  // them. Do not change this field default to false without breaking migration.
   enabled: z.boolean().default(true),
   paths: z.array(z.string()).default([]),
   includePaths: z.array(z.string()).default([]),
   excludePaths: z.array(z.string()).default([]),
 });
 
+function disabledSourceConfig() {
+  return {
+    enabled: false,
+    paths: [],
+    includePaths: [],
+    excludePaths: [],
+  };
+}
+
 const sourceEntries = Object.fromEntries(
-  BUILTIN_SOURCES.map((source) => [source, sourceConfigSchema.default({})]),
+  BUILTIN_SOURCES.map((source) => [
+    source,
+    sourceConfigSchema.default(disabledSourceConfig),
+  ]),
 );
 
 const remoteConfigSchema = z

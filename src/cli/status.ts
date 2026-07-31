@@ -43,6 +43,9 @@ export function buildStatusCommand(): Command {
       verboseWarnings?: boolean;
     }) => {
       const config = await loadConfig();
+      const hasEnabledConversationDirectories = Object.values(
+        config.sources,
+      ).some((source) => source.enabled && source.paths.length > 0);
       const scanResult = await scanLocalSources(config);
       renderWarnings(
         getScanWarningsForCommand(scanResult, {
@@ -50,6 +53,12 @@ export function buildStatusCommand(): Command {
           verbose: options.verboseWarnings === true,
         }),
       );
+      if (!hasEnabledConversationDirectories) {
+        process.stdout.write("Conversation directories: none enabled.\n");
+        process.stdout.write(
+          `${chalk.bold('Run "clog init" to choose directories for clog to scan.')}\n\n`,
+        );
+      }
       const saved = (
         await listConversationView({ states: ["saved"], origin: "local" })
       ).map((conversation) => attachCurrentSourceCandidate(conversation, scanResult));
@@ -169,7 +178,7 @@ export function buildStatusCommand(): Command {
           process.stdout.write(
             `${dimText('Saved conversations are up to date. Use "clog list" to browse your saved conversations.')}\n`,
           );
-        } else {
+        } else if (hasEnabledConversationDirectories) {
           process.stdout.write(
             `${dimText('Use "clog status" after new conversations appear.')}\n`,
           );

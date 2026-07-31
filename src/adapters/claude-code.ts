@@ -6,6 +6,7 @@ import { createReadStream } from "node:fs";
 import type { Config } from "../config/schema.js";
 import type { RelationshipInspection } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
+import { isReadableDirectory } from "../utils/fs.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
   SCAN_METADATA_MAX_LINES,
@@ -88,13 +89,7 @@ export class ClaudeCodeAdapter implements SourceAdapter {
 
   async *discover(options: DiscoverOptions = {}): AsyncIterable<DiscoveredConversation> {
     for (const basePath of this.watchPaths()) {
-      try {
-        const stat = await fs.stat(basePath);
-        if (!stat.isDirectory()) {
-          throw new Error("not a directory");
-        }
-      } catch {
-        options.onIncomplete?.();
+      if (!(await isReadableDirectory(basePath))) {
         options.onWarning?.({
           code: "missing_source_file",
           message: "Configured Claude Code conversations directory is missing or unreadable.",

@@ -29,6 +29,7 @@ describe("clog save: restored-overwrite guard", () => {
 
     const config = getDefaultConfig("alice");
     config.sources["codex-cli"].enabled = false;
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     await saveConfig(config);
   });

@@ -35,6 +35,7 @@ describe("workflow", () => {
     await ensureClogHome({ interactive: false });
 
     const config = getDefaultConfig("testuser");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     await saveConfig(config);
@@ -96,6 +97,7 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Save with the current author");
     const config = getDefaultConfig("author-at-save");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     await saveConfig(config);
@@ -110,6 +112,7 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Save with the current default tags");
     const config = getDefaultConfig("testuser");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     config.defaultTags = [" Team-A ", "", "team-a", "TEAM-B", "  "];
@@ -125,6 +128,7 @@ describe("workflow", () => {
     const sourcePath = claudeDiscoveredSourcePath(sourceDir, "webapp", convId);
     await writeClaudeJsonl(sourcePath, "Refresh without restamping metadata");
     const initialConfig = getDefaultConfig("stored-author");
+    initialConfig.sources["claude-code"].enabled = true;
     initialConfig.sources["claude-code"].paths = [sourceDir];
     initialConfig.sources["codex-cli"].enabled = false;
     initialConfig.defaultTags = ["stored-tag"];
@@ -132,6 +136,7 @@ describe("workflow", () => {
     await runBuiltCommand(buildSaveCommand, [convId]);
 
     const config = getDefaultConfig("new-configured-author");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     config.defaultTags = ["new-default-tag"];

@@ -1,6 +1,10 @@
 import type { Config } from "../config/schema.js";
 import { ClogError } from "../utils/errors.js";
 import {
+  type BuiltinSource,
+  getStandardSourcePaths,
+} from "../utils/paths.js";
+import {
   classifyAdapterVersion,
   type AdapterVersionClassification,
   type SourceAdapter,
@@ -16,29 +20,51 @@ import {
 } from "./codex-cli.js";
 
 interface SourceAdapterRegistration {
+  displayName: string;
   factory: SourceAdapterFactory;
   relationshipInspectionRefresh: boolean;
+  standardPaths: readonly string[];
   versions: {
     relationshipInspection: number;
     transcriptProjection: number;
   };
 }
 
-const REGISTRY: Record<string, SourceAdapterRegistration> = {
+const REGISTRY: Record<BuiltinSource, SourceAdapterRegistration> = {
   "claude-code": {
+    displayName: "Claude Code",
     factory: (config) => new ClaudeCodeAdapter(config),
     relationshipInspectionRefresh: true,
+    standardPaths: getStandardSourcePaths("claude-code"),
     versions: CLAUDE_CODE_ADAPTER_VERSIONS,
   },
   "codex-cli": {
+    displayName: "Codex CLI",
     factory: (config) => new CodexCliAdapter(config),
     relationshipInspectionRefresh: true,
+    standardPaths: getStandardSourcePaths("codex-cli"),
     versions: CODEX_CLI_ADAPTER_VERSIONS,
   },
 };
 
+export interface RegisteredSourceMetadata {
+  source: BuiltinSource;
+  displayName: string;
+  standardPaths: readonly string[];
+}
+
+export function getRegisteredSourceMetadata(): RegisteredSourceMetadata[] {
+  return (Object.entries(REGISTRY) as Array<
+    [BuiltinSource, SourceAdapterRegistration]
+  >).map(([source, registration]) => ({
+    source,
+    displayName: registration.displayName,
+    standardPaths: [...registration.standardPaths],
+  }));
+}
+
 export function getAdapter(source: string, config: Config): SourceAdapter {
-  if (!Object.hasOwn(REGISTRY, source)) {
+  if (!isRegisteredSource(source)) {
     throw new ClogError(`Unsupported source "${source}".`);
   }
 
@@ -48,13 +74,20 @@ export function getAdapter(source: string, config: Config): SourceAdapter {
 }
 
 export function isSourceParseSupported(source: string): boolean {
-  return Object.hasOwn(REGISTRY, source);
+  return isRegisteredSource(source);
 }
 
 export function getAdapterVersions(
   source: string,
 ): SourceAdapterRegistration["versions"] | null {
+  if (!isRegisteredSource(source)) {
+    return null;
+  }
   return REGISTRY[source]?.versions ?? null;
+}
+
+function isRegisteredSource(source: string): source is BuiltinSource {
+  return Object.hasOwn(REGISTRY, source);
 }
 
 export function classifyInstalledTranscriptProjectionVersion(

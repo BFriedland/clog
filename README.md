@@ -218,7 +218,7 @@ or a rewind), clog groups them and shows it once by default;
 
 | Command | What it does |
 |---------|-------------|
-| `clog status` | Scan sources and show project summaries for unsaved conversations and saved conversations needing attention (`--conversations`, `--source`) |
+| `clog status` | Report when no conversation directories are enabled, then scan enabled sources and show unsaved or changed conversations (`--conversations`, `--source`) |
 | `clog list [filters]` | List conversations — saved and branch-collapsed by default (`--all-branches`, `--all`, `--state`, `--project`, `--author`, `--tag`, `--origin`, `--grep`, `--columns`) |
 | `clog edit <id>` | Edit metadata (`--title`, `--summary`, `--author`) |
 | `clog tag <id> <tags...>` | Add tags |
@@ -273,7 +273,7 @@ save a copy.
 
 | Command | What it does |
 |---------|-------------|
-| `clog init` | Re-run setup, confirm the default author, and offer vector search and MCP setup (`clog setup` is an alias) |
+| `clog init` | Initialize clog or revise its conversation-directory choices, confirm the default author, and offer vector search and MCP setup (`clog setup` is an alias) |
 | `clog mcp setup [claude\|codex\|both]` | Register clog's MCP server with Claude Code, Codex CLI, or both |
 | `clog config [get\|set]` | View or edit configuration |
 
@@ -287,7 +287,9 @@ clog config set author alice
 
 # Configure where clog looks for conversations
 clog config set sources.claude-code.paths '["~/.claude/projects/"]'
+clog config set sources.claude-code.enabled true
 clog config set sources.codex-cli.paths '["~/.codex/sessions/"]'
+clog config set sources.codex-cli.enabled true
 
 # Only discover conversations from work projects
 clog config set sources.claude-code.includePaths '["~/work/"]'
@@ -300,8 +302,8 @@ The settings you can edit:
 |---|---|---|
 | `author` | your OS username | Name attached to conversations you save |
 | `defaultTags` | `[]` | Tags applied to every conversation you save |
-| `sources.<source>.enabled` | `true` | Whether clog discovers conversations from that source (`claude-code`, `codex-cli`) |
-| `sources.<source>.paths` | `~/.claude/projects/` or `~/.codex/sessions/` | Directories to scan for that source |
+| `sources.<source>.enabled` | `false` | Whether clog discovers conversations from that source (`claude-code`, `codex-cli`) |
+| `sources.<source>.paths` | `[]` | Directories approved for that source; interactive setup preserves enabled choices by default and saves the paths selected during each run |
 | `sources.<source>.includePaths` | `[]` | If set, discover only conversations under these paths |
 | `sources.<source>.excludePaths` | `[]` | Skip conversations under these paths |
 | `search.indexAllBranches` | `false` | Index every branch for semantic search, not just the latest of each conversation |

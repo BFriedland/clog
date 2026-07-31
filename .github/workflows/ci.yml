@@ -37,12 +37,6 @@ jobs:
       - name: Check for unused code and dependencies
         run: npm run knip
 
-      # Temporary: current tests treat absent default agent directories as
-      # incomplete scans. Remove after SOURCE_SETUP_AND_MISSING_DIRECTORIES.md
-      # is completed.
-      - name: Create agent source directories required by current tests
-        run: mkdir -p "$HOME/.claude/projects" "$HOME/.codex/sessions"
-
       - name: Test
         run: npm test
 

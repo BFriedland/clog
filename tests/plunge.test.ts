@@ -391,6 +391,22 @@ describe("plunge", () => {
     expect(findCheck(report, 16)?.severity).toBe("info");
   });
 
+  it("ignores missing paths configured for disabled sources", async () => {
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].paths = [path.join(tempDir, "missing-disabled")];
+    config.sources["codex-cli"].enabled = true;
+    config.sources["codex-cli"].paths = [path.join(tempDir, "missing-enabled")];
+    await saveConfig(config);
+
+    const report = await generatePlungeReport();
+    const pathFindings = report.findings.filter((finding) => finding.check === 17);
+
+    expect(pathFindings).toHaveLength(1);
+    expect(pathFindings[0]!.message).toContain("codex-cli");
+    expect(pathFindings[0]!.message).toContain("missing-enabled");
+    expect(pathFindings[0]!.message).not.toContain("missing-disabled");
+  });
+
   it("accepts supported literal clogignore rules", async () => {
     await seedConfig();
     await fs.writeFile(

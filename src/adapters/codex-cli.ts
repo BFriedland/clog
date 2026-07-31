@@ -9,6 +9,7 @@ import type {
   RelationshipInspection,
 } from "../models/conversation.js";
 import type { ClogWarning } from "../models/warnings.js";
+import { isReadableDirectory } from "../utils/fs.js";
 import { normalizeUserPath } from "../utils/paths.js";
 import {
   SCAN_METADATA_MAX_LINES,
@@ -318,14 +319,9 @@ export class CodexCliAdapter implements SourceAdapter {
         ? configuredPath
         : path.join(configuredPath, "sessions");
 
-      try {
-        const stat = await fs.stat(normalized);
-        if (!stat.isDirectory()) {
-          throw new Error("not a directory");
-        }
+      if (await isReadableDirectory(normalized)) {
         sessionsDirs.push(normalized);
-      } catch {
-        options.onIncomplete?.();
+      } else {
         options.onWarning?.({
           code: "missing_source_file",
           message: "Configured Codex sessions directory is missing or unreadable.",

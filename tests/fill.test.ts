@@ -48,6 +48,7 @@ describe("clog fill", () => {
     await ensureClogHome({ interactive: false });
 
     const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [path.join(tempDir, "source")];
     config.sources["codex-cli"].enabled = false;
     await fs.mkdir(config.sources["claude-code"].paths[0]!, { recursive: true });
@@ -106,6 +107,26 @@ describe("clog fill", () => {
 
     expect(result.error).toBeNull();
     expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it("warns and imports when an enabled source directory disappears", async () => {
+    const id = "a0252525-2525-2525-2525-252525252525";
+    await writeConversationFilesFixture(pairDir, id, { author: "bob" }, 1);
+    const missingSourcePath = path.join(tempDir, "source");
+    await fs.rm(missingSourcePath, { recursive: true, force: true });
+
+    const result = await runBuiltCommandCapturingError(buildFillCommand, [pairDir]);
+
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain(
+      "Configured Claude Code conversations directory is missing or unreadable.",
+    );
+    expect(result.stderr).toContain(`path=${missingSourcePath}`);
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      id,
+      author: "bob",
+      state: "saved",
+    });
   });
 
   it("renders descendants of a dot input beneath ./", async () => {

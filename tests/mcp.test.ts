@@ -58,6 +58,7 @@ describe("mcp handlers", () => {
     await fs.mkdir(sourceDir, { recursive: true });
 
     const config = getDefaultConfig("current-author");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     await saveConfig(config);

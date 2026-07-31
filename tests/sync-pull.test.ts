@@ -68,6 +68,33 @@ describe("sync pull reconciliation", () => {
     expect(rows[0]?.state).toBe("saved");
   });
 
+  it("warns and reconciles when an enabled local source directory is missing", async () => {
+    const id = "a1212121-1212-1212-1212-121212121212";
+    await writeRemotePair("alice", "claude-code", id, {
+      title: "Remote conversation with unavailable local source",
+      messageCount: 2,
+    });
+    const missingSourcePath = path.join(tempDir, "missing-claude-source");
+    const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = true;
+    config.sources["claude-code"].paths = [missingSourcePath];
+
+    const stats = await reconcileRemote(config, REMOTE_URL);
+
+    expect(stats.inserted).toBe(1);
+    expect(stats.skipped).toBe(0);
+    expect(stats.warnings).toContainEqual(expect.objectContaining({
+      code: "missing_source_file",
+      source: "claude-code",
+      path: missingSourcePath,
+    }));
+    await expect(getConversationById(id)).resolves.toMatchObject({
+      id,
+      originKind: "git",
+      originRef: REMOTE_URL,
+    });
+  });
+
   it("runs the reconciliation database phase in a single withDb critical section", async () => {
     await writeRemotePair("alice", "claude-code", "a1111111-1111-1111-1111-111111111111", {
       title: "First",

@@ -14,7 +14,10 @@ export function buildInitCommand(): Command {
     .description("Initialize clog")
     .action(async () => {
       const interactive = Boolean(process.stdin.isTTY);
-      const result = await initializeClog({ interactive, forcePromptAuthor: interactive });
+      const result = await initializeClog({
+        interactive,
+        rerunSetup: interactive,
+      });
 
       if (result.createdConfig) {
         process.stdout.write(`\nInitialized clog at ${getClogHome()}\n\n`);

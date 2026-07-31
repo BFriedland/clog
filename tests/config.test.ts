@@ -10,6 +10,8 @@ import {
   loadConfig,
   saveConfig,
 } from "../src/config/index.js";
+import { getRegisteredSourceMetadata } from "../src/adapters/registry.js";
+import { parseConfig } from "../src/config/schema.js";
 import { getClogHome } from "../src/utils/paths.js";
 
 describe("config", () => {
@@ -25,12 +27,71 @@ describe("config", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("builds default config with built-in source defaults", () => {
+  it("builds a fresh config with no enabled or approved source paths", () => {
     const config = getDefaultConfig("alice");
 
     expect(config.author).toBe("alice");
-    expect(config.sources["claude-code"].paths).toEqual(["~/.claude/projects/"]);
-    expect(config.sources["codex-cli"].paths).toEqual(["~/.codex/sessions/"]);
+    expect(config.sources["claude-code"]).toMatchObject({
+      enabled: false,
+      paths: [],
+    });
+    expect(config.sources["codex-cli"]).toMatchObject({
+      enabled: false,
+      paths: [],
+    });
+  });
+
+  it("preserves the enabled default when parsing an older source block without the field", () => {
+    const config = parseConfig({
+      author: "alice",
+      sources: {
+        "claude-code": {
+          paths: ["~/.claude/projects/"],
+        },
+        "codex-cli": {
+          paths: ["~/.codex/sessions/"],
+        },
+      },
+      defaultTags: [],
+      search: null,
+    });
+
+    expect(config.sources["claude-code"].enabled).toBe(true);
+    expect(config.sources["codex-cli"].enabled).toBe(true);
+  });
+
+  it("leaves an omitted registered source disabled when parsing an older config", () => {
+    const config = parseConfig({
+      author: "alice",
+      sources: {
+        "claude-code": {
+          paths: ["~/.claude/projects/"],
+        },
+      },
+      defaultTags: [],
+      search: null,
+    });
+
+    expect(config.sources["claude-code"].enabled).toBe(true);
+    expect(config.sources["codex-cli"]).toMatchObject({
+      enabled: false,
+      paths: [],
+    });
+  });
+
+  it("registers setup metadata for each supported source", () => {
+    expect(getRegisteredSourceMetadata()).toEqual([
+      {
+        source: "claude-code",
+        displayName: "Claude Code",
+        standardPaths: ["~/.claude/projects/"],
+      },
+      {
+        source: "codex-cli",
+        displayName: "Codex CLI",
+        standardPaths: ["~/.codex/sessions/"],
+      },
+    ]);
   });
 
   it("creates base clog directories and clogignore", async () => {

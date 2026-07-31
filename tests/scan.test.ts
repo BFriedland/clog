@@ -81,15 +81,22 @@ describe("ephemeral local source scans", () => {
     await expect(fs.stat(getClogDbPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("marks real adapters incomplete when configured source roots are unavailable", async () => {
+  it("warns without marking real adapters incomplete when configured source roots are unavailable", async () => {
     const claudeConfig = scanConfig();
     claudeConfig.sources["claude-code"].paths = [path.join(tempDir, "missing-claude")];
     const claudeSnapshot = await scanLocalSources(claudeConfig);
 
     expect(claudeSnapshot.sourceStatuses).toEqual([
-      { source: "claude-code", complete: false },
+      { source: "claude-code", complete: true },
     ]);
     expect(claudeSnapshot.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "missing_source_file",
+        source: "claude-code",
+        path: path.join(tempDir, "missing-claude"),
+      }),
+    ]));
+    expect(claudeSnapshot.warnings).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: "source_discovery_incomplete",
         source: "claude-code",
@@ -97,25 +104,27 @@ describe("ephemeral local source scans", () => {
     ]));
     await expect(
       resolveConversationView("aaaa@claude-code", { scanSnapshot: claudeSnapshot }),
-    ).rejects.toThrow(/could not determine/i);
+    ).rejects.toThrow(/no conversation matches/i);
 
     const codexConfig = getDefaultConfig("alice");
     codexConfig.sources["claude-code"].enabled = false;
+    codexConfig.sources["codex-cli"].enabled = true;
     codexConfig.sources["codex-cli"].paths = [path.join(tempDir, "missing-codex")];
     const codexSnapshot = await scanLocalSources(codexConfig);
 
     expect(codexSnapshot.sourceStatuses).toEqual([
-      { source: "codex-cli", complete: false },
+      { source: "codex-cli", complete: true },
     ]);
     expect(codexSnapshot.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "source_discovery_incomplete",
+        code: "missing_source_file",
         source: "codex-cli",
+        path: path.join(tempDir, "missing-codex", "sessions"),
       }),
     ]));
   });
 
-  it("marks real adapter discovery incomplete when directory traversal is denied", async () => {
+  it("skips an unreadable root but marks nested traversal failures incomplete", async () => {
     if (process.platform === "win32" || process.getuid?.() === 0) {
       return;
     }
@@ -133,12 +142,13 @@ describe("ephemeral local source scans", () => {
       const snapshot = await scanLocalSources(config);
 
       expect(snapshot.sourceStatuses).toEqual([
-        { source: "claude-code", complete: false },
+        { source: "claude-code", complete: true },
       ]);
       expect(snapshot.warnings).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          code: "source_discovery_incomplete",
+          code: "missing_source_file",
           source: "claude-code",
+          path: unreadableRoot,
         }),
       ]));
     } finally {
@@ -1871,6 +1881,7 @@ describe("ephemeral local source scans", () => {
 
   function scanConfig() {
     const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceRoot];
     config.sources["codex-cli"].enabled = false;
     return config;

@@ -48,6 +48,7 @@ describe("clog drain archive transport", () => {
     process.env.CLOG_HOME = path.join(tempDir, "clog-home");
     await ensureClogHome({ interactive: false });
     const config = getDefaultConfig("alice");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [path.join(tempDir, "claude-sources")];
     config.sources["codex-cli"].enabled = false;
     await fs.mkdir(config.sources["claude-code"].paths[0]!, { recursive: true });
@@ -125,7 +126,7 @@ describe("clog drain archive transport", () => {
     expect(await fs.readFile(path.join(tempDir, "clog-export.zip"))).toEqual(firstBytes);
   });
 
-  it("reports indeterminate ID resolution when configured source discovery is incomplete", async () => {
+  it("continues ID resolution when a configured source root disappears", async () => {
     const sourceRoot = path.join(tempDir, "claude-sources");
     await fs.rm(sourceRoot, { recursive: true, force: true });
 
@@ -134,19 +135,23 @@ describe("clog drain archive transport", () => {
       "-o",
       path.join(tempDir, "no-match.zip"),
     ]);
-    expect((noMatch.error as Error).message).toMatch(/could not determine/i);
+    expect((noMatch.error as Error).message).toMatch(/no conversation matches/i);
 
     const id = "efffffff-ffff-ffff-ffff-ffffffffffff";
     await seedSavedConversation(id);
+    const shortenedOutput = path.join(tempDir, "shortened.zip");
     const shortenedMatch = await runBuiltCommandCapturingError(buildDrainCommand, [
       "efff",
       "-o",
-      path.join(tempDir, "shortened.zip"),
+      shortenedOutput,
     ]);
-    expect((shortenedMatch.error as Error).message).toMatch(/could not determine/i);
+    expect(shortenedMatch.error).toBeNull();
+    expect(Object.keys(unzipSync(await fs.readFile(shortenedOutput)))).toContain(
+      `claude-code/${id}.meta.json`,
+    );
   });
 
-  it("keeps an ID-shaped project selector indeterminate when discovery is incomplete", async () => {
+  it("resolves an ID-shaped project selector when a configured source root disappears", async () => {
     const sourceRoot = path.join(tempDir, "claude-sources");
     await fs.rm(sourceRoot, { recursive: true, force: true });
     const projectName = "deadbeef";
@@ -160,7 +165,12 @@ describe("clog drain archive transport", () => {
       "-o",
       path.join(tempDir, "ambiguous-project.zip"),
     ]);
-    expect((bare.error as Error).message).toMatch(/could not determine/i);
+    expect(bare.error).toBeNull();
+    expect(
+      Object.keys(
+        unzipSync(await fs.readFile(path.join(tempDir, "ambiguous-project.zip"))),
+      ),
+    ).toContain(`claude-code/${conversation.id}.meta.json`);
 
     const explicitOutput = path.join(tempDir, "explicit-project.zip");
     const explicit = await runBuiltCommandCapturingError(buildDrainCommand, [

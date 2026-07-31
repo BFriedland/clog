@@ -9,29 +9,29 @@ import {
   getClogHome,
   getClogIgnorePath,
   getConfigPath,
-  getDefaultSourcePaths,
   getImportsRoot,
   getRawRoot,
 } from "../utils/paths.js";
 import { pathExists } from "../utils/fs.js";
 import { type Config, configSchema, parseConfig } from "./schema.js";
 
-function defaultSourceConfig(source: (typeof BUILTIN_SOURCES)[number]) {
+function defaultSourceConfig() {
   return {
-    enabled: true,
-    paths: getDefaultSourcePaths(source),
+    enabled: false,
+    paths: [],
     includePaths: [],
     excludePaths: [],
   };
 }
 
 export function getDefaultConfig(author = ""): Config {
+  const sources = Object.fromEntries(
+    BUILTIN_SOURCES.map((source) => [source, defaultSourceConfig()]),
+  );
+
   return configSchema.parse({
     author,
-    sources: {
-      "claude-code": defaultSourceConfig("claude-code"),
-      "codex-cli": defaultSourceConfig("codex-cli"),
-    },
+    sources,
     defaultTags: [],
     search: null,
   });

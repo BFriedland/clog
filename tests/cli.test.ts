@@ -9,6 +9,7 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@inquirer/prompts", () => ({
+  checkbox: vi.fn(),
   confirm: vi.fn(),
   input: vi.fn(),
   select: vi.fn(),
@@ -160,6 +161,7 @@ describe("cli", () => {
     originalIsTTY = process.stdin.isTTY;
 
     const config = getDefaultConfig("testuser");
+    config.sources["claude-code"].enabled = true;
     config.sources["claude-code"].paths = [sourceDir];
     config.sources["codex-cli"].enabled = false;
     await saveConfig(config);
@@ -220,11 +222,17 @@ describe("cli", () => {
 
     it("offers vector search setup on rerun when search is still unset", async () => {
       Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
-      vi.spyOn(initModule, "initializeClog").mockResolvedValueOnce({ createdConfig: false });
+      const initializeClogSpy = vi
+        .spyOn(initModule, "initializeClog")
+        .mockResolvedValueOnce({ createdConfig: false });
       mockedPromptConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
       await runBuiltCommand(buildInitCommand, []);
 
+      expect(initializeClogSpy).toHaveBeenCalledWith({
+        interactive: true,
+        rerunSetup: true,
+      });
       expect(mockedPromptConfirm).toHaveBeenNthCalledWith(1, {
         message: "Set up vector search now?",
         default: true,
@@ -2502,6 +2510,24 @@ describe("cli", () => {
     it("prints the clean-state message when there is nothing pending", async () => {
       const { stdout } = await runBuiltCommand(buildStatusCommand, []);
       expect(stdout).toContain("Nothing to save.");
+      expect(stdout).not.toContain("Conversation directories: none enabled.");
+    });
+
+    it("explains when no conversation directories are enabled", async () => {
+      const config = await loadConfig();
+      config.sources["claude-code"].enabled = false;
+      config.sources["codex-cli"].enabled = false;
+      await saveConfig(config);
+
+      const { stdout } = await runBuiltCommand(buildStatusCommand, []);
+
+      expect(stdout).toContain("Conversation directories: none enabled.");
+      expect(stdout).toContain(
+        'Run "clog init" to choose directories for clog to scan.',
+      );
+      expect(stdout).not.toContain(
+        'Use "clog status" after new conversations appear.',
+      );
     });
 
     it("shows saved rows that need resaving under 'Saved conversations with new messages:'", async () => {

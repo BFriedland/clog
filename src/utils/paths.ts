@@ -5,6 +5,11 @@ export const BUILTIN_SOURCES = ["claude-code", "codex-cli"] as const;
 
 export type BuiltinSource = (typeof BUILTIN_SOURCES)[number];
 
+const STANDARD_SOURCE_PATHS = {
+  "claude-code": ["~/.claude/projects/"],
+  "codex-cli": ["~/.codex/sessions/"],
+} as const satisfies Record<BuiltinSource, readonly string[]>;
+
 function expandHomePath(value: string): string {
   if (value === "~") {
     return os.homedir();
@@ -78,12 +83,8 @@ export function getImportConversationPath(source: string, id: string): string {
   return path.join(getImportSourceDir(source), `${id}.jsonl`);
 }
 
-export function getDefaultSourcePaths(source: BuiltinSource): string[] {
-  if (source === "claude-code") {
-    return ["~/.claude/projects/"];
-  }
-
-  return ["~/.codex/sessions/"];
+export function getStandardSourcePaths(source: BuiltinSource): string[] {
+  return [...STANDARD_SOURCE_PATHS[source]];
 }
 
 export function getDbLockPath(): string {

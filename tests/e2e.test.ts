@@ -54,7 +54,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["status"]);
     expect(stdout).toContain("api-service");
@@ -69,7 +69,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["status", "--source"], { COLUMNS: "120" });
     const lines = stdout.split("\n");
@@ -86,7 +86,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["status", "--conversations"], { COLUMNS: "120" });
     const lines = stdout.split("\n");
@@ -106,7 +106,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["status", "--conversations"], { COLUMNS: "200" });
     const lines = stdout.split("\n");
@@ -136,7 +136,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["list", "--state", "unsaved"]);
     expect(stdout).toContain("44444444");
@@ -157,7 +157,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["tag", firstId.slice(0, 8), "debugging"]);
@@ -188,7 +188,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["list", "--state", "unsaved", "--columns", "id,date,title"]);
     const [header] = stdout.trim().split("\n");
@@ -214,7 +214,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", firstId.slice(0, 8), secondId.slice(0, 8)]);
     await run(["save"]);
@@ -260,7 +260,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Drain raw source");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
 
     const { stdout } = await run(["show", id.slice(0, 8), "--raw"]);
@@ -277,7 +277,7 @@ describe("e2e", () => {
 
     await run(["config", "set", "author", "bob"]);
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["export", id.slice(0, 8), "-o", exportArchive]);
@@ -341,7 +341,7 @@ describe("e2e", () => {
 
     await run(["config", "set", "author", "alice"]);
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["drain", id.slice(0, 8), "--format", "dir", "-o", exportDir]);
@@ -388,7 +388,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["save"]);
@@ -406,7 +406,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
 
     const { stdout } = await run(["edit", id.slice(0, 8)]);
@@ -422,7 +422,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Path from discovered");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
 
     const showPath = await run(["show", id.slice(0, 8), "--path"]);
@@ -438,7 +438,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Show missing source");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await fs.rm(filePath);
 
@@ -453,7 +453,7 @@ describe("e2e", () => {
     await writeClaudeConversation(sourcePath, "Path from curated");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
 
@@ -501,7 +501,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["save"]);
@@ -525,7 +525,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["status", "--conversations"]);
     expect(stdout).toContain("Agent report: 1. First item 2. Second item");
@@ -540,7 +540,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
 
@@ -556,7 +556,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Diff source growth");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["save"]);
@@ -586,7 +586,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
 
     await expect(run(["diff", id.slice(0, 8)])).rejects.toMatchObject({
@@ -601,7 +601,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Refresh saved raw copy");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["save"]);
@@ -630,7 +630,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Targeted add missing source");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await fs.rm(filePath);
 
@@ -647,7 +647,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["exclude", id.slice(0, 8)]);
 
@@ -667,7 +667,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["exclude", id.slice(0, 8)]);
 
@@ -684,7 +684,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
 
     await expect(run(["exclude", "project:api-service"])).rejects.toMatchObject({
@@ -712,7 +712,7 @@ describe("e2e", () => {
     await writeClaudeConversation(filePath, "Status modified saved");
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
     await run(["status"]);
     await run(["save", id.slice(0, 8)]);
     await run(["save"]);
@@ -767,7 +767,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const summary = await run(["status"]);
     expect(summary.stdout).toContain('run "clog status --missing-project" for details');
@@ -801,7 +801,7 @@ describe("e2e", () => {
       ],
     );
 
-    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "true"]);
     await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
 
     const summary = await run(["status"]);
@@ -826,7 +826,7 @@ describe("e2e", () => {
     await writeMismatchedCodexSession(codexRoot, filenameIdOne, embeddedIdOne);
     await writeMismatchedCodexSession(codexRoot, filenameIdTwo, embeddedIdTwo);
 
-    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "true"]);
     await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
 
     const { stderr } = await run(["status"]);
@@ -849,7 +849,7 @@ describe("e2e", () => {
     await writeMismatchedCodexSession(codexRoot, filenameIdOne, embeddedIdOne);
     await writeMismatchedCodexSession(codexRoot, filenameIdTwo, embeddedIdTwo);
 
-    await run(["config", "set", "sources.claude-code.enabled", "false"]);
+    await run(["config", "set", "sources.codex-cli.enabled", "true"]);
     await run(["config", "set", "sources.codex-cli.paths", JSON.stringify([codexRoot])]);
 
     const { stderr } = await run(["status", "--verbose-warnings"]);
@@ -895,7 +895,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stderr } = await run(["list", "--state", "unsaved"]);
     expect(stderr).toContain(
@@ -914,7 +914,7 @@ describe("e2e", () => {
     );
 
     await run(["config", "set", "sources.claude-code.paths", JSON.stringify([claudeRoot])]);
-    await run(["config", "set", "sources.codex-cli.enabled", "false"]);
+    await run(["config", "set", "sources.claude-code.enabled", "true"]);
 
     const { stdout } = await run(["list", "--state", "unsaved"], {
       COLUMNS: "55",

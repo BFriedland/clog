@@ -639,6 +639,9 @@ async function inspectConfigPaths(
 
   for (const source of BUILTIN_SOURCES) {
     const sourceConfig = config.sources[source];
+    if (!sourceConfig.enabled) {
+      continue;
+    }
     const candidatePaths = [
       ...sourceConfig.paths,
       ...sourceConfig.includePaths,
