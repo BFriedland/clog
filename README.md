@@ -4,43 +4,29 @@
 
 # clog &middot; [![npm version](https://img.shields.io/npm/v/@getclog/clog)](https://www.npmjs.com/package/@getclog/clog) [![node version](https://img.shields.io/node/v/@getclog/clog)](https://nodejs.org) [![license](https://img.shields.io/npm/l/@getclog/clog)](LICENSE)
 
+#### What is this thing?
+
 Conversation log exploration right in your terminal. Turn your AI coding agent conversations into a searchable, shareable knowledge base.
 
 You choose which conversations are worth keeping, and clog will turn them into a library your team and your agents can use. An agent that reads a past conversation picks up context that took hours of back-and-forth to build the first time.
 
-Some favorite uses so far, all done by asking an agent to use clog's MCP tools:
+#### What's it good for?
 
-- **Handing context from one agent to another** — give an implementing or reviewing agent the highest-signal parts of the speccing agent's conversation by asking them to read it directly.
-- **Beating compaction** — compaction silently drops nuance the agent never knows it lost; a saved transcript keeps everything, and an agent can reread exactly the part it needs with the tool call noise already stripped out.
-- **Researching bugs** — search past debugging sessions for the time you hit something like this before.
-- **Finding prompts that worked** — have an agent search semantically for the phrasing that got results, even when your own memory of it is vague.
-- **Noticing your patterns** — which interaction styles keep working for you, and which antipatterns to stop repeating.
+The most beneficial uses of clog have so far derived from its ability to support agents via its MCP interface, which strips the noise out of tool calls and is much more token-efficient and high-signal than reading session transcripts with ordinary command line utilities.
 
-A look at the CLI side:
+Some favorite uses, all done by asking an agent to use clog's MCP tools:
 
-```text
-$ clog status
-Saved conversations whose source files changed:
-  (use "clog save <id>" to refresh the saved copy from its source file)
-    payments-api  2 conversations  2026-07-24
+- **Handing context from one agent to another.** Give an implementing or reviewing agent the highest-signal parts of the spec-refining agent's conversation by asking them to read it directly.
+- **Beating compaction.** Compaction silently drops nuance the agent never knows it lost; a saved transcript keeps everything, and an agent can reread exactly the part it needs with the tool call noise already stripped out.
+- **Researching bugs.** Search past debugging sessions for the time you hit something like this before.
+- **Finding prompts that worked.** Have an agent search semantically for the phrasing that got results, even when your own memory of it is vague.
+- **Noticing your patterns.** Discover which of your interaction styles work well, and which antipatterns to stop repeating.
 
-Unsaved conversations:
-  (use "clog save <id>" or "clog save <project>" to save)
-    payments-api  3 unsaved  2026-07-24
-    web-app       1 unsaved  2026-07-23
+#### What bog did it crawl out of?
 
-$ clog search "refresh token race condition"
-1. 83f1c2ea [72%] Fix the JWT refresh race condition on concurrent requests
-   payments-api
-   USER: Two tabs can refresh the same session at once and one ends up holding a revoked
-   token. ASSISTANT: The rotation step isn't atomic. Let me look at how the refresh endpoint
-2. d41c09aa [54%] Debug intermittent 502s from the payments gateway
-   payments-api
-   Title: Debug intermittent 502s from the payments gateway Summary: Traced the 502s to
-   connection reuse after idle timeout; added keepalive tuning and a retry budget
-```
+Fittingly, clog is made of slop! This project was started not only to fulfill a need for learning from past coding agent sessions, but also to study agentic development practices by building extensively with agents. Agentic coding practices have been central to clog's conception and development, and clog's codebase and feature set are designed to facilitate agentic workflows. Exploring the codebase with coding agents and using them to adjust your fork of clog to your needs is wholeheartedly encouraged.
 
-## Install
+## How to install clog
 
 Requires Node.js 22 or newer.
 
@@ -63,7 +49,7 @@ clog save myproject
 
 # Browse and inspect
 clog list
-clog show a1b2c3 | less -R
+clog show a1b2c3 | less
 
 # Export an archive to share with your team
 clog drain myproject -o my-project-export.zip
@@ -75,9 +61,42 @@ clog fill my-project-export.zip
 clog talk
 ```
 
-## MCP Server
+With `clog search` and `clog show`, you can also benefit from the same semantic search integration and tool call noise reduction that helps agents using clog's MCP tools:
 
-Once you've added some conversations, you can give your coding agents direct access to them via MCP.
+```text
+$ clog search "refresh token race condition"
+1. 83f1c2ea [72%] Fix the JWT refresh race condition on concurrent requests
+   payments-api
+   USER: Two tabs can refresh the same session at once and one ends up holding a revoked
+   token. ASSISTANT: The rotation step isn't atomic. Let me look at how the refresh endpoint
+2. d41c09aa [54%] Debug intermittent 502s from the payments gateway
+   payments-api
+   Title: Debug intermittent 502s from the payments gateway Summary: Traced the 502s to
+   connection reuse after idle timeout; added keepalive tuning and a retry budget
+
+$ clog show 83f1c2ea
+ID:      83f1c2ea
+Source:  codex-cli
+Title:   Fix the JWT refresh race condition on concurrent requests
+Project: payments-api
+State:   saved
+
+[USER] Two tabs can refresh the same session at once and one ends up holding a
+revoked token.
+
+[ASSISTANT] The rotation step isn't atomic. Let me look at how the refresh
+endpoint handles rotation.
+
+[TOOL_USE] exec_command: {"cmd":"sed -n '40,90p' src/auth/refresh.ts","workd...
+
+[ASSISTANT] Confirmed — nothing guards the read-mint-revoke sequence, so two
+concurrent refreshes both pass the check. I'll wrap it in a single atomic
+compare-and-swap on the token version.
+```
+
+## The MCP Server
+
+Once you've added some conversations, you can give your coding agents direct access to them via MCP tools. The MCP server runs locally over standard input and output (`stdio`) and does not listen on any network ports or make network requests.
 
 The easiest path is:
 
@@ -113,7 +132,9 @@ This gives agents the following tools:
 
 ## Agent-Assisted Summarization
 
-clog can store structured summaries for saved conversations so that later analyst agents can scan many conversations cheaply. Summaries are written by an MCP-capable agent, not by clog itself, and clog remains useful without them.
+So that agents can scan many conversations cheaply when you need them to answer questions about your library, clog can store summaries for saved conversations. Summaries are written by an MCP-capable agent of your choice, not by clog itself, and clog remains useful without them.
+
+Small models can often excel at summarization and search tasks when using clog's MCP tools. Experimenting with smaller, more efficient models for lookup tasks and when creating conversation summaries is encouraged.
 
 ```bash
 clog save             # saves conversations as usual; ends with a hint about saved conversations without summaries
