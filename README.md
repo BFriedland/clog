@@ -98,25 +98,7 @@ compare-and-swap on the token version.
 
 Once you've added some conversations, you can give your coding agents direct access to them via MCP tools. The MCP server runs locally over standard input and output (`stdio`) and does not listen on any network ports or make network requests.
 
-The easiest path is:
-
-```bash
-clog mcp setup both
-```
-
-For Claude Code only:
-
-```bash
-clog mcp setup claude
-```
-
-For Codex CLI only:
-
-```bash
-clog mcp setup codex
-```
-
-`clog mcp setup` registers the currently installed local copy of clog with an absolute Node command. It does not use `npx` or install packages at MCP startup. If clog is moved, reinstalled, or rebuilt in a different location, run `clog mcp setup` again.
+If the MCP server isn't already connected to Claude Code or Codex CLI, you can connect it with the `clog mcp setup` command, which registers the currently installed copy of clog. It does not use `npx` or install packages at MCP startup. If clog is moved, reinstalled, or rebuilt in a different location, run `clog mcp setup` again.
 
 This gives agents the following tools:
 

@@ -1,7 +1,7 @@
 # clog Design
 
 **Status: Rationale.** This document explains *why* clog is shaped the way it
-is — the problem, the principles, the scope boundaries, and the decisions that
+is: the problem, the principles, the scope boundaries, and the decisions that
 would otherwise be tempting to "fix." It explains; it does not bind. What must
 hold on disk is [FORMATS.md](FORMATS.md); how the code is organized is
 [ARCHITECTURE.md](ARCHITECTURE.md); how to use clog is the README.
@@ -19,23 +19,23 @@ the prior context.
 ## Solution
 
 clog is a local-first CLI tool and MCP server that lets developers discover,
-curate, and share their AI coding-agent conversations as a searchable team
-knowledge base. It is built for small teams (fewer than ten developers) who
-treat conversations with the same security posture as source code, and it
-installs with nothing more than `npm install` — no native compilation — on
-macOS, Windows, and Linux.
+curate, and share their AI coding-agent conversations as a searchable knowledge
+base with optional team sharing. It is built for solo developers and small teams
+who treat conversations with the same security posture as source code, and it
+installs with nothing more than `npm install` on Linux, macOS, and Windows. No
+native compilation is required.
 
 ## The unit of work
 
 The anchoring idea is not search, and not a knowledge base in the abstract. It
-is the **curated, shared, multi-author transcript**: a conversation that
-already happened, deliberately promoted into a small high-signal library, given
-human- or agent-authored metadata, and distributed to a team.
+is the curated conversation transcript: a conversation that already happened,
+deliberately promoted into a small high-signal library, given human- or
+agent-authored metadata and, optionally, distributed to a team.
 
-That unit is the design center. Features are durable when they deepen it —
-curation, provenance, sharing — and fragile when they chase a capability a more
-focused tool already owns, like raw search breadth or document authoring. Every
-scope boundary below follows from defending this unit.
+The curated conversation transcript is the design center. Features are durable
+when they deepen it (curation, provenance, sharing) and fragile when they chase
+a capability a more focused tool already owns, like raw search breadth or
+document authoring. Every scope boundary below follows from defending this unit.
 
 ## Design principles
 
@@ -43,35 +43,34 @@ scope boundary below follows from defending this unit.
    in JSONL on disk; SQLite stores only metadata. The database is regenerable
    from source files and stays small enough for `sql.js` to load into memory.
 2. **Source locations are read-only.** clog never writes to, modifies, or
-   deletes files in source locations like `~/.claude/`. All clog-managed state
-   lives under `~/.clog/`.
+   deletes files in source locations like `~/.claude/` or `~/.codex/`. All
+   clog-managed state lives under `~/.clog/`.
 3. **Curation tool, not an observability tool.** clog helps developers share
-   knowledge — not measure activity. No analytics, no dashboards, no per-author
-   metrics. This boundary is intentional.
+   knowledge, not measure activity. No analytics, no dashboards, no per-author
+   metrics. This boundary keeps clog focused.
 4. **Author-only saving.** A developer saves their own conversations. There is
    no mechanism for saving, unsaving, or retracting on behalf of another
    author.
 5. **Git-like when the metaphor fits, not pretending to be Git.** Command
-   vocabulary borrows from Git where natural, but clog's state model is its
-   own.
+   vocabulary borrows from Git where natural, but clog's state model is its own.
 6. **Optional features are inert until configured.** Search and sync ship in
    the codebase but do nothing until the user opts in. No setup cost for
    features you don't use.
 7. **Missing things repair silently; corrupted things error clearly.** A
    deleted directory is recreated. Invalid JSON gets a descriptive error.
-8. **No native dependencies.** Everything installs with `npm install` — no C++
-   toolchain, no platform-specific build steps.
+8. **No native dependencies.** Everything installs via `npm install`, with no
+   C++ toolchain and no platform-specific build steps.
 
 ## Scope boundaries
 
 These are out of scope because they pull against the unit of work or the
-principles above — not because other tools happen to do them.
+principles above, not because other tools happen to do them.
 
 - **Not a search engine over all history.** clog curates a chosen subset. Its
   search exists to *find what was curated*, not to index everything; breadth
   and ranking quality are a different product with a different cost structure.
-  Semantic search *is* the index, with `clog list --grep` as the lexical escape
-  hatch.
+  Semantic search *is* the index, with `clog list --grep` as an escape hatch for
+  lexical search.
 - **Not an observability or analytics tool.** No dashboards, no activity
   metrics, no developer or agent measurement. Metadata provenance stays tied to
   *explaining a conversation*, never to *measuring behavior*. This is the
@@ -91,12 +90,13 @@ principles above — not because other tools happen to do them.
   pressure should be met by sharpening the niche, not re-architecting toward
   scale clog wasn't built for.
 
-Also explicitly not in the current design: real-time sync, a web UI, user
-authentication or access control, user-authored linking between arbitrary
-conversations (clog tracks the branch relationships the source tools record,
-but conversations are not a wiki with a link graph), message-level editing,
-and non-built-in sources beyond Claude Code and Codex CLI. Several of these
-are revisitable — see the roadmap.
+Also explicitly not in the current design: real-time sync, a local browser-based
+UI, user-authored linking between arbitrary conversations (clog tracks the
+branch relationships the source tools record, but conversations are not a wiki
+with a link graph), message-level editing, non-built-in sources beyond Claude
+Code and Codex CLI, and user authentication or access control (the git host used
+for sharing transport repos provides both, outside of clog). Several of these
+are revisitable; see the future directions list below.
 
 ## Privacy is a fail-closed boundary
 
@@ -148,19 +148,20 @@ provider) that would break the zero-native-dep install if bundled. So the
 search module is always present but inert until `clog search --init`, which
 installs those packages into a clog-owned npm prefix at
 `~/.clog/search-runtime` — never into the user's global or project environment.
-The default embedding provider (`all-MiniLM-L6-v2` via `@huggingface/transformers`,
-run over WASM) works fully offline with no API key, consistent with local-first.
-Providers and vector stores sit behind narrow interfaces so alternatives can be
-added without touching the indexer or commands. Search is intentionally weak:
-it exists to find what was curated, not to be a ranking engine.
+The default embedding provider (`all-MiniLM-L6-v2` via
+`@huggingface/transformers`, run over WASM) works fully offline with no API key,
+consistent with local-first. Providers and vector stores sit behind narrow
+interfaces so alternatives can be added without touching the indexer or
+commands.
 
-### Git as the sharing transport, directory-per-author
+### Git as a transport medium for conversation sharing, one directory per author
 
-Team sharing uses a private git repository as its transport rather than a
-custom server or REST API. Git already provides auth, transport security,
-access control, an audit log, conflict detection, versioning, hosting, offline
-support, and backups — for free, and every target user already has it. clog
-shells out to system git rather than bundling `isomorphic-git`.
+Git-based team sharing uses a private git repository as its transport rather
+than a custom server or REST API. Git hosts can already provide authentication,
+transport security, access control, an audit log, conflict detection,
+versioning, hosting, offline support, and backups for free, and every target
+user already has git installed. clog shells out to system git rather than
+bundling `isomorphic-git`.
 
 Within the repo, each developer writes only to their own author directory. This
 prevents file-level conflicts without per-developer branches, which were
@@ -172,7 +173,7 @@ isolation with none of that.
 Two related decisions fall out of the git model: commits use the user's
 existing git identity (clog never writes `user.name`/`user.email` into the
 checkout, preserving SSO attribution and signing), and pushing to a repository
-clog has *positively confirmed* is public is refused outright — every other
+clog has *positively confirmed* is public is refused outright. Every other
 outcome of the visibility probe requires an explicit add-time confirmation,
 with no silent-proceed path.
 
@@ -181,8 +182,8 @@ with no silent-proceed path.
 Conversations imported from a teammate's push or a `clog fill` cannot be edited
 or tagged locally, even when the author name matches. This avoids the
 complexity of local overlays, sync-back, and conflicts with the original
-author's edits. It is a v1 simplification, revisitable once sync stabilizes —
-see roadmap items 4.9 and 4.10.
+author's edits. This is a deliberate simplification that may be revisited later;
+see the future directions list below.
 
 ### One conversation, many branches
 
@@ -196,49 +197,42 @@ clog derives a conversation graph from those relationships at read time.
 Related branches present as one conversation by default, represented by the
 most recently updated endpoint; explicit all-branches views and MCP
 navigation still reach every saved branch. The graph is deliberately derived
-rather than stored — it has no ID of its own and owns no curation — so
+rather than stored; it has no ID of its own and owns no curation, so
 relationship evidence can improve without schema migrations. When the
 evidence is invalid, presentation degrades conservatively: clog shows
 branches separately rather than guessing a collapse.
 
 ### Agent-assisted rather than built-in summarization
 
-clog does not call an LLM itself. It exposes storage plus MCP tools
+clog does not call an LLM directly. It exposes storage plus MCP tools
 (`get_conversation`, `update_conversation`, `summarization_guide`,
 `analysis_suggestions`) and lets the user's own trusted agent harness
 (Claude Code or Codex CLI) do the interactive summarization and analysis work.
-The MCP surface is a read *and write* surface — agents author curation, not
-just read hits — which is the part most adjacent tools don't have. This keeps
-clog free of provider credentials, token accounting, and subprocess LLM calls,
-and defers provider-backed automatic summarization to a possible later phase
-(roadmap 4.1) only if the agent-assisted approach proves insufficient.
+The MCP surface is a read *and write* surface: agents author curation, not
+just read hits. This keeps clog free of provider credentials, token accounting,
+and subprocess LLM calls, and defers provider-backed automatic summarization to
+a possible later feature only if the agent-assisted approach proves
+insufficient.
 
-## Roadmap
+## Directions for future feature development
 
-clog was built in three phases, all now part of the product:
+Some possible future extensions, none committed:
 
-- **Phase 1 — Local MVP.** A CLI and MCP server for one developer to discover,
-  curate, and browse their own Claude Code and Codex CLI conversations.
-- **Phase 2 — Semantic search.** Natural-language search over saved
-  conversations using local embeddings and a vector store.
-- **Phase 3 — Team sharing.** Sharing saved conversations with teammates via a
-  shared git repository.
-
-Possible future extensions (Phase 4), roughly in priority order and none
-committed:
-
-| Step | Task |
-|------|------|
-| 4.1 | Provider-backed automatic summarization, if agent-assisted summarization proves insufficient |
-| 4.2 | Web UI for browsing the team knowledge base |
-| 4.3 | Conversation analytics (what topics is your team asking about most?) |
-| 4.4 | Import from exported Claude.ai conversations |
-| 4.5 | Better `clog show` (branch-aware rendering, collapsible tool output, long-conversation formatting) |
-| 4.6 | Cross-developer context handoff — an MCP tool that loads a teammate's saved conversation as reference context in a new session |
-| 4.7 | Content-aware deduplication of conversations shared by multiple authors |
-| 4.8 | Conversation diff beyond new-since-save output |
-| 4.9 | Cross-kind promotion from a synced/imported read-only copy to a local editable row |
-| 4.10 | Local metadata overlays on imported conversations (local tags, notes) |
-| 4.11 | `clog rename-author` automatic cleanup of the old remote directory |
-| 4.12 | Multi-remote support |
-| 4.13 | Automatic retries on push rejection |
+- Provider-backed automatic summarization, if agent-assisted summarization
+  proves insufficient
+- Local-only browser-based UI for browsing the user's knowledge base
+- More suggestions for conversation analysis (what useful patterns and harmful
+  antipatterns can be discerned in your conversations?)
+- Import from exported Claude.ai conversations
+- Better `clog show` (branch-aware rendering, collapsible tool output,
+  long-conversation formatting)
+- Cross-developer context handoff: an MCP tool that loads a teammate's saved
+  conversation as reference context in a new session
+- Content-aware deduplication of conversations shared by multiple authors
+- Conversation diff beyond new-since-save output
+- Cross-kind promotion from a synced/imported read-only copy to a local editable
+  copy
+- Local metadata overlays on imported conversations (local tags, notes)
+- `clog rename-author` automatic cleanup of the old remote directory
+- Multi-remote support
+- Automatic retries on push rejection
