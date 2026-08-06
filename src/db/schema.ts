@@ -2,6 +2,7 @@ import type { Database } from "sql.js";
 
 // Baseline collapsed from a 1→10 migration ramp before first release; the ramp
 // lives in git history. Future changes add ordinary forward migrations from 10.
+export const SCHEMA_BASELINE_VERSION = 10;
 export const CURRENT_SCHEMA_VERSION = 10;
 
 export const SCHEMA_RESET_RECOVERY =
@@ -24,13 +25,28 @@ export function ensureCurrentSchema(db: Database): boolean {
   }
 
   const currentVersion = getSchemaVersion(db);
-  if (currentVersion === CURRENT_SCHEMA_VERSION) {
-    return false;
+
+  if (currentVersion === null || !Number.isInteger(currentVersion)) {
+    throw new Error(
+      `Database schema version "${currentVersion}" is not a valid integer value. This suggests a malformed database state. ${SCHEMA_RESET_RECOVERY}`,
+    );
   }
 
-  throw new Error(
-    `Database schema version ${currentVersion} is incompatible with this clog build, which expects version ${CURRENT_SCHEMA_VERSION}. ${SCHEMA_RESET_RECOVERY}`,
-  );
+  if (currentVersion < SCHEMA_BASELINE_VERSION) {
+    throw new Error(
+      `Database schema version ${currentVersion} is incompatible with this clog build; the oldest schema this build supports is ${SCHEMA_BASELINE_VERSION}. ${SCHEMA_RESET_RECOVERY}`,
+    );
+  }
+
+  if (currentVersion > CURRENT_SCHEMA_VERSION) {
+    throw new Error(
+      `Database schema version ${currentVersion} is incompatible with this clog build, which expects version ${CURRENT_SCHEMA_VERSION}; the database is newer than this build. Use a compatible newer clog build, if one is available. Otherwise, back up your old database and create a new one:\n${SCHEMA_RESET_RECOVERY}`,
+    );
+  }
+
+  // Add future forward migrations here in ascending version order.
+
+  return currentVersion < CURRENT_SCHEMA_VERSION;
 }
 
 function createLatestSchema(db: Database): void {
@@ -145,14 +161,15 @@ function createConversationRelationshipsTable(db: Database): void {
   `);
 }
 
-function getSchemaVersion(db: Database): number {
+function getSchemaVersion(db: Database): number | null {
   const result = db.exec("SELECT version FROM schema_version LIMIT 1");
 
-  if (result.length === 0 || result[0]?.values.length === 0) {
-    return 0;
+  if (result.length === 0 || (result[0]?.values.length ?? 0) === 0) {
+    return null;
   }
 
-  return Number(result[0].values[0]?.[0] ?? 0);
+  const value = result[0]?.values[0]?.[0];
+  return value == null ? null : Number(value);
 }
 
 function setSchemaVersion(db: Database, version: number): void {

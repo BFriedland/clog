@@ -22,7 +22,10 @@ import {
   setConversationIndexedAt,
   withDb,
 } from "../src/db/index.js";
-import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  SCHEMA_BASELINE_VERSION,
+} from "../src/db/schema.js";
 import * as atomicWrite from "../src/utils/atomic-write.js";
 import { nowIso } from "../src/utils/time.js";
 import { deleteConversation, insertConversation, updateConversation } from "./helpers/db.js";
@@ -436,11 +439,42 @@ describe("db", () => {
   });
 
   it.each([
-    CURRENT_SCHEMA_VERSION - 1,
-    CURRENT_SCHEMA_VERSION + 1,
-  ])("rejects incompatible schema version %i without rewriting the database", async (version) => {
+    {
+      version: CURRENT_SCHEMA_VERSION + 0.5,
+      expectedError: `schema version "${CURRENT_SCHEMA_VERSION + 0.5}" is not a valid integer value\. This suggests a malformed database state\..*Archive the complete CLOG_HOME`,
+    },
+    {
+      version: SCHEMA_BASELINE_VERSION - 1,
+      expectedError: `schema version ${SCHEMA_BASELINE_VERSION - 1} is incompatible.*oldest schema this build supports is ${SCHEMA_BASELINE_VERSION}.*Archive the complete CLOG_HOME`,
+    },
+    {
+      version: CURRENT_SCHEMA_VERSION + 1,
+      expectedError: `schema version ${CURRENT_SCHEMA_VERSION + 1} is incompatible.*expects version ${CURRENT_SCHEMA_VERSION}.*the database is newer than this build.*Archive the complete CLOG_HOME`,
+    },
+  ])(
+    "rejects schema version $version without rewriting the database",
+    async ({ version, expectedError }) => {
+      await withDb((db) => {
+        db.run("UPDATE schema_version SET version = ?", [version]);
+      }, { mode: "write" });
+      const dbPath = path.join(tempDir, "clog.db");
+      const before = await fs.readFile(dbPath);
+      const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+      await expect(
+        withDb(() => undefined, { mode: "read" }),
+      ).rejects.toThrow(
+        new RegExp(expectedError, "s"),
+      );
+
+      expect(writeSpy).not.toHaveBeenCalled();
+      await expect(fs.readFile(dbPath)).resolves.toEqual(before);
+    },
+  );
+
+  it("rejects an empty schema_version table as malformed without rewriting the database", async () => {
     await withDb((db) => {
-      db.run("UPDATE schema_version SET version = ?", [version]);
+      db.exec("DELETE FROM schema_version");
     }, { mode: "write" });
     const dbPath = path.join(tempDir, "clog.db");
     const before = await fs.readFile(dbPath);
@@ -449,10 +483,7 @@ describe("db", () => {
     await expect(
       withDb(() => undefined, { mode: "read" }),
     ).rejects.toThrow(
-      new RegExp(
-        `schema version ${version} is incompatible.*expects version ${CURRENT_SCHEMA_VERSION}.*Archive the complete CLOG_HOME`,
-        "s",
-      ),
+      /schema version "null" is not a valid integer value\. This suggests a malformed database state\. Archive the complete CLOG_HOME.*/s,
     );
 
     expect(writeSpy).not.toHaveBeenCalled();

@@ -10,6 +10,7 @@ import { parseConfig } from "../config/schema.js";
 import { getDefaultConfig } from "../config/index.js";
 import {
   CURRENT_SCHEMA_VERSION,
+  SCHEMA_BASELINE_VERSION,
   SCHEMA_RESET_RECOVERY,
 } from "../db/schema.js";
 import { isGitConversation, isLocalConversation, withDb } from "../db/index.js";
@@ -368,15 +369,48 @@ async function inspectDatabase(
     });
   } else if (schemaTableExists) {
     const version = readSchemaVersion(db);
-    if (version !== CURRENT_SCHEMA_VERSION) {
+    // Diagnostic access never migrates. Keep these ranges aligned with
+    // ensureCurrentSchema, but stop before querying a non-current table shape.
+    if (version === null || !Number.isInteger(version)) {
       findings.push({
         check: 2,
         subsystem: "database",
         severity: "fatal",
-        message: `schema_version is ${String(version)} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
+        message: `schema_version "${version}" is not a valid integer value. This suggests a malformed database state.`,
+        recovery: SCHEMA_RESET_RECOVERY,
+        paths: [path.join(getClogHome(), "clog.db")],
+        sortKey: "schema-version-malformed",
+      });
+    } else if (version < SCHEMA_BASELINE_VERSION) {
+      findings.push({
+        check: 2,
+        subsystem: "database",
+        severity: "fatal",
+        message: `schema_version is ${String(version)} but the oldest schema supported by this clog build is ${SCHEMA_BASELINE_VERSION}.`,
         recovery: SCHEMA_RESET_RECOVERY,
         paths: [path.join(getClogHome(), "clog.db")],
         sortKey: "schema-version-mismatch",
+      });
+    } else if (version > CURRENT_SCHEMA_VERSION) {
+      findings.push({
+        check: 2,
+        subsystem: "database",
+        severity: "fatal",
+        message: `schema_version is ${String(version)}, which is newer than this clog build's expected version ${CURRENT_SCHEMA_VERSION}.`,
+        recovery: `Use a compatible newer clog build, if one is available. Otherwise, back up your old database and create a new one:\n${SCHEMA_RESET_RECOVERY}`,
+        paths: [path.join(getClogHome(), "clog.db")],
+        sortKey: "schema-version-mismatch",
+      });
+    } else if (version < CURRENT_SCHEMA_VERSION) {
+      findings.push({
+        check: 2,
+        subsystem: "database",
+        severity: "fatal",
+        message: `schema_version is ${String(version)} and can be migrated to ${CURRENT_SCHEMA_VERSION} by this clog build.`,
+        recovery:
+          "Run a database-using command such as 'clog status' to apply the migration, then rerun 'clog plunge'.",
+        paths: [path.join(getClogHome(), "clog.db")],
+        sortKey: "schema-migration-pending",
       });
     }
   }

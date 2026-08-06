@@ -118,6 +118,21 @@ Rules:
 - filtering semantics that affect multiple surfaces should live here or be composed from DB results in one shared place
 - ID ambiguity and not-found behavior should be centralized here, not reimplemented per command
 - searchability bookkeeping such as `indexedAt` storage and stale-index queries belongs here, but provider-specific search logic does not
+- schema version 10 is the public compatibility baseline:
+  `SCHEMA_BASELINE_VERSION` remains 10 when `CURRENT_SCHEMA_VERSION` advances,
+  and the removed pre-release migrations below version 10 must not be restored
+- ordinary database access migrates integer schema versions from the baseline
+  through the current version in ascending order; malformed and pre-baseline
+  versions require reset recovery, while versions above the current version
+  require a compatible newer clog build
+- `clog plunge` reports the same schema-version ranges without migrating the
+  database and stops database-row inspection when the schema is not current
+- each migration validates the database shape and data it expects before
+  changing them, then updates `schema_version` only after that migration
+  succeeds
+- `ensureCurrentSchema` returns whether it created or advanced the schema;
+  `withDb` uses that result to persist schema changes even when the database
+  was opened for ordinary read access
 
 ### `src/relationships`
 

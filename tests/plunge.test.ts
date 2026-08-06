@@ -11,6 +11,7 @@ import { getDefaultConfig, saveConfig } from "../src/config/index.js";
 import * as dbModule from "../src/db/index.js";
 import {
   CURRENT_SCHEMA_VERSION,
+  SCHEMA_BASELINE_VERSION,
   SCHEMA_RESET_RECOVERY,
 } from "../src/db/schema.js";
 import type { ConversationMeta } from "../src/models/conversation.js";
@@ -95,19 +96,11 @@ describe("plunge", () => {
     await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
   });
 
-  it.each([
-    CURRENT_SCHEMA_VERSION - 1,
-    CURRENT_SCHEMA_VERSION + 1,
-  ])("reports incompatible schema version %i without migrating or rewriting the database", async (version) => {
+  it("reports an empty schema_version table without rewriting the database", async () => {
     await ensureClogHome({ interactive: false });
     await dbModule.withDb(
       (db) => {
-        db.exec(`
-          DROP TABLE conversations;
-          DROP TABLE schema_version;
-          CREATE TABLE schema_version (version INTEGER NOT NULL);
-          INSERT INTO schema_version (version) VALUES (${version});
-        `);
+        db.exec("DELETE FROM schema_version");
       },
       { mode: "write" },
     );
@@ -119,12 +112,60 @@ describe("plunge", () => {
     expect(report.exitCode).toBe(1);
     expect(findCheck(report, 2)).toMatchObject({
       severity: "fatal",
-      message: `schema_version is ${version} but clog expects ${CURRENT_SCHEMA_VERSION}.`,
+      message:
+        'schema_version "null" is not a valid integer value. This suggests a malformed database state.',
       recovery: SCHEMA_RESET_RECOVERY,
     });
     expect(writeSpy).not.toHaveBeenCalled();
     await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
   });
+
+  it.each([
+    {
+      version: CURRENT_SCHEMA_VERSION + 0.5,
+      message: `schema_version "${CURRENT_SCHEMA_VERSION + 0.5}" is not a valid integer value. This suggests a malformed database state.`,
+      recovery: SCHEMA_RESET_RECOVERY,
+    },
+    {
+      version: SCHEMA_BASELINE_VERSION - 1,
+      message: `schema_version is ${SCHEMA_BASELINE_VERSION - 1} but the oldest schema supported by this clog build is ${SCHEMA_BASELINE_VERSION}.`,
+      recovery: SCHEMA_RESET_RECOVERY,
+    },
+    {
+      version: CURRENT_SCHEMA_VERSION + 1,
+      message: `schema_version is ${CURRENT_SCHEMA_VERSION + 1}, which is newer than this clog build's expected version ${CURRENT_SCHEMA_VERSION}.`,
+      recovery: `Use a compatible newer clog build, if one is available. Otherwise, back up your old database and create a new one:\n${SCHEMA_RESET_RECOVERY}`,
+    },
+  ])(
+    "reports schema version $version as fatal without migrating or rewriting the database",
+    async ({ version, message, recovery }) => {
+      await ensureClogHome({ interactive: false });
+      await dbModule.withDb(
+        (db) => {
+          db.exec(`
+            DROP TABLE conversations;
+            DROP TABLE schema_version;
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (${version});
+          `);
+        },
+        { mode: "write" },
+      );
+      const before = await fs.readFile(getClogDbPath());
+      const writeSpy = vi.spyOn(atomicWrite, "writeFileAtomic");
+
+      const report = await generatePlungeReport();
+
+      expect(report.exitCode).toBe(1);
+      expect(findCheck(report, 2)).toMatchObject({
+        severity: "fatal",
+        message,
+        recovery,
+      });
+      expect(writeSpy).not.toHaveBeenCalled();
+      await expect(fs.readFile(getClogDbPath())).resolves.toEqual(before);
+    }
+  );
 
   it("reports a simulated non-ok integrity_check result as fatal", async () => {
     await ensureClogHome({ interactive: false });
