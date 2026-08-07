@@ -38,9 +38,12 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "dev": "tsx src/index.ts",
-    "lint": "eslint src/ tests/",
+    "lint": "eslint src/ tests/ scripts/",
     "knip": "knip --treat-config-hints-as-errors",
-    "smoke:global-runtime": "node scripts/smoke-global-runtime.mjs"
+    "smoke:global-runtime": "node scripts/smoke-global-runtime.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "release:pack": "node scripts/release-pack.mjs",
+    "release:smoke": "node scripts/release-smoke.mjs"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.4.1",
