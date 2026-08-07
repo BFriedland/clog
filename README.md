@@ -215,9 +215,11 @@ tool's own files on disk; clog stores nothing about it. Saving copies the
 transcript into clog's storage. From there you can edit its metadata, index
 it for search, export it, and sync it to your team.
 
-When a conversation is split across several branches (after an edited prompt
-or a rewind), clog groups them and shows it once by default;
-`clog list --all-branches` expands the group.
+Conversation branches are grouped and shown as one conversation by
+default; `clog list --all-branches` expands separately stored branches.
+
+For details about how clog interprets rewinds and branches from Claude
+Code and Codex CLI, see [SOURCE_FORMATS.md](docs/SOURCE_FORMATS.md#rewinds-branches-and-forks).
 
 | Command | What it does |
 |---------|-------------|
