@@ -374,14 +374,18 @@ conversation files and the `CLOG_HOME` directory stay on the Linux filesystem.
 
 The `.nvmrc` file selects the Node.js 22 release line for version managers that support it.
 
-To install the `clog` command globally from a local checkout:
+To put the `clog` and `clog-mcp` commands on `PATH` from a local checkout:
 
 ```bash
 git clone https://github.com/BFriedland/clog.git
 cd clog
 npm install            # Install dependencies and build (via the prepare script)
-npm run setup          # Link the clog command globally and run clog init
+npm link               # Put clog and clog-mcp on PATH
 ```
+
+Then run `clog init` to initialize clog, or to revise an existing configuration.
+
+Common development commands:
 
 ```bash
 npm test               # Run tests
