@@ -93,7 +93,10 @@ Notes on individual entries:
 - **`vectors/` and `search-runtime/`** exist only when the user opts into
   semantic search. `search-runtime/` is an npm prefix owned by clog; search
   packages are installed there, never into the user's global or project
-  Node.js environment.
+  Node.js environment. It contains only rebuildable packages and model-cache
+  files, so `clog uninstall` removes it. The derived vector index remains with
+  the database metadata that records which conversations are indexed, avoiding
+  an unnecessary full re-index after clog is reinstalled.
 - **`<source>`** path segments are source keys (§3.2), which are constrained
   so they are always safe cross-platform path components.
 

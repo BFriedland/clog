@@ -85,6 +85,7 @@ const mockedInstallSearchRuntimePackages = vi.mocked(runtimeModule.installSearch
 const { buildSearchSetupConsentPrompt, runSearchInitCommand } = await import(
   "../src/cli/search-init.js"
 );
+const { getSearchRuntimeRoot } = await import("../src/utils/paths.js");
 
 beforeEach(() => {
   mockedConfirm.mockReset();
@@ -112,6 +113,8 @@ describe("search setup prompts", () => {
     expect(prompt).toContain("search-runtime");
     expect(prompt).toContain("vectra, @huggingface/transformers");
     expect(prompt).toContain("This will enable local vector search:");
+    expect(prompt).toContain("npm uninstall --global @getclog/clog");
+    expect(prompt).toContain("clog uninstall");
   });
 
   it("still shows the package footprint when packages are already installed", () => {
@@ -124,8 +127,29 @@ describe("search setup prompts", () => {
     expect(prompt).toContain("30MB");
     expect(prompt).toContain("vectra, @huggingface/transformers");
     expect(prompt).toContain("already in");
+    expect(prompt).not.toContain("clog uninstall");
   });
 
+  it("uses the configured search-runtime path in the setup prompt", () => {
+    const originalClogHome = process.env.CLOG_HOME;
+    process.env.CLOG_HOME = "/tmp/custom clog home";
+
+    try {
+      const expectedRuntimeRoot = getSearchRuntimeRoot();
+      const prompt = buildSearchSetupConsentPrompt({
+        packagesInstalled: false,
+        packages: ["@huggingface/transformers"],
+      });
+
+      expect(prompt).toContain(expectedRuntimeRoot);
+    } finally {
+      if (originalClogHome === undefined) {
+        delete process.env.CLOG_HOME;
+      } else {
+        process.env.CLOG_HOME = originalClogHome;
+      }
+    }
+  });
 });
 
 describe("search setup config persistence", () => {

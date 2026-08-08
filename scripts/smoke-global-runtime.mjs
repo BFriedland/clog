@@ -34,6 +34,7 @@ async function main() {
     npm_config_audit: "false",
     npm_config_cache: npmCache,
     npm_config_fund: "false",
+    npm_config_prefix: npmPrefix,
     npm_config_update_notifier: "false",
   };
 
@@ -127,6 +128,25 @@ async function main() {
         "package.json",
       ),
       "@huggingface/transformers package.json in search runtime",
+    );
+
+    const retainedSentinel = path.join(clogHome, "retained-after-uninstall.txt");
+    await fs.writeFile(retainedSentinel, "retain me\n", "utf8");
+
+    step("Uninstalling the packed clog package and optional search runtime");
+    await run(clogBin, ["uninstall", "--yes"], { cwd: repoRoot, env });
+
+    await assertMissing(
+      path.join(clogHome, "search-runtime"),
+      "clog uninstall should remove the optional search runtime",
+    );
+    await assertMissing(
+      packageRoot,
+      "clog uninstall should remove the packed global npm package",
+    );
+    await assertFileExists(
+      retainedSentinel,
+      "sentinel elsewhere in CLOG_HOME after clog uninstall",
     );
 
     process.stdout.write("\nGlobal runtime smoke test passed.\n");

@@ -174,12 +174,24 @@ export function buildSearchSetupConsentPrompt(options: {
     ? `  • Packages already in ${getSearchRuntimeRoot()} (${packageSize} if reinstalled)`
     : `  • Packages (${packageSize}) installed into ${getSearchRuntimeRoot()}`;
 
-  return [
+  const lines = [
     "This will enable local vector search:",
     packageLine,
     `  • Runtime packages: ${options.packages.join(", ")}`,
     `  • Model files (${modelSize}, downloaded once if not cached) in ${getSearchRuntimeModelCacheRoot()}`,
-  ].join("\n");
+  ];
+
+  if (!options.packagesInstalled) {
+    lines.push(
+      "",
+      chalk.bold(
+        "To remove this optional runtime later, run 'clog uninstall'; " +
+          "direct 'npm uninstall --global @getclog/clog' leaves it behind.",
+      ),
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function renderPackageStatus(packagesInstalled: boolean, packages: string[]): string {

@@ -25,6 +25,7 @@ import { buildSummarizeCommand, buildTalkCommand } from "./talk.js";
 import { buildTagCommand } from "./tag.js";
 import { buildUnexcludeCommand } from "./unexclude.js";
 import { buildUntagCommand } from "./untag.js";
+import { buildUninstallCommand } from "./uninstall.js";
 import { runSearchInitCommand } from "./search-init.js";
 import { runSearchCommand } from "./search.js";
 
@@ -134,6 +135,7 @@ export function buildProgram(): Command {
   program.addCommand(buildInitCommand());
   program.addCommand(buildMcpCommand());
   program.addCommand(buildConfigCommand());
+  program.addCommand(buildUninstallCommand());
 
   return program;
 }

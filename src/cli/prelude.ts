@@ -10,7 +10,7 @@ import {
 } from "../relationships/refresh.js";
 import { collapseAggregatableWarnings, renderWarnings } from "./common.js";
 
-const PRE_ACTION_EXCLUDED_COMMANDS = new Set(["init", "plunge"]);
+const PRE_ACTION_EXCLUDED_COMMANDS = new Set(["init", "plunge", "uninstall"]);
 let exitingForBrokenPipe = false;
 
 export function shouldSkipPreAction(commandName: string, parentCommandName?: string): boolean {

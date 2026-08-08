@@ -366,6 +366,7 @@ describe("cli", () => {
     it("skips the global pre-action hook for init but not ordinary commands", () => {
       expect(shouldSkipPreAction("init")).toBe(true);
       expect(shouldSkipPreAction("plunge")).toBe(true);
+      expect(shouldSkipPreAction("uninstall")).toBe(true);
       expect(shouldSkipPreAction("setup", "mcp")).toBe(true);
       expect(shouldSkipPreAction("status")).toBe(false);
     });
@@ -425,6 +426,7 @@ describe("cli", () => {
       const out = await captureTopLevelHelp();
       expect(out).toContain("AI agent integration");
       expect(out).toContain("clog mcp setup <claude|codex|both>");
+      expect(out).toContain("uninstall");
     });
 
     it("omits the footer for an interactive terminal", async () => {

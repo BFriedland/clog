@@ -37,6 +37,9 @@ clog init
 
 To install from a local checkout instead, see [Development](#development).
 
+To uninstall clog, run `clog uninstall` rather than npm's uninstall command. See
+[Uninstalling clog](#uninstalling-clog) for details.
+
 ## Quick Start
 
 ```bash
@@ -281,6 +284,7 @@ save a copy.
 | `clog init` | Initialize clog or revise its conversation-directory choices, confirm the default author, and offer vector search and MCP setup (`clog setup` is an alias) |
 | `clog mcp setup [claude\|codex\|both]` | Register clog's MCP server with Claude Code, Codex CLI, or both |
 | `clog config [get\|set]` | View or edit configuration |
+| `clog uninstall` | Remove the global npm package and optional search runtime, while retaining clog's data directory |
 
 ## Config File
 
@@ -334,6 +338,24 @@ The `search` and `remote` config blocks are managed by `clog search --init` and 
 |----------|---------|
 | `CLOG_HOME` | Override the data directory (default: `~/.clog`) |
 | `CLOG_DEBUG` | Bypass CLI error wrapping and surface raw stack traces |
+
+## Uninstalling clog
+
+The `clog uninstall` command removes the globally installed clog npm package
+and the optional vector-search packages and model cache from your
+`CLOG_HOME/search-runtime/` directory (normally `~/.clog/search-runtime/`).
+Because npm does not support package lifecycle scripts during uninstall,
+`npm uninstall --global @getclog/clog` cannot run clog's cleanup and will leave
+the `search-runtime/` directory behind.
+
+The uninstall command retains the clog database, configuration, saved and
+imported conversations, vector index, and team sync checkout under your
+`CLOG_HOME` directory. Reinstalling clog will recover that retained library. If
+you want to erase your curated conversation library and configuration, back up
+any clog data you need, and then remove the `CLOG_HOME` directory manually.
+
+The `clog uninstall` command does not affect Claude Code or Codex CLI
+conversation source files or anything else in those apps' data directories.
 
 ## Windows support
 
