@@ -223,7 +223,8 @@ Some possible future extensions, none committed:
 - Local-only browser-based UI for browsing the user's knowledge base
 - More suggestions for conversation analysis (what useful patterns and harmful
   antipatterns can be discerned in your conversations?)
-- Import from exported Claude.ai conversations
+- Additional conversation sources beyond the built-in Claude Code and Codex CLI
+  adapters
 - Better `clog show` (branch-aware rendering, collapsible tool output,
   long-conversation formatting)
 - Cross-developer context handoff: an MCP tool that loads a teammate's saved
